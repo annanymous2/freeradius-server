@@ -1,7 +1,8 @@
 /*
  *   This program is is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License, version 2 if the
- *   License as published by the Free Software Foundation.
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation; either version 2 of the License, or (at
+ *   your option) any later version.
  *
  *   This program is distributed in the hope that it will be useful,
  *   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,18 +24,73 @@
  */
 RCSID("$Id$")
 
-#include <freeradius-devel/radiusd.h>
-#include <freeradius-devel/modules.h>
+#include <freeradius-devel/server/base.h>
+#include <freeradius-devel/server/modules.h>
+#include <freeradius-devel/util/md5.h>
+
+typedef struct {
+	char const		*name;		//!< Auth-Type value for this module instance.
+	fr_dict_enum_t		*auth_type;
+} rlm_digest_t;
+
+static fr_dict_t *dict_freeradius;
+static fr_dict_t *dict_radius;
+
+extern fr_dict_autoload_t rlm_digest_dict[];
+fr_dict_autoload_t rlm_digest_dict[] = {
+	{ .out = &dict_freeradius, .proto = "freeradius" },
+	{ .out = &dict_radius, .proto = "radius" },
+	{ NULL }
+};
+
+static const fr_dict_attr_t *attr_auth_type;
+static const fr_dict_attr_t *attr_cleartext_password;
+
+static const fr_dict_attr_t *attr_digest_algorithm;
+static const fr_dict_attr_t *attr_digest_attributes;
+static const fr_dict_attr_t *attr_digest_body_digest;
+static const fr_dict_attr_t *attr_digest_cnonce;
+static const fr_dict_attr_t *attr_digest_ha1;
+static const fr_dict_attr_t *attr_digest_method;
+static const fr_dict_attr_t *attr_digest_nonce;
+static const fr_dict_attr_t *attr_digest_nonce_count;
+static const fr_dict_attr_t *attr_digest_qop;
+static const fr_dict_attr_t *attr_digest_realm;
+static const fr_dict_attr_t *attr_digest_response;
+static const fr_dict_attr_t *attr_digest_uri;
+static const fr_dict_attr_t *attr_digest_user_name;
+
+extern fr_dict_attr_autoload_t rlm_digest_dict_attr[];
+fr_dict_attr_autoload_t rlm_digest_dict_attr[] = {
+	{ .out = &attr_auth_type, .name = "Auth-Type", .type = FR_TYPE_UINT32, .dict = &dict_freeradius },
+	{ .out = &attr_cleartext_password, .name = "Cleartext-Password", .type = FR_TYPE_STRING, .dict = &dict_freeradius },
+
+	{ .out = &attr_digest_algorithm, .name = "Digest-Algorithm", .type = FR_TYPE_STRING, .dict = &dict_radius },
+	{ .out = &attr_digest_attributes, .name = "Digest-Attributes", .type = FR_TYPE_OCTETS, .dict = &dict_radius },
+	{ .out = &attr_digest_body_digest, .name = "Digest-Body-Digest", .type = FR_TYPE_STRING, .dict = &dict_radius },
+	{ .out = &attr_digest_cnonce, .name = "Digest-Cnonce", .type = FR_TYPE_STRING, .dict = &dict_radius },
+	{ .out = &attr_digest_ha1, .name = "Digest-Ha1", .type = FR_TYPE_STRING, .dict = &dict_radius },
+	{ .out = &attr_digest_method, .name = "Digest-Method", .type = FR_TYPE_STRING, .dict = &dict_radius },
+	{ .out = &attr_digest_nonce, .name = "Digest-Nonce", .type = FR_TYPE_STRING, .dict = &dict_radius },
+	{ .out = &attr_digest_nonce_count, .name = "Digest-Nonce-Count", .type = FR_TYPE_STRING, .dict = &dict_radius },
+	{ .out = &attr_digest_qop, .name = "Digest-Qop", .type = FR_TYPE_STRING, .dict = &dict_radius },
+	{ .out = &attr_digest_realm, .name = "Digest-Realm", .type = FR_TYPE_STRING, .dict = &dict_radius },
+	{ .out = &attr_digest_response, .name = "Digest-Response", .type = FR_TYPE_STRING, .dict = &dict_radius },
+	{ .out = &attr_digest_uri, .name = "Digest-Uri", .type = FR_TYPE_STRING, .dict = &dict_radius },
+	{ .out = &attr_digest_user_name, .name = "Digest-User-Name", .type = FR_TYPE_STRING, .dict = &dict_radius },
+
+	{ NULL }
+};
 
 static int digest_fix(REQUEST *request)
 {
 	VALUE_PAIR *first, *i;
-	vp_cursor_t cursor;
+	fr_cursor_t cursor;
 
 	/*
 	 *	We need both of these attributes to do the authentication.
 	 */
-	first = pairfind(request->packet->vps, PW_DIGEST_RESPONSE, 0, TAG_ANY);
+	first = fr_pair_find_by_da(request->packet->vps, attr_digest_response, TAG_ANY);
 	if (!first) {
 		return RLM_MODULE_NOOP;
 	}
@@ -42,7 +98,7 @@ static int digest_fix(REQUEST *request)
 	/*
 	 *	Check the sanity of the attribute.
 	 */
-	if (first->length != 32) {
+	if (first->vp_length != 32) {
 		return RLM_MODULE_NOOP;
 	}
 
@@ -50,36 +106,37 @@ static int digest_fix(REQUEST *request)
 	 *	Check for proper format of the Digest-Attributes
 	 */
 	RDEBUG("Checking for correctly formatted Digest-Attributes");
+	rad_assert(attr_digest_attributes);
 
-	first = pairfind(request->packet->vps, PW_DIGEST_ATTRIBUTES, 0, TAG_ANY);
-	if (!first) {
-		return RLM_MODULE_NOOP;
-	}
+	first = fr_cursor_iter_by_da_init(&cursor, &request->packet->vps, attr_digest_attributes);
+	if (!first) return RLM_MODULE_NOOP;
 
-	paircursor(&cursor, &first);
-	while ((i = pairfindnext(&cursor, PW_DIGEST_ATTRIBUTES, 0, TAG_ANY))) {
-		int length = i->length;
-		int attrlen;
-		uint8_t const *p = i->vp_octets;
+	for (i = fr_cursor_head(&cursor);
+	     i;
+	     i = fr_cursor_next(&cursor)) {
+		size_t attr_len;
+		uint8_t const *p = i->vp_octets, *end = i->vp_octets + i->vp_length;
+
+		RHEXDUMP(L_DBG_LVL_3, p, i->vp_length, "Validating digest attribute");
 
 		/*
 		 *	Until this stupidly encoded attribute is exhausted.
 		 */
-		while (length > 0) {
+		while (p < end) {
 			/*
 			 *	The attribute type must be valid
 			 */
 			if ((p[0] == 0) || (p[0] > 10)) {
-				RDEBUG("Not formatted as Digest-Attributes: TLV type (%u) invalid", (unsigned int) p[0]);
+				RDEBUG("Not formatted as Digest-Attributes: subtlv (%u) invalid", (unsigned int) p[0]);
 				return RLM_MODULE_NOOP;
 			}
 
-			attrlen = p[1];	/* stupid VSA format */
+			attr_len = p[1];	/* stupid VSA format */
 
 			/*
 			 *	Too short.
 			 */
-			if (attrlen < 3) {
+			if (attr_len < 3) {
 				RDEBUG("Not formatted as Digest-Attributes: TLV too short");
 				return RLM_MODULE_NOOP;
 			}
@@ -87,57 +144,35 @@ static int digest_fix(REQUEST *request)
 			/*
 			 *	Too long.
 			 */
-			if (attrlen > length) {
+			if (p + attr_len > end) {
 				RDEBUG("Not formatted as Digest-Attributes: TLV too long)");
 				return RLM_MODULE_NOOP;
 			}
 
-			length -= attrlen;
-			p += attrlen;
+
+			RHEXDUMP(L_DBG_LVL_3, p, attr_len, "Found valid sub TLV %u, length %zu", p[0], attr_len);
+
+			p += attr_len;
 		} /* loop over this one attribute */
 	}
 
 	/*
 	 *	Convert them to something sane.
 	 */
-	RDEBUG("Digest-Attributes look OK.  Converting them to something more useful");
-	pairfirst(&cursor);
-	while ((i = pairfindnext(&cursor, PW_DIGEST_ATTRIBUTES, 0, TAG_ANY))) {
-		int length = i->length;
-		int attrlen;
-		uint8_t const *p = &i->vp_octets[0];
-		char *q;
-		VALUE_PAIR *sub;
+	RDEBUG("Digest-Attributes validated, unpacking into interal attributes");
+	fr_cursor_head(&cursor);
+	for (i = fr_cursor_head(&cursor);
+	     i;
+	     i = fr_cursor_next(&cursor)) {
+		size_t		attr_len;
+		uint8_t const	*p = i->vp_octets, *end = i->vp_octets + i->vp_length;
+		VALUE_PAIR	*sub;
 
 		/*
 		 *	Until this stupidly encoded attribute is exhausted.
 		 */
-		while (length > 0) {
-			/*
-			 *	The attribute type must be valid
-			 */
-			if ((p[0] == 0) || (p[0] > 10)) {
-				REDEBUG("Received Digest-Attributes with invalid sub-attribute %d", p[0]);
-				return RLM_MODULE_INVALID;
-			}
-
-			attrlen = p[1];	/* stupid VSA format */
-
-			/*
-			 *	Too short.
-			 */
-			if (attrlen < 3) {
-				REDEBUG("Received Digest-Attributes with short sub-attribute %d, of length %d", p[0], attrlen);
-				return RLM_MODULE_INVALID;
-			}
-
-			/*
-			 *	Too long.
-			 */
-			if (attrlen > length) {
-				REDEBUG("Received Digest-Attributes with long sub-attribute %d, of length %d", p[0], attrlen);
-				return RLM_MODULE_INVALID;
-			}
+		while (p < end) {
+			attr_len = p[1];	/* stupid VSA format */
 
 			/*
 			 *	Create a new attribute, broken out of
@@ -145,33 +180,27 @@ static int digest_fix(REQUEST *request)
 			 *
 			 *	Didn't they know that VSA's exist?
 			 */
-			sub = radius_paircreate(request, &request->packet->vps,
-						PW_DIGEST_REALM - 1 + p[0], 0);
-			sub->length = attrlen - 2;
-			sub->vp_strvalue = q = talloc_array(sub, char, sub->length + 1);
-			memcpy(q, p + 2, attrlen - 2);
-			q[attrlen - 2] = '\0';
+			MEM(sub = fr_pair_afrom_child_num(request->packet,
+							  fr_dict_root(dict_freeradius),
+							  attr_digest_realm->attr - 1 + p[0]));
+			fr_pair_value_bstrncpy(sub, p + 2, attr_len - 2);
+			fr_pair_add(&request->packet->vps, sub);
 
-			if ((debug_flag > 1) && fr_log_fp) {
-				vp_print(fr_log_fp, sub);
-			}
+			RINDENT();
+			RDEBUG2("&%pP", sub);
+			REXDENT();
 
-			/*
-			 *	FIXME: Check for the existence
-			 *	of the necessary attributes!
-			 */
-
-			length -= attrlen;
-			p += attrlen;
+			p += attr_len;
 		} /* loop over this one attribute */
 	}
 
 	return RLM_MODULE_OK;
 }
 
-static rlm_rcode_t mod_authorize(UNUSED void *instance, REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_authorize(void *instance, UNUSED void *thread, REQUEST *request)
 {
-	rlm_rcode_t rcode;
+	rlm_digest_t	*inst = instance;
+	rlm_rcode_t	rcode;
 
 	/*
 	 *	Double-check and fix the attributes.
@@ -179,17 +208,10 @@ static rlm_rcode_t mod_authorize(UNUSED void *instance, REQUEST *request)
 	rcode = digest_fix(request);
 	if (rcode != RLM_MODULE_OK) return rcode;
 
-
-	if (pairfind(request->config_items, PW_AUTHTYPE, 0, TAG_ANY)) {
-		RWDEBUG2("Auth-Type already set.  Not setting to DIGEST");
-		return RLM_MODULE_NOOP;
-	}
-
 	/*
 	 *	Everything's OK, add a digest authentication type.
 	 */
-	RDEBUG("Adding Auth-Type = DIGEST");
-	pairmake_config("Auth-Type", "DIGEST", T_OP_EQ);
+	if (!module_section_type_set(request, attr_auth_type, inst->auth_type)) return RLM_MODULE_NOOP;
 
 	return RLM_MODULE_OK;
 }
@@ -197,13 +219,13 @@ static rlm_rcode_t mod_authorize(UNUSED void *instance, REQUEST *request)
 /*
  *	Perform all of the wondrous variants of digest authentication.
  */
-static rlm_rcode_t mod_authenticate(UNUSED void *instance, REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_authenticate(UNUSED void *instance, UNUSED void *thread, REQUEST *request)
 {
 	int i;
 	size_t a1_len, a2_len, kd_len;
-	uint8_t a1[(MAX_STRING_LEN + 1) * 5]; /* can be 5 attributes */
-	uint8_t a2[(MAX_STRING_LEN + 1) * 3]; /* can be 3 attributes */
-	uint8_t kd[(MAX_STRING_LEN + 1) * 5];
+	uint8_t a1[(FR_MAX_STRING_LEN + 1) * 5]; /* can be 5 attributes */
+	uint8_t a2[(FR_MAX_STRING_LEN + 1) * 3]; /* can be 3 attributes */
+	uint8_t kd[(FR_MAX_STRING_LEN + 1) * 5];
 	uint8_t hash[16];	/* MD5 output */
 	VALUE_PAIR *vp, *passwd, *algo;
 	VALUE_PAIR *qop, *nonce;
@@ -212,14 +234,14 @@ static rlm_rcode_t mod_authenticate(UNUSED void *instance, REQUEST *request)
 	 *	We require access to the plain-text password, or to the
 	 *	Digest-HA1 parameter.
 	 */
-	passwd = pairfind(request->config_items, PW_DIGEST_HA1, 0, TAG_ANY);
+	passwd = fr_pair_find_by_da(request->control, attr_digest_ha1, TAG_ANY);
 	if (passwd) {
-		if (passwd->length != 32) {
+		if (passwd->vp_length != 32) {
 			RAUTH("Digest-HA1 has invalid length, authentication failed");
 			return RLM_MODULE_INVALID;
 		}
 	} else {
-		passwd = pairfind(request->config_items, PW_CLEARTEXT_PASSWORD, 0, TAG_ANY);
+		passwd = fr_pair_find_by_da(request->control, attr_cleartext_password, TAG_ANY);
 	}
 	if (!passwd) {
 		RAUTH("Cleartext-Password or Digest-HA1 is required for authentication");
@@ -229,7 +251,7 @@ static rlm_rcode_t mod_authenticate(UNUSED void *instance, REQUEST *request)
 	/*
 	 *	We need these, too.
 	 */
-	vp = pairfind(request->packet->vps, PW_DIGEST_ATTRIBUTES, 0, TAG_ANY);
+	vp = fr_pair_find_by_da(request->packet->vps, attr_digest_attributes, TAG_ANY);
 	if (!vp) {
 	error:
 		REDEBUG("You set 'Auth-Type = Digest' for a request that does not contain any digest attributes!");
@@ -243,7 +265,7 @@ static rlm_rcode_t mod_authenticate(UNUSED void *instance, REQUEST *request)
 	 *	"authorize" section.  In that case, try to decode the
 	 *	attributes here.
 	 */
-	if (!pairfind(request->packet->vps, PW_DIGEST_NONCE, 0, TAG_ANY)) {
+	if (!fr_pair_find_by_da(request->packet->vps, attr_digest_nonce, TAG_ANY)) {
 		int rcode;
 
 		rcode = digest_fix(request);
@@ -260,7 +282,7 @@ static rlm_rcode_t mod_authenticate(UNUSED void *instance, REQUEST *request)
 	/*
 	 *	We require access to the Digest-Nonce-Value
 	 */
-	nonce = pairfind(request->packet->vps, PW_DIGEST_NONCE, 0, TAG_ANY);
+	nonce = fr_pair_find_by_da(request->packet->vps, attr_digest_nonce, TAG_ANY);
 	if (!nonce) {
 		REDEBUG("No Digest-Nonce: Cannot perform Digest authentication");
 		return RLM_MODULE_INVALID;
@@ -269,31 +291,31 @@ static rlm_rcode_t mod_authenticate(UNUSED void *instance, REQUEST *request)
 	/*
 	 *	A1 = Digest-User-Name ":" Realm ":" Password
 	 */
-	vp = pairfind(request->packet->vps, PW_DIGEST_USER_NAME, 0, TAG_ANY);
+	vp = fr_pair_find_by_da(request->packet->vps, attr_digest_user_name, TAG_ANY);
 	if (!vp) {
 		REDEBUG("No Digest-User-Name: Cannot perform Digest authentication");
 		return RLM_MODULE_INVALID;
 	}
-	memcpy(&a1[0], vp->vp_octets, vp->length);
-	a1_len = vp->length;
+	memcpy(&a1[0], vp->vp_octets, vp->vp_length);
+	a1_len = vp->vp_length;
 
 	a1[a1_len] = ':';
 	a1_len++;
 
-	vp = pairfind(request->packet->vps, PW_DIGEST_REALM, 0, TAG_ANY);
+	vp = fr_pair_find_by_da(request->packet->vps, attr_digest_realm, TAG_ANY);
 	if (!vp) {
 		REDEBUG("No Digest-Realm: Cannot perform Digest authentication");
 		return RLM_MODULE_INVALID;
 	}
-	memcpy(&a1[a1_len], vp->vp_octets, vp->length);
-	a1_len += vp->length;
+	memcpy(&a1[a1_len], vp->vp_octets, vp->vp_length);
+	a1_len += vp->vp_length;
 
 	a1[a1_len] = ':';
 	a1_len++;
 
-	if (passwd->da->attr == PW_CLEARTEXT_PASSWORD) {
-		memcpy(&a1[a1_len], passwd->vp_octets, passwd->length);
-		a1_len += passwd->length;
+	if (passwd->da == attr_cleartext_password) {
+		memcpy(&a1[a1_len], passwd->vp_octets, passwd->vp_length);
+		a1_len += passwd->vp_length;
 		a1[a1_len] = '\0';
 		RDEBUG2("A1 = %s", a1);
 	} else {
@@ -306,14 +328,14 @@ static rlm_rcode_t mod_authenticate(UNUSED void *instance, REQUEST *request)
 	 *	See which variant we calculate.
 	 *	Assume MD5 if no Digest-Algorithm attribute received
 	 */
-	algo = pairfind(request->packet->vps, PW_DIGEST_ALGORITHM, 0, TAG_ANY);
+	algo = fr_pair_find_by_da(request->packet->vps, attr_digest_algorithm, TAG_ANY);
 	if ((!algo) ||
 	    (strcasecmp(algo->vp_strvalue, "MD5") == 0)) {
 		/*
 		 *	Set A1 to Digest-HA1 if no User-Password found
 		 */
-		if (passwd->da->attr == PW_DIGEST_HA1) {
-			if (fr_hex2bin(&a1[0], passwd->vp_strvalue, 16) != 16) {
+		if (passwd->da == attr_digest_ha1) {
+			if (fr_hex2bin(&a1[0], sizeof(a1), passwd->vp_strvalue, passwd->vp_length) != 16) {
 				RDEBUG2("Invalid text in Digest-HA1");
 				return RLM_MODULE_INVALID;
 			}
@@ -326,7 +348,7 @@ static rlm_rcode_t mod_authenticate(UNUSED void *instance, REQUEST *request)
 		 *	If we find Digest-HA1, we assume it contains
 		 *	H(A1).
 		 */
-		if (passwd->da->attr == PW_CLEARTEXT_PASSWORD) {
+		if (passwd->da == attr_cleartext_password) {
 			fr_md5_calc(hash, &a1[0], a1_len);
 			fr_bin2hex((char *) &a1[0], hash, 16);
 		} else {	/* MUST be Digest-HA1 */
@@ -340,17 +362,17 @@ static rlm_rcode_t mod_authenticate(UNUSED void *instance, REQUEST *request)
 		/*
 		 *	Tack on the Digest-Nonce. Length must be even
 		 */
-		if ((nonce->length & 1) != 0) {
+		if ((nonce->vp_length & 1) != 0) {
 			REDEBUG("Received Digest-Nonce hex string with invalid length: Cannot perform Digest authentication");
 			return RLM_MODULE_INVALID;
 		}
-		memcpy(&a1[a1_len], nonce->vp_octets, nonce->length);
-		a1_len += nonce->length;
+		memcpy(&a1[a1_len], nonce->vp_octets, nonce->vp_length);
+		a1_len += nonce->vp_length;
 
 		a1[a1_len] = ':';
 		a1_len++;
 
-		vp = pairfind(request->packet->vps, PW_DIGEST_CNONCE, 0, TAG_ANY);
+		vp = fr_pair_find_by_da(request->packet->vps, attr_digest_cnonce, TAG_ANY);
 		if (!vp) {
 			REDEBUG("No Digest-CNonce: Cannot perform Digest authentication");
 			return RLM_MODULE_INVALID;
@@ -359,80 +381,79 @@ static rlm_rcode_t mod_authenticate(UNUSED void *instance, REQUEST *request)
 		/*
 		 *      Digest-CNonce length must be even
 		 */
-		if ((vp->length & 1) != 0) {
+		if ((vp->vp_length & 1) != 0) {
 			REDEBUG("Received Digest-CNonce hex string with invalid length: Cannot perform Digest authentication");
 			return RLM_MODULE_INVALID;
 		}
-		memcpy(&a1[a1_len], vp->vp_octets, vp->length);
-		a1_len += vp->length;
+		memcpy(&a1[a1_len], vp->vp_octets, vp->vp_length);
+		a1_len += vp->vp_length;
 
-	} else if ((algo != NULL) &&
-		   (strcasecmp(algo->vp_strvalue, "MD5") != 0)) {
+	} else if (strcasecmp(algo->vp_strvalue, "MD5") != 0) {
 		/*
 		 *	We check for "MD5-sess" and "MD5".
 		 *	Anything else is an error.
 		 */
-		REDEBUG("Unknown Digest-Algorithm \"%s\": Cannot perform Digest authentication", vp->vp_strvalue);
+		REDEBUG("%pP - Unknown Digest-Algorithm: Cannot perform Digest authentication", vp);
 		return RLM_MODULE_INVALID;
 	}
 
 	/*
 	 *	A2 = Digest-Method ":" Digest-URI
 	 */
-	vp = pairfind(request->packet->vps, PW_DIGEST_METHOD, 0, TAG_ANY);
+	vp = fr_pair_find_by_da(request->packet->vps, attr_digest_method, TAG_ANY);
 	if (!vp) {
 		REDEBUG("No Digest-Method: Cannot perform Digest authentication");
 		return RLM_MODULE_INVALID;
 	}
-	memcpy(&a2[0], vp->vp_octets, vp->length);
-	a2_len = vp->length;
+	memcpy(&a2[0], vp->vp_octets, vp->vp_length);
+	a2_len = vp->vp_length;
 
 	a2[a2_len] = ':';
 	a2_len++;
 
-	vp = pairfind(request->packet->vps, PW_DIGEST_URI, 0, TAG_ANY);
+	vp = fr_pair_find_by_da(request->packet->vps, attr_digest_uri, TAG_ANY);
 	if (!vp) {
 		REDEBUG("No Digest-URI: Cannot perform Digest authentication");
 		return RLM_MODULE_INVALID;
 	}
-	memcpy(&a2[a2_len], vp->vp_octets, vp->length);
-	a2_len += vp->length;
+	memcpy(&a2[a2_len], vp->vp_octets, vp->vp_length);
+	a2_len += vp->vp_length;
 
 	/*
 	 *  QOP is "auth-int", tack on ": Digest-Body-Digest"
 	 */
-	qop = pairfind(request->packet->vps, PW_DIGEST_QOP, 0, TAG_ANY);
-	if ((qop != NULL) &&
-	    (strcasecmp(qop->vp_strvalue, "auth-int") == 0)) {
-		VALUE_PAIR *body;
+	qop = fr_pair_find_by_da(request->packet->vps, attr_digest_qop, TAG_ANY);
+	if (qop) {
+		if (strcasecmp(qop->vp_strvalue, "auth-int") == 0) {
+			VALUE_PAIR *body;
 
-		/*
-		 *	Add in Digest-Body-Digest
-		 */
-		a2[a2_len] = ':';
-		a2_len++;
+			/*
+			 *	Add in Digest-Body-Digest
+			 */
+			a2[a2_len] = ':';
+			a2_len++;
 
-		/*
-		 *  Must be a hex representation of an MD5 digest.
-		 */
-		body = pairfind(request->packet->vps, PW_DIGEST_BODY_DIGEST, 0, TAG_ANY);
-		if (!body) {
-			REDEBUG("No Digest-Body-Digest: Cannot perform Digest authentication");
+			/*
+			 *  Must be a hex representation of an MD5 digest.
+			 */
+			body = fr_pair_find_by_da(request->packet->vps, attr_digest_body_digest, TAG_ANY);
+			if (!body) {
+				REDEBUG("No Digest-Body-Digest: Cannot perform Digest authentication");
+				return RLM_MODULE_INVALID;
+			}
+
+			if ((a2_len + body->vp_length) > sizeof(a2)) {
+				REDEBUG("Digest-Body-Digest is too long");
+				return RLM_MODULE_INVALID;
+			}
+
+			memcpy(a2 + a2_len, body->vp_octets, body->vp_length);
+			a2_len += body->vp_length;
+
+		} else if (strcasecmp(qop->vp_strvalue, "auth") != 0) {
+			REDEBUG("%pP - Unknown value: Cannot perform Digest authentication", qop);
 			return RLM_MODULE_INVALID;
 		}
-
-		if ((a2_len + body->length) > sizeof(a2)) {
-			REDEBUG("Digest-Body-Digest is too long");
-			return RLM_MODULE_INVALID;
-		}
-
-		memcpy(a2 + a2_len, body->vp_octets, body->length);
-		a2_len += body->length;
-
-	} else if ((qop != NULL) &&
-		   (strcasecmp(qop->vp_strvalue, "auth") != 0)) {
-		REDEBUG("Unknown Digest-QOP \"%s\": Cannot perform Digest authentication", qop->vp_strvalue);
-		return RLM_MODULE_INVALID;
 	}
 
 	a2[a2_len] = '\0';
@@ -443,9 +464,8 @@ static rlm_rcode_t mod_authenticate(UNUSED void *instance, REQUEST *request)
 	 *     Compute MD5 if Digest-Algorithm == "MD5-Sess",
 	 *     or if we found a User-Password.
 	 */
-	if (((algo != NULL) &&
-	     (strcasecmp(algo->vp_strvalue, "MD5-Sess") == 0)) ||
-	    (passwd->da->attr == PW_CLEARTEXT_PASSWORD)) {
+	if (((algo != NULL) && (strcasecmp(algo->vp_strvalue, "MD5-Sess") == 0)) ||
+	    (passwd->da == attr_cleartext_password)) {
 		a1[a1_len] = '\0';
 		fr_md5_calc(&hash[0], &a1[0], a1_len);
 	} else {
@@ -454,7 +474,7 @@ static rlm_rcode_t mod_authenticate(UNUSED void *instance, REQUEST *request)
 	fr_bin2hex((char *) kd, hash, sizeof(hash));
 
 #ifndef NRDEBUG
-	if (debug_flag > 1) {
+	if (rad_debug_lvl > 1) {
 		fr_printf_log("H(A1) = ");
 		for (i = 0; i < 16; i++) {
 			fr_printf_log("%02x", hash[i]);
@@ -467,8 +487,8 @@ static rlm_rcode_t mod_authenticate(UNUSED void *instance, REQUEST *request)
 	kd[kd_len] = ':';
 	kd_len++;
 
-	memcpy(&kd[kd_len], nonce->vp_octets, nonce->length);
-	kd_len += nonce->length;
+	memcpy(&kd[kd_len], nonce->vp_octets, nonce->vp_length);
+	kd_len += nonce->vp_length;
 
 	/*
 	 *	No QOP defined.  Do RFC 2069 compatibility.
@@ -486,30 +506,30 @@ static rlm_rcode_t mod_authenticate(UNUSED void *instance, REQUEST *request)
 		kd[kd_len] = ':';
 		kd_len++;
 
-		vp = pairfind(request->packet->vps, PW_DIGEST_NONCE_COUNT, 0, TAG_ANY);
+		vp = fr_pair_find_by_da(request->packet->vps, attr_digest_nonce_count, TAG_ANY);
 		if (!vp) {
 			REDEBUG("No Digest-Nonce-Count: Cannot perform Digest authentication");
 			return RLM_MODULE_INVALID;
 		}
-		memcpy(&kd[kd_len], vp->vp_octets, vp->length);
-		kd_len += vp->length;
+		memcpy(&kd[kd_len], vp->vp_octets, vp->vp_length);
+		kd_len += vp->vp_length;
 
 		kd[kd_len] = ':';
 		kd_len++;
 
-		vp = pairfind(request->packet->vps, PW_DIGEST_CNONCE, 0, TAG_ANY);
+		vp = fr_pair_find_by_da(request->packet->vps, attr_digest_cnonce, TAG_ANY);
 		if (!vp) {
 			REDEBUG("No Digest-CNonce: Cannot perform Digest authentication");
 			return RLM_MODULE_INVALID;
 		}
-		memcpy(&kd[kd_len], vp->vp_octets, vp->length);
-		kd_len += vp->length;
+		memcpy(&kd[kd_len], vp->vp_octets, vp->vp_length);
+		kd_len += vp->vp_length;
 
 		kd[kd_len] = ':';
 		kd_len++;
 
-		memcpy(&kd[kd_len], qop->vp_octets, qop->length);
-		kd_len += qop->length;
+		memcpy(&kd[kd_len], qop->vp_octets, qop->vp_length);
+		kd_len += qop->vp_length;
 	}
 
 	/*
@@ -523,7 +543,7 @@ static rlm_rcode_t mod_authenticate(UNUSED void *instance, REQUEST *request)
 	fr_bin2hex((char *) kd + kd_len, hash, sizeof(hash));
 
 #ifndef NRDEBUG
-	if (debug_flag > 1) {
+	if (rad_debug_lvl > 1) {
 		fr_printf_log("H(A2) = ");
 		for (i = 0; i < 16; i++) {
 			fr_printf_log("%02x", hash[i]);
@@ -546,42 +566,54 @@ static rlm_rcode_t mod_authenticate(UNUSED void *instance, REQUEST *request)
 	/*
 	 *	Get the binary value of Digest-Response
 	 */
-	vp = pairfind(request->packet->vps, PW_DIGEST_RESPONSE, 0, TAG_ANY);
+	vp = fr_pair_find_by_da(request->packet->vps, attr_digest_response, TAG_ANY);
 	if (!vp) {
 		REDEBUG("No Digest-Response attribute in the request.  Cannot perform digest authentication");
 		return RLM_MODULE_INVALID;
 	}
 
-	if (fr_hex2bin(&hash[0], vp->vp_strvalue, vp->length >> 1) != (vp->length >> 1)) {
+	if (fr_hex2bin(&hash[0], sizeof(hash), vp->vp_strvalue, vp->vp_length) != (vp->vp_length >> 1)) {
 		RDEBUG2("Invalid text in Digest-Response");
 		return RLM_MODULE_INVALID;
 	}
 
-#ifndef NRDEBUG
-	if (debug_flag > 1) {
-		fr_printf_log("EXPECTED ");
-		for (i = 0; i < 16; i++) {
-			fr_printf_log("%02x", kd[i]);
-		}
-		fr_printf_log("\n");
+	if (RDEBUG_ENABLED3) {
+		char buffer[33];
 
-		fr_printf_log("RECEIVED ");
-		for (i = 0; i < 16; i++) {
-			fr_printf_log("%02x", hash[i]);
-		}
-		fr_printf_log("\n");
+		fr_bin2hex(buffer, kd, 16);
+
+		RDEBUG3("Comparing hashes, received: %s, calculated: %s", vp->vp_strvalue, buffer);
 	}
-#endif
 
 	/*
 	 *  And finally, compare the digest in the packet with KD.
 	 */
-	if (memcmp(&kd[0], &hash[0], 16) == 0) {
-		return RLM_MODULE_OK;
-	}
+	if (memcmp(&kd[0], &hash[0], 16) == 0) return RLM_MODULE_OK;
 
-	RDEBUG("FAILED authentication");
+	REDEBUG("FAILED authentication");
 	return RLM_MODULE_REJECT;
+}
+
+static int mod_bootstrap(void *instance, CONF_SECTION *conf)
+{
+	char const		*name;
+	rlm_digest_t		*inst = instance;
+
+	/*
+	 *	Create the dynamic translation.
+	 */
+	name = cf_section_name2(conf);
+	if (!name) name = cf_section_name1(conf);
+	inst->name = name;
+
+	if (fr_dict_enum_add_alias_next(attr_auth_type, inst->name) < 0) {
+		PERROR("Failed adding %s alias", attr_auth_type->name);
+		return -1;
+	}
+	inst->auth_type = fr_dict_enum_by_alias(attr_auth_type, inst->name, -1);
+	rad_assert(inst->auth_type);
+
+	return 0;
 }
 
 /*
@@ -593,22 +625,14 @@ static rlm_rcode_t mod_authenticate(UNUSED void *instance, REQUEST *request)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-module_t rlm_digest = {
-	RLM_MODULE_INIT,
-	"digest",
-	RLM_TYPE_CHECK_CONFIG_SAFE,   	/* type */
-	0,
-	NULL,				/* CONF_PARSER */
-	NULL,				/* instantiation */
-	NULL,				/* detach */
-	{
-		mod_authenticate,	/* authentication */
-		mod_authorize, 	/* authorization */
-		NULL,			/* preaccounting */
-		NULL,			/* accounting */
-		NULL,			/* checksimul */
-		NULL,			/* pre-proxy */
-		NULL,			/* post-proxy */
-		NULL			/* post-auth */
+extern rad_module_t rlm_digest;
+rad_module_t rlm_digest = {
+	.magic		= RLM_MODULE_INIT,
+	.name		= "digest",
+	.inst_size	= sizeof(rlm_digest_t),
+	.bootstrap	= mod_bootstrap,
+	.methods = {
+		[MOD_AUTHENTICATE]	= mod_authenticate,
+		[MOD_AUTHORIZE]		= mod_authorize
 	},
 };

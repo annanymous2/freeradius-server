@@ -972,52 +972,14 @@ server, the radius server will perform authorization and authentication based
 on a series of modules that are defined in radiusd.conf.  For example, the
 module defined as ldap, will be used to make connections to the LDAP directory.
 
-An example is listed below::
-
-    ldap {
-    server = localhost
-    identity = cn=freeradius,ou=admins,ou=radius,dc=mydomain,dc=com
-    password = example
-    #this is the basedn to do searches on a user
-    basedn = ou=users,ou=radius,dc=mydomain,dc=com
-    #notice the username is the stripped user-name or user-name
-    filter = (uid=%{Stripped-User-Name:-{User-Name}})
-    start_tls = no
-    tls_mode = no
-    #this maps ldap attributetypes to radius attributes
-    dictionary_mapping = ${raddbdir}/ldap.attrmap
-    ldap_cache_timeout = 120
-    ldap_cache_size = 0
-    ldap_connections_number = 10
-    #password_header = {clear}
-    #While integrating FreeRADIUS with Novell eDirectory, set
-    #'password_attribute = nspmpassword' in order to use the universal password
-    #of the eDirectory users for RADIUS authentication. This will work only if
-    #FreeRADIUS is configured to build with --with-edir option.
-    password_attribute = userPassword
-    #Comment out the following to disable the eDirectory account policy check and
-    #intruder detection. This will work only if FreeRADIUS is configured to build
-    #with --with-edir option.
-    #edir_account_policy_check=no
-    groupname_attribute = radiusGroupName
-    groupmembership_filter = (&(uid=%{Stripped-User-Name:-%{User-Name}})
-    (objectclass=radiusprofile))
-    groupmembership_attribute = radiusGroupName
-    timeout = 3
-    timelimit = 5
-    net_timeout = 1
-    compare_check_items = no
-    #access_attr_used_for_allow = yes
-    }
+An example is seen in raddb/mods-config/ldap::
 
 The first thing that is done is authorization of the user.  The radius server
 will process the modules in the order specified in the authorization section of
 radiusd.conf.  Currently, they are in the following order.
 
-1) preprocess
-2) suffix
-3) files
-4) ldap
+1) files
+2) ldap
 
 The first module will be preprocess.  This will first check the huntgroups of
 the user coming in.  The huntgroups are defined in the file huntgroups and they
@@ -1036,45 +998,6 @@ The preprocess module may also use the hints file, to load hints to the radius
 server, and add additional hacks that are based on the type of request that
 comes in.  This is to help with certain NAS's that don't conform to radius
 RFC's.  Check the comments in radiusd.conf for an explanation on those.
-
-The second module is suffix.  This event will determine which realm the user is
-in, based on the User-Name attribute.  It is currently setup to split the
-username at the occurence of the @symbol.  For example, the username of
-example@mydomain.com, will be split into example and mydomain.com.  The realm
-is then checked against the file proxy.conf, which will determine what actions
-should be taken for that realm.  Certain realms can be setup to be proxied to a
-different radius server or set to authenticate locally.  Also, the username can
-be setup to be stripped from the realm or left intact.  An example of
-proxy.conf, is listed below.  If the realm is to be proxied, then a secret is
-needed, which is the secret of the radius server it is to be proxied to.
-By default the User-Name will be stripped, unless the nostrip option is set.
-
-Currently we will not be using realms with our users, but adding this ability
-in the future will be much easier with already incorporating proxy.conf into the
-setup::
-
-    proxy server {
-            synchronous = no
-            retry_delay = 5
-            retry_count = 3
-            dead_time = 120
-            servers_per_realm = 15
-            default_fallback = yes
-    }
-
-    realm NULL {
-            type            = radius
-            authhost        = LOCAL
-            accthost        = LOCAL
-            #secret         = testing123
-    }
-
-    realm DEFAULT {
-            type            = radius
-            authhost        = LOCAL
-            accthost        = LOCAL
-            #secret         = testing123
-    }
 
 The next module is files, which is commonly know as the users file.  The users
 file will start with either a username to determine how to authorize a specific
@@ -1170,7 +1093,7 @@ the machine.  The first one is done in a regular detail file as defined in the
 following::
 
     detail detail1 {
-        filename = ${radacctdir}/%{Client-IP-Address}/detail-%Y%m%d
+        filename = ${radacctdir}/%{Packet-Src-IP-Address}/detail-%Y%m%d
         permissions = 0600
         dir_permissions = 0755
     }
@@ -1449,214 +1372,6 @@ a look at all the configuration files, they are heavily documented so you may
 wish to read through them all before making and changes.
 
 
-edit radiusd.conf::
-
-    ----Begin radiusd.conf----
-    ##
-    ## radiusd.conf	-- FreeRADIUS server configuration file.
-    ##
-
-    prefix = /usr/local
-    exec_prefix = ${prefix}
-    sysconfdir = /usr/local/etc/raddb
-    localstatedir = ${prefix}/var
-    sbindir = ${exec_prefix}/sbin
-    logdir = /var/log
-    raddbdir = /usr/local/etc/raddb
-    radacctdir = /var/log/radacct
-
-    #  Location of config and logfiles.
-    confdir = ${raddbdir}
-    run_dir = ${localstatedir}/run/radiusd
-    log_file = ${logdir}/radius.log
-    libdir = ${exec_prefix}/lib
-    pidfile = ${run_dir}/radiusd.pid
-
-    #user = nobody
-    #group = nobody
-
-    max_request_time = 30
-    delete_blocked_requests = no
-    cleanup_delay = 5
-    max_requests = 0
-    bind_address = *
-    port = 0
-    hostname_lookups = no
-    allow_core_dumps = no
-    log_stripped_names = no
-    log_auth = no
-    log_auth_badpass = no
-    log_auth_goodpass = no
-
-    #  The program to execute to do concurrency checks.
-    #checkrad = ${sbindir}/checkrad
-
-    security {
-            max_attributes = 200
-            reject_delay = 0
-            status_server = no
-    }
-
-    proxy_requests  = yes
-    $INCLUDE  ${confdir}/proxy.conf
-
-    $INCLUDE  ${confdir}/clients.conf
-
-    thread pool {
-            start_servers = 5
-            max_servers = 32
-            min_spare_servers = 3
-            max_spare_servers = 10
-            max_requests_per_server = 0
-    }
-
-    modules {
-
-            ldap {
-            server = "localhost"
-            identity = "uid=freeradius,ou=admins,ou=radius,dc=mydomain,dc=com"
-            password = example
-            basedn = "ou=users,ou=radius,dc=mydomain,dc=com"
-            filter = "(&(uid=%{Stripped-User-Name:-%{User-Name}})
-    (objectclass=radiusprofile)"
-            start_tls = no
-            tls_mode = no
-            #default_profile = "uid=dial,ou=profiles,ou=radius,dc=mydomain,dc=com"
-            #profile_attribute = "radiusProfileDn"
-            dictionary_mapping = ${raddbdir}/ldap.attrmap
-            ldap_cache_timeout = 120
-            ldap_cache_size = 0
-            ldap_connections_number = 10
-            #password_header = "{clear}"
-            password_attribute = userPassword
-            groupname_attribute = radiusGroupName
-            groupmembership_filter = "(&(uid=%{Stripped-User-Name:-%{User-Name}}))
-    (objectclass=radiusProfile)"
-            groupmembership_attribute = radiusGroupName
-            timeout = 3
-            timelimit = 5
-            net_timeout = 1
-            compare_check_items = no
-            #access_attr_used_for_allow = yes
-            }
-
-            realm suffix {
-                    format = suffix
-                    delimiter = "@"
-            }
-
-            preprocess {
-                    huntgroups = ${confdir}/huntgroups
-                    #hints = ${confdir}/hints
-                    with_ascend_hack = no
-                    ascend_channels_per_line = 23
-                    with_ntdomain_hack = no
-                    with_specialix_jetstream_hack = no
-                    with_cisco_vsa_hack = no
-            }
-
-            files {
-                    usersfile = ${confdir}/users
-                    #acctusersfile = ${confdir}/acct_users
-                    compat = no
-                    #use old style users
-            }
-            # regular detail files
-            detail detail1 {
-                    filename = ${radacctdir}/%{Client-IP-Address}/detail-%Y%m%d
-                    permissions = 0600
-                    dir_permissions = 0755
-            }
-            # temp detail file to replicate to accountrad
-            detail detail2 {
-                    filename = ${radacctdir}/detail-combined
-                    permissions = 0600
-                    dir_permissions = 0755
-                    locking = yes
-            }
-
-            #radutmp {
-            #	filename = ${logdir}/radutmp
-            #	permissions =  0600
-            #	caller_id = "yes"
-            #}
-
-            #radutmp sradutmp {
-            #	filename = ${logdir}/sradutmp
-            #	permissions =  0644
-            #	caller_id = "no"
-            #}
-
-            #attr_filter {
-            #	attrsfile = ${confdir}/attrs
-            #}
-
-
-            # The "always" module is here for debugging purposes. Each
-            # instance simply returns the same result, always, without
-            # doing anything.
-            always fail {
-                    rcode = fail
-            }
-            always reject {
-                    rcode = reject
-            }
-            always ok {
-                    rcode = ok
-                    simulcount = 0
-                    mpp = no
-            }
-
-            #
-            #  The 'expression' module current has no configuration.
-            expr {
-            }
-
-    }
-
-    instantiate {
-            expr
-    }
-
-    authorize {
-            preprocess
-            suffix
-            files
-            ldap
-    }
-
-    authenticate {
-            authtype LDAP {
-                    ldap
-            }
-    }
-
-    preacct {
-            preprocess
-            suffix
-            files
-    }
-
-    accounting {
-            acct_unique
-            detail1
-            detail2
-            #radutmp
-            #sradutmp
-    }
-
-
-    #session {
-            #radutmp
-    #}
-
-    #post-auth {
-            #  Get an address from the IP Pool.
-            #main_pool
-    #}
-    ----End radiusd.conf----
-
-
 edit huntgroups to specify a NAS to a huntgroup::
 
     ----Begin huntgroups----
@@ -1667,33 +1382,6 @@ edit huntgroups to specify a NAS to a huntgroup::
     dialup		NAS-IP-Address == 10.10.10.2
     dialup		NAS-IP-Address == 10.10.10.3
     ----End huntgroups----
-
-* edit proxy.conf to setup the different realms::
-
-    ----Begin proxy.conf----
-    proxy server {
-            synchronous = no
-            retry_delay = 5
-            retry_count = 3
-            dead_time = 120
-            servers_per_realm = 15
-            default_fallback = yes
-    }
-
-    realm NULL {
-            type		= radius
-            authhost        = LOCAL
-            accthost        = LOCAL
-            #secret		= testing123
-    }
-
-    realm DEFAULT {
-            type		= radius
-            authhost        = LOCAL
-            accthost        = LOCAL
-            #secret		= testing123
-    }
-    ----End proxy.conf----
 
     -edit clients.conf to setup the NAS's that can talk to it
 
@@ -1870,7 +1558,7 @@ FREERADIUS
 ++++++++++
 
 * _`FreeRADIUS`: http://www.freeradius.org
-* _`FreeRADIUS Documentation`: http://www.freeradius.org/radiusd/doc
+* _`FreeRADIUS Documentation`: http://freeradius.org/documentation/
 * _`FreeRADIUS Wiki`: http://wiki.freeradius.org/
 
 OPENLDAP
@@ -1882,9 +1570,9 @@ OPENLDAP
 RFCs
 ++++
 
-* _`RFC2865: RADIUS Authentication`: http://www.freeradius.org/radiusd/doc/rfc/rfc2865.txt
-* _`RFC2866: RADIUS Accounting`: http://www.freeradius.org/radiusd/doc/rfc/rfc2866.txt
-* _`RFC2869: RADIUS Extentions`: http://www.freeradius.org/radiusd/doc/rfc/rfc2869.txt
+* _`RFC2865: RADIUS Authentication`: http://freeradius.org/rfc/rfc2865.txt
+* _`RFC2866: RADIUS Accounting`: http://freeradius.org/rfc/rfc2866.txt
+* _`RFC2869: RADIUS Extentions`: http://freeradius.org/rfc/rfc2869.txt
 * _`RFC2251: LDAP v3`: http://www.ietf.org/rfc/rfc2251.txt
 * _`RFC2252: LDAP v3 Attribute Syntax Definitions`: http://www.ietf.org/rfc/rfc2252.txt
 * _`RFC2253: LDAP UTF-8 String Representation of Distinguishe d Names (DNs)`: http://www.ietf.org/rfc/rfc2252.txt

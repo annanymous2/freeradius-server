@@ -14,7 +14,7 @@ server proxy-inner-tunnel {
 #  This example is very simple.  All inner tunnel requests get
 #  proxied to another RADIUS server.
 #
-authorize {
+recv Access-Request {
 	#
 	#  Do other things here, as necessary.
 	#
@@ -24,11 +24,11 @@ authorize {
 
 	update control {
 		#  You should update this to be one of your realms.
-		Proxy-To-Realm := "example.com"
+		&Proxy-To-Realm := "example.com"
 	}
 }
 
-authenticate {
+authenticate eap {
 	#
 	#  This is necessary so that the inner tunnel EAP-MSCHAPv2
 	#  method can be called.  That method takes care of turning

@@ -9,29 +9,43 @@
 ######################################################################
 
 server vmps {
+	#
+	#  In v4, all "server" sections MUST start with a "namespace"
+	#  parameter.  This tells the server which protocol is being used.
+	#
+	#  All of the subsequent "listen" sections in this server will
+	#  only accept packets for that protocol.
+	#
+	namespace = vmps
+
 	listen {
-		# VMPS sockets only support IPv4 addresses.
-		ipaddr = *
+		transport = udp
 
-		#  Port on which to listen.
-		#  Allowed values are:
-		#	integer port number
-		#	1589 is the default VMPS port.
-		port = 1589
+		#  Type of VMPS packets to listen for.
+		type = VMPS-Join-Request
+		type = VMPS-Reconfirm-Request
 
-		#  Type of packets to listen for.  Here, it is VMPS.
-		type = vmps
+		udp {
+			# VMPS sockets only support IPv4 addresses.
+			ipaddr = *
 
-		#  Some systems support binding to an interface, in addition
-		#  to the IP address.  This feature isn't strictly necessary,
-		#  but for sites with many IP addresses on one interface,
-		#  it's useful to say "listen on all addresses for
-		#  eth0".
-		#
-		#  If your system does not support this feature, you will
-		#  get an error if you try to use it.
-		#
-		#	interface = eth0
+			#  Port on which to listen.
+			#  Allowed values are:
+			#	integer port number
+			#	1589 is the default VMPS port.
+			port = 1589
+
+			#  Some systems support binding to an interface, in addition
+			#  to the IP address.  This feature isn't strictly necessary,
+			#  but for sites with many IP addresses on one interface,
+			#  it's useful to say "listen on all addresses for
+			#  eth0".
+			#
+			#  If your system does not support this feature, you will
+			#  get an error if you try to use it.
+			#
+			#	interface = eth0
+		}
 	}
 
 	#  If you have switches that are allowed to send VMPS, but NOT
@@ -41,25 +55,22 @@ server vmps {
 	#  list a "secret" for each client, though that secret will not
 	#  be used for anything.
 
-
-	#  And the REAL contents.  This section is just like the
-	#  "post-auth" section of radiusd.conf.  In fact, it calls the
-	#  "post-auth" component of the modules that are listed here.
-	#  But it's called "vmps" to highlight that it's for VMPS.
 	#
-	vmps {
+	#  This section is called when it receives a VMPS-Join-Request.
+	#
+	recv VMPS-Join-Request {
 		#
 		#  Some requests may not have a MAC address.  Try to
 		#  create one using other attributes.
-		if (!VMPS-Mac) {
-			if (VMPS-Ethernet-Frame =~ /0x.{12}(..)(..)(..)(..)(..)(..).*/) {
+		if (!&VMPS-Mac) {
+			if (&VMPS-Ethernet-Frame =~ /0x.{12}(..)(..)(..)(..)(..)(..).*/) {
 				update request {
-					VMPS-Mac = "%{1}:%{2}:%{3}:%{4}:%{5}:%{6}"
+					&VMPS-Mac = "%{1}:%{2}:%{3}:%{4}:%{5}:%{6}"
 				}
 			}
 			else {
 				update request {
-					VMPS-Mac = "%{VMPS-Cookie}"
+					&VMPS-Mac = &VMPS-Cookie
 				}
 			}
 		}
@@ -73,26 +84,50 @@ server vmps {
 
 		# required VMPS reply attributes
 		update reply {
-			VMPS-Packet-Type = VMPS-Join-Response
-			VMPS-Cookie = "%{VMPS-Mac}"
+			&VMPS-Packet-Type = VMPS-Join-Response
+			&VMPS-Cookie = &VMPS-Mac
 
-			VMPS-VLAN-Name = "please_use_real_vlan_here"
+			&VMPS-VLAN-Name = "please_use_real_vlan_here"
 
 			#
 			#  If you have VLAN's in a database, you can select
 			#  the VLAN name based on the MAC address.
 			#
-			#VMPS-VLAN-Name = "%{sql:select ... where mac='%{VMPS-Mac}'}"
-		}
-
-		# correct reply packet type for reconfirmation requests
-		#
-		if (VMPS-Packet-Type == VMPS-Reconfirm-Request){
-			update reply {
-				VMPS-Packet-Type := VMPS-Reconfirm-Response
-			}
+			#&VMPS-VLAN-Name = "%{sql:select ... where mac='%{VMPS-Mac}'}"
 		}
 	}
 
-	# Proxying of VMPS requests is NOT supported.
+	#
+	#  This section is called when it sends a VMPS-Join-Response.
+	#
+	send VMPS-Join-Response {
+	     ok
+	}
+
+	#
+	#  This section is called when it receives a VMPS-Reconfirm-Request.
+	#
+	recv VMPS-Reconfirm-Request {
+		#
+		#  Add contents here!
+		#
+		ok
+	}
+
+	#
+	#  This section is called when it receives a VMPS-Reconfirm-Response
+	#
+	recv VMPS-Reconfirm-Response {
+		#
+		#  Add contents here!
+		#
+		ok
+	}
+
+	#
+	#  This section is called when not responding to packets.
+	#
+	send Do-Not-Respond {
+	     ok
+	}
 }

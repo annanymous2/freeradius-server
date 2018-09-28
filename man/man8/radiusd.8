@@ -8,17 +8,14 @@ radiusd - Authentication, Authorization and Accounting server
 .IR config_directory ]
 .RB [ \-f ]
 .RB [ \-h ]
-.RB [ \-i
-.IR ip-address ]
 .RB [ \-l
 .IR log_file ]
 .RB [ \-m ]
 .RB [ \-n
 .IR name ]
-.RB [ \-p
-.IR port ]
 .RB [ \-s ]
 .RB [ \-t ]
+.RB [ \-T ]
 .RB [ \-v ]
 .RB [ \-x ]
 .RB [ \-X ]
@@ -45,11 +42,11 @@ server will exit with a zero status code.
 Note that there are limitations to this check.  Due to the
 complexities involved in \fIalmost\fP starting a RADIUS server, these
 checks are necessarily incomplete.  The server can return a zero
-status code when run with -C, but may still exit with an error when
+status code when run with \-C, but may still exit with an error when
 run normally.
 
-See the output of 
-.B "radiusd -XC"
+See the output of
+.B "radiusd \-XC"
 for an informative list of which modules are checked for correct
 configuration, and which modules are skipped, and therefore not checked.
 .IP "\-d \fIconfig directory\fP"
@@ -59,14 +56,6 @@ files such as the \fIdictionary\fP and the \fIusers\fP files.
 Do not fork, stay running as a foreground process.
 .IP \-h
 Print usage help information.
-.IP "\-i \fIip-address\fP"
-Defines which IP address that the server uses for sending and
-receiving packets.
-
-If this command-line option is given, then the "bind_address" and all
-"listen{}" entries in \fIradiusd.conf\fP are ignored.
-
-This option MUST be used in conjunction with "-p".
 .IP "\-l \fIlog_file\fP"
 Defaults to \fI${logdir}/radius.log\fP. \fBRadiusd\fP writes it's logging
 information to this file. If log_file is the string "stdout" logging will
@@ -76,14 +65,6 @@ On SIGINT or SIGQUIT exit cleanly instead of immediately.
 This is most useful for when running the server with "valgrind".
 .IP "\-n \fIname\fP"
 Read \fIraddb/name.conf\fP instead of \fIraddb/radiusd.conf\fP.
-.IP "\-p \fIport\fP"
-Defines which port is used for receiving authentication packets.
-Accounting packets are received on "port + 1".
-
-When this command-line option is given, all "listen" sections in
-\fIradiusd.conf\fP are ignored.
-
-This option MUST be used in conjunction with "-i".
 .IP \-s
 Run in "single server" mode.  The server normally runs with multiple
 threads and/or processes, which can lower its response time to
@@ -93,16 +74,18 @@ single server mode, the server will also not "daemonize"
 (auto-background) itself.
 .IP \-t
 Do not spawn threads.
+.IP \-T
+Always add timestamps to log messages.
 .IP \-v
 Print server version information and exit.
 .IP \-X
-Debugging mode.  Equivalent to "-sfxx -l stdout".  When trying to
-understand how the server works, ALWAYS run it with "radiusd -X".
+Debugging mode.  Equivalent to "\-sfxx \-l stdout".  When trying to
+understand how the server works, ALWAYS run it with "radiusd \-X".
 For production servers, use "raddebug"
 .IP \-x
 Finer-grained debug mode. In this mode the server will print details
 of every request on it's \fBstdout\fP output. You can specify this
-option multiple times (-x -x or -xx) to get more detailed output.
+option multiple times (\-x \-x or \-xx) to get more detailed output.
 .SH DEBUGGING
 The default configuration is set to work in the widest possible
 circumstances.  It requires minimal changes for your system.
@@ -113,7 +96,7 @@ guaranteed method of failure.  Instead, we STRONGLY RECOMMEND
 proceeding via the following steps:
 .PP
 1) Always run the server in debugging mode (
-.B radiusd -X
+.B radiusd \-X
 ) after making a configuration change.  We cannot emphasize this
 enough.  If you are not running the server in debugging mode, you
 \fIwill not\fP be able to see what is doing, and you \fIwill not\fP be
@@ -165,14 +148,14 @@ can be skipped.
 .br
 .br
 d) Start the server in debugging mode (
-.B radiusd -X
+.B radiusd \-X
 ), and start testing.
 .in -0.3i
 .PP
 5) Ask questions on the mailing list
 (freeradius-users@lists.freeradius.org).  When asking questions,
 include the output from debugging mode (
-.B radiusd -X
+.B radiusd \-X
 ).  This information will allow people to help you.  If you do not
 include it, the first response to your message will be "post the
 output of debug mode".
@@ -191,7 +174,7 @@ the case of a PPP connection.
 .PP
 The access server also sends login and logout records to the \fBradius\fP
 server so accounting can be done. These records are kept for each terminal
-server seperately in a file called \fBdetail\fP, and in the \fIwtmp\fP
+server separately in a file called \fBdetail\fP, and in the \fIwtmp\fP
 compatible logfile \fB/var/log/radwtmp\fP.
 .SH CONFIGURATION
 \fBRadiusd\fP uses a number of configuration files. Each file has it's
@@ -203,17 +186,6 @@ items.
 This file is usually static. It defines all the possible RADIUS attributes
 used in the other configuration files.  You don't have to modify it.
 It includes other dictionary files in the same directory.
-.IP hints
-Defines certain hints to the radius server based on the users's loginname
-or other attributes sent by the access server. It also provides for
-mapping user names (such as Pusername -> username). This provides the
-functionality that the \fILivingston 2.0\fP server has as "Prefix" and
-"Suffix" support in the \fIusers\fP file, but is more general. Ofcourse
-the Livingston way of doing things is also supported, and you can even use
-both at the same time (within certain limits).
-.IP huntgroups
-Defines the huntgroups that you have, and makes it possible to restrict
-access to certain huntgroups to certain (groups of) users.
 .IP users
 Here the users are defined. On a typical setup, this file mainly contains
 DEFAULT entries to process the different types of logins, based on hints
@@ -221,7 +193,7 @@ from the hints file. Authentication is then based on the contents of
 the UNIX \fI/etc/passwd\fP file. However it is also possible to define all
 users, and their passwords, in this file.
 .SH SEE ALSO
-rradiusd.conf(5), users(5), huntgroups(5), hints(5),
+radiusd.conf(5), users(5)
 dictionary(5), raddebug(8)
 .SH AUTHOR
 The FreeRADIUS Server Project (http://www.freeradius.org)

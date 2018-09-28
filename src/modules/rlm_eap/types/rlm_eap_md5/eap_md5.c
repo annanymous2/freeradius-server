@@ -17,8 +17,8 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * Copyright 2000,2001,2006  The FreeRADIUS server project
- * Copyright 2001  hereUare Communications, Inc. <raghud@hereuare.com>
+ * @copyright 2000,2001,2006  The FreeRADIUS server project
+ * @copyright 2001  hereUare Communications, Inc. <raghud@hereuare.com>
  */
 
 /*
@@ -34,19 +34,21 @@
  * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
  *
  */
-
 RCSID("$Id$")
+
+#define LOG_PREFIX "rlm_eap_md5 - "
 
 #include <stdio.h>
 #include <stdlib.h>
 #include "eap.h"
 
 #include "eap_md5.h"
+#include <freeradius-devel/util/md5.h>
 
 /*
  *	We expect only RESPONSE for which SUCCESS or FAILURE is sent back
  */
-MD5_PACKET *eapmd5_extract(EAP_DS *eap_ds)
+MD5_PACKET *eap_md5_extract(eap_round_t *eap_round)
 {
 	md5_packet_t	*data;
 	MD5_PACKET	*packet;
@@ -57,18 +59,18 @@ MD5_PACKET *eapmd5_extract(EAP_DS *eap_ds)
 	 *	one byte of type data (EAP-MD5) following the 4-byte
 	 *	EAP-Packet header.
 	 */
-	if (!eap_ds 					 ||
-	    !eap_ds->response 				 ||
-	    (eap_ds->response->code != PW_MD5_RESPONSE)	 ||
-	    eap_ds->response->type.num != PW_EAP_MD5	 ||
-	    !eap_ds->response->type.data 		 ||
-	    (eap_ds->response->length <= MD5_HEADER_LEN) ||
-	    (eap_ds->response->type.data[0] <= 0)) {
-		ERROR("rlm_eap_md5: corrupted data");
+	if (!eap_round 					 ||
+	    !eap_round->response 				 ||
+	    (eap_round->response->code != FR_MD5_RESPONSE)	 ||
+	    eap_round->response->type.num != FR_EAP_MD5	 ||
+	    !eap_round->response->type.data 		 ||
+	    (eap_round->response->length <= MD5_HEADER_LEN) ||
+	    (eap_round->response->type.data[0] <= 0)) {
+		ERROR("corrupted data");
 		return NULL;
 	}
 
-	packet = talloc_zero(eap_ds, MD5_PACKET);
+	packet = talloc_zero(eap_round, MD5_PACKET);
 	if (!packet) return NULL;
 
 	/*
@@ -78,15 +80,15 @@ MD5_PACKET *eapmd5_extract(EAP_DS *eap_ds)
 	 *	doesn't include the EAP header, or the octet saying
 	 *	EAP-MD5.
 	 */
-	packet->code = eap_ds->response->code;
-	packet->id = eap_ds->response->id;
-	packet->length = eap_ds->response->length - (MD5_HEADER_LEN + 1);
+	packet->code = eap_round->response->code;
+	packet->id = eap_round->response->id;
+	packet->length = eap_round->response->length - (MD5_HEADER_LEN + 1);
 
 	/*
 	 *	Sanity check the EAP-MD5 packet sent to us
 	 *	by the client.
 	 */
-	data = (md5_packet_t *)eap_ds->response->type.data;
+	data = (md5_packet_t *)eap_round->response->type.data;
 
 	/*
 	 *	Already checked the size above.
@@ -105,7 +107,7 @@ MD5_PACKET *eapmd5_extract(EAP_DS *eap_ds)
 
 	/*
 	 *	Name is optional and is present after Value, but we
-	 *	need to check for it, as eapmd5_compose()
+	 *	need to check for it, as eap_md5_compose()
 	 */
 	name_len =  packet->length - (packet->value_size + 1);
 	if (name_len) {
@@ -126,11 +128,11 @@ MD5_PACKET *eapmd5_extract(EAP_DS *eap_ds)
 /*
  * verify = MD5(id+password+challenge_sent)
  */
-int eapmd5_verify(MD5_PACKET *packet, VALUE_PAIR* password,
+int eap_md5_verify(MD5_PACKET *packet, VALUE_PAIR* password,
 		  uint8_t *challenge)
 {
 	char	*ptr;
-	char	string[1 + MAX_STRING_LEN*2];
+	char	string[1 + FR_MAX_STRING_LEN*2];
 	uint8_t digest[16];
 	unsigned short len;
 
@@ -138,7 +140,7 @@ int eapmd5_verify(MD5_PACKET *packet, VALUE_PAIR* password,
 	 *	Sanity check it.
 	 */
 	if (packet->value_size != 16) {
-		ERROR("rlm_eap_md5: Expected 16 bytes of response to challenge, got %d", packet->value_size);
+		ERROR("Expected 16 bytes of response to challenge, got %d", packet->value_size);
 		return 0;
 	}
 
@@ -150,9 +152,9 @@ int eapmd5_verify(MD5_PACKET *packet, VALUE_PAIR* password,
 	 */
 	*ptr++ = packet->id;
 	len++;
-	memcpy(ptr, password->vp_strvalue, password->length);
-	ptr += password->length;
-	len += password->length;
+	memcpy(ptr, password->vp_strvalue, password->vp_length);
+	ptr += password->vp_length;
+	len += password->vp_length;
 
 	/*
 	 *	The challenge size is hard-coded.
@@ -160,12 +162,12 @@ int eapmd5_verify(MD5_PACKET *packet, VALUE_PAIR* password,
 	memcpy(ptr, challenge, MD5_CHALLENGE_LEN);
 	len += MD5_CHALLENGE_LEN;
 
-	fr_md5_calc(digest, (u_char *)string, len);
+	fr_md5_calc(digest, (uint8_t *)string, len);
 
 	/*
 	 *	The length of the response is always 16 for MD5.
 	 */
-	if (rad_digest_cmp(digest, packet->value, 16) != 0) {
+	if (fr_digest_cmp(digest, packet->value, 16) != 0) {
 		return 0;
 	}
 
@@ -176,7 +178,7 @@ int eapmd5_verify(MD5_PACKET *packet, VALUE_PAIR* password,
  *	Compose the portions of the reply packet specific to the
  *	EAP-MD5 protocol, in the EAP reply typedata
  */
-int eapmd5_compose(EAP_DS *eap_ds, MD5_PACKET *reply)
+int eap_md5_compose(eap_round_t *eap_round, MD5_PACKET *reply)
 {
 	uint8_t *ptr;
 	unsigned short name_len;
@@ -186,23 +188,23 @@ int eapmd5_compose(EAP_DS *eap_ds, MD5_PACKET *reply)
 	 *	and EAP-Success, and EAP-Failure.
 	 */
 	if (reply->code < 3) {
-		eap_ds->request->type.num = PW_EAP_MD5;
+		eap_round->request->type.num = FR_EAP_MD5;
 
 		rad_assert(reply->length > 0);
 
-		eap_ds->request->type.data = talloc_array(eap_ds->request,
+		eap_round->request->type.data = talloc_array(eap_round->request,
 							  uint8_t,
 							  reply->length);
-		if (!eap_ds->request->type.data) {
+		if (!eap_round->request->type.data) {
 			talloc_free(reply);
 			return 0;
 		}
-		ptr = eap_ds->request->type.data;
+		ptr = eap_round->request->type.data;
 		*ptr++ = (uint8_t)(reply->value_size & 0xFF);
 		memcpy(ptr, reply->value, reply->value_size);
 
 		/* Just the Challenge length */
-		eap_ds->request->type.length = reply->value_size + 1;
+		eap_round->request->type.length = reply->value_size + 1;
 
 		/*
 		 *	Return the name, if necessary.
@@ -214,13 +216,13 @@ int eapmd5_compose(EAP_DS *eap_ds, MD5_PACKET *reply)
 			ptr += reply->value_size;
 			memcpy(ptr, reply->name, name_len);
 			/* Challenge length + Name length */
-			eap_ds->request->type.length += name_len;
+			eap_round->request->type.length += name_len;
 		}
 	} else {
-		eap_ds->request->type.length = 0;
+		eap_round->request->type.length = 0;
 		/* TODO: In future we might add message here wrt rfc1994 */
 	}
-	eap_ds->request->code = reply->code;
+	eap_round->request->code = reply->code;
 	talloc_free(reply);
 
 	return 1;

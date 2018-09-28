@@ -10,8 +10,7 @@
 #	253 characters in length.  This is followed (on the same line) with
 #	the list of authentication requirements for that user.  This can
 #	include password, comm server name, comm server port number, protocol
-#	type (perhaps set by the "hints" file), and huntgroup name (set by
-#	the "huntgroups" file).
+#	type.
 #
 #	If you are not sure why a particular reply is being sent by the
 #	server, then run the server in debugging mode (radiusd -X), and
@@ -81,8 +80,20 @@
 #	Framed-Compression = Van-Jacobsen-TCP-IP
 
 #
+# The canonical testing user which is in most of the
+# examples.
+#
+#bob	Cleartext-Password := "hello"
+#	Reply-Message := "Hello, %{User-Name}"
+#
+
+#
 # This is an entry for a user with a space in their name.
-# Note the double quotes surrounding the name.
+# Note the double quotes surrounding the name.  If you have
+# users with spaces in their names, you must also change
+# the "filter_username" policy to allow spaces.
+#
+# See raddb/policy.d/filter, filter_username {} section.
 #
 #"John Doe"	Cleartext-Password := "hello"
 #		Reply-Message = "Hello, %{User-Name}"
@@ -110,7 +121,7 @@
 
 #
 # user "swilson" will only get a static IP number if he logs in with
-# a framed protocol on a terminal server in Alphen (see the huntgroups file).
+# a framed protocol on a terminal server in Alphen.
 #
 # Note that by setting "Fall-Through", other attributes will be added from
 # the following DEFAULT entries
@@ -197,4 +208,12 @@ DEFAULT	Hint == "SLIP"
 # DEFAULT
 # 	Service-Type = Administrative-User
 
+
 # On no match, the user is denied access.
+
+
+#########################################################
+# You should add test accounts to the TOP of this file! #
+# See the example user "bob" above.                     #
+#########################################################
+

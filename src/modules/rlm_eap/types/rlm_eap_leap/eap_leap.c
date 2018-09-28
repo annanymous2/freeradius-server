@@ -17,8 +17,8 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * Copyright 2003 Alan DeKok <aland@freeradius.org>
- * Copyright 2006 The FreeRADIUS server project
+ * @copyright 2003 Alan DeKok <aland@freeradius.org>
+ * @copyright 2006 The FreeRADIUS server project
  */
 
 /*
@@ -50,35 +50,35 @@ RCSID("$Id$")
 #include <stdlib.h>
 #include "eap.h"
 #include "eap_leap.h"
+
+#include <freeradius-devel/util/md5.h>
+
 /*
  *   Extract the data from the LEAP packet.
  */
-leap_packet_t *eapleap_extract(EAP_DS *eap_ds)
+leap_packet_t *eap_leap_extract(REQUEST *request, eap_round_t *eap_round)
 {
 	leap_packet_raw_t	*data;
-	leap_packet_t	*packet;
-	int		name_len;
+	leap_packet_t		*packet;
+	int			name_len;
 
 	/*
 	 *	LEAP can have EAP-Response or EAP-Request (step 5)
 	 *	messages sent to it.
 	 */
-	if (!eap_ds ||
-	    !eap_ds->response ||
-	    ((eap_ds->response->code != PW_EAP_RESPONSE) &&
-	     (eap_ds->response->code != PW_EAP_REQUEST)) ||
-	    eap_ds->response->type.num != PW_EAP_LEAP ||
-	    !eap_ds->response->type.data ||
-	    (eap_ds->response->length < LEAP_HEADER_LEN) ||
-	    (eap_ds->response->type.data[0] != 0x01)) {	/* version 1 */
-		ERROR("rlm_eap_leap: corrupted data");
+	if (!eap_round || !eap_round->response ||
+	    ((eap_round->response->code != FR_EAP_CODE_RESPONSE) && (eap_round->response->code != FR_EAP_CODE_REQUEST)) ||
+	     (eap_round->response->type.num != FR_EAP_LEAP) || !eap_round->response->type.data ||
+	     (eap_round->response->length < LEAP_HEADER_LEN) ||
+	     (eap_round->response->type.data[0] != 0x01)) {	/* version 1 */
+		REDEBUG("Corrupted data");
 		return NULL;
 	}
 
 	/*
 	 *	Hmm... this cast isn't the best thing to do.
 	 */
-	data = (leap_packet_raw_t *)eap_ds->response->type.data;
+	data = (leap_packet_raw_t *)eap_round->response->type.data;
 
 	/*
 	 *	Some simple sanity checks on the incoming packet.
@@ -86,42 +86,40 @@ leap_packet_t *eapleap_extract(EAP_DS *eap_ds)
 	 *	See 'leap.txt' in this directory for a description
 	 *	of the stages.
 	 */
-	switch (eap_ds->response->code) {
-	case PW_EAP_RESPONSE:
+	switch (eap_round->response->code) {
+	case FR_EAP_CODE_RESPONSE:
 		if (data->count != 24) {
-			ERROR("rlm_eap_leap: Bad NTChallengeResponse in LEAP stage 3");
+			REDEBUG("Bad NTChallengeResponse in LEAP stage 3");
 			return NULL;
 		}
 		break;
 
-	case PW_EAP_REQUEST:
+	case FR_EAP_CODE_REQUEST:
 		if (data->count != 8) {
-			ERROR("rlm_eap_leap: Bad AP Challenge in LEAP stage 5");
+			REDEBUG("Bad AP Challenge in LEAP stage 5");
 			return NULL;
 		}
 		break;
 
 	default:
-		ERROR("rlm_eap_leap: Invalid EAP code %d",
-		       eap_ds->response->code);
+		REDEBUG("Invalid EAP code %d", eap_round->response->code);
 		return NULL;
-		break;
 	}
 
-	packet = talloc(eap_ds, leap_packet_t);
+	packet = talloc(eap_round, leap_packet_t);
 	if (!packet) return NULL;
 
 	/*
 	 *	Remember code, length, and id.
 	 */
-	packet->code = eap_ds->response->code;
-	packet->id = eap_ds->response->id;
+	packet->code = eap_round->response->code;
+	packet->id = eap_round->response->id;
 
 	/*
 	 *	The size of the LEAP portion of the packet, not
 	 *	counting the EAP header and the type.
 	 */
-	packet->length = eap_ds->response->length - EAP_HEADER_LEN - 1;
+	packet->length = eap_round->response->length - EAP_HEADER_LEN - 1;
 
 	/*
 	 *	Remember the length of the challenge.
@@ -149,8 +147,7 @@ leap_packet_t *eapleap_extract(EAP_DS *eap_ds)
 			talloc_free(packet);
 			return NULL;
 		}
-		memcpy(packet->name, &data->challenge[packet->count],
-		       name_len);
+		memcpy(packet->name, &data->challenge[packet->count], name_len);
 		packet->name[name_len] = '\0';
 		packet->name_len = name_len;
 	}
@@ -161,48 +158,44 @@ leap_packet_t *eapleap_extract(EAP_DS *eap_ds)
 /*
  *  Get the NT-Password hash.
  */
-static int eapleap_ntpwdhash(unsigned char *ntpwdhash, VALUE_PAIR *password)
+static int eap_leap_ntpwdhash(uint8_t *out, REQUEST *request, VALUE_PAIR *password)
 {
-	if ((password->da->attr == PW_USER_PASSWORD) ||
-	    (password->da->attr == PW_CLEARTEXT_PASSWORD)) {
-		size_t i;
-		unsigned char unicode[512];
+	if ((password->da == attr_user_password) ||
+	    (password->da == attr_cleartext_password)) {
+		ssize_t len;
+		uint8_t ucs2_password[512];
 
 		/*
 		 *	Convert the password to NT's weird Unicode format.
 		 */
-		memset(unicode, 0, sizeof(unicode));
-		for (i = 0; i < password->length; i++) {
-			/*
-			 *  Yes, the *even* bytes have the values,
-			 *  and the *odd* bytes are zero.
-			 */
-			unicode[(i << 1)] = password->vp_strvalue[i];
+		len = fr_utf8_to_ucs2(ucs2_password, sizeof(ucs2_password), password->vp_strvalue, password->vp_length);
+		if (len < 0) {
+			REDEBUG("Error converting password to UCS2");
+			return 0;
 		}
 
 		/*
 		 *  Get the NT Password hash.
 		 */
-		fr_md4_calc(ntpwdhash, unicode, password->length * 2);
-
+		fr_md4_calc(out, ucs2_password, len);
 	} else {		/* MUST be NT-Password */
 		uint8_t *p = NULL;
 
-		if (password->length == 32) {
+		if (password->vp_length == 32) {
 			p = talloc_array(password, uint8_t, 16);
-			password->length = fr_hex2bin(p, password->vp_strvalue, 16);
+			password->vp_length = fr_hex2bin(p, 16, password->vp_strvalue, password->vp_length);
 		}
-		if (password->length != 16) {
-			ERROR("rlm_eap_leap: Bad NT-Password");
+		if (password->vp_length != 16) {
+			REDEBUG("Bad NT-Password");
 			return 0;
 		}
 
 		if (p) {
-			pairmemcpy(password, p, 16);
+			fr_pair_value_memcpy(password, p, 16);
 			talloc_free(p);
 		}
 
-		memcpy(ntpwdhash, password->vp_octets, 16);
+		memcpy(out, password->vp_octets, 16);
 	}
 	return 1;
 }
@@ -211,12 +204,10 @@ static int eapleap_ntpwdhash(unsigned char *ntpwdhash, VALUE_PAIR *password)
 /*
  *	Verify the MS-CHAP response from the user.
  */
-int eapleap_stage4(leap_packet_t *packet, VALUE_PAIR* password,
-		   leap_session_t *session)
+int eap_leap_stage4(REQUEST *request, leap_packet_t *packet, VALUE_PAIR *password, leap_session_t *session)
 {
-	unsigned char ntpwdhash[16];
-	unsigned char response[24];
-
+	uint8_t hash[16];
+	uint8_t response[24];
 
 	/*
 	 *	No password or previous packet.  Die.
@@ -225,37 +216,36 @@ int eapleap_stage4(leap_packet_t *packet, VALUE_PAIR* password,
 		return 0;
 	}
 
-	if (!eapleap_ntpwdhash(ntpwdhash, password)) {
+	if (!eap_leap_ntpwdhash(hash, request, password)) {
 		return 0;
 	}
 
 	/*
 	 *	Calculate and verify the CHAP challenge.
 	 */
-	eapleap_mschap(ntpwdhash, session->peer_challenge, response);
+	eap_leap_mschap(hash, session->peer_challenge, response);
 	if (memcmp(response, packet->challenge, 24) == 0) {
-		DEBUG2("  rlm_eap_leap: NtChallengeResponse from AP is valid");
+		RDEBUG2("NTChallengeResponse from AP is valid");
 		memcpy(session->peer_response, response, sizeof(response));
 		return 1;
 	}
+	REDEBUG("FAILED incorrect NtChallengeResponse from AP");
 
-	DEBUG2("  rlm_eap_leap: FAILED incorrect NtChallengeResponse from AP");
 	return 0;
 }
 
 /*
  *	Verify ourselves to the AP
  */
-leap_packet_t *eapleap_stage6(leap_packet_t *packet, REQUEST *request,
-			    VALUE_PAIR *user_name, VALUE_PAIR* password,
-			    leap_session_t *session)
+leap_packet_t *eap_leap_stage6(REQUEST *request, leap_packet_t *packet, VALUE_PAIR *user_name, VALUE_PAIR *password,
+			      leap_session_t *session)
 {
-	size_t i;
-	uint8_t ntpwdhash[16], ntpwdhashhash[16];
-	uint8_t *p, buffer[256];
-	leap_packet_t *reply;
-	char *q;
-	VALUE_PAIR *vp;
+	size_t		i;
+	uint8_t 	hash[16], mppe[16];
+	uint8_t		*p, buffer[256];
+	leap_packet_t	*reply;
+	char		*q;
+	VALUE_PAIR	*vp;
 
 	/*
 	 *	No password or previous packet.  Die.
@@ -267,8 +257,8 @@ leap_packet_t *eapleap_stage6(leap_packet_t *packet, REQUEST *request,
 	reply = talloc(session, leap_packet_t);
 	if (!reply) return NULL;
 
-	reply->code = PW_EAP_RESPONSE;
-	reply->length = LEAP_HEADER_LEN + 24 + user_name->length;
+	reply->code = FR_EAP_CODE_RESPONSE;
+	reply->length = LEAP_HEADER_LEN + 24 + user_name->vp_length;
 	reply->count = 24;
 
 	reply->challenge = talloc_array(reply, uint8_t, reply->count);
@@ -280,7 +270,7 @@ leap_packet_t *eapleap_stage6(leap_packet_t *packet, REQUEST *request,
 	/*
 	 *	The LEAP packet also contains the user name.
 	 */
-	reply->name = talloc_array(reply, char, user_name->length + 1);
+	reply->name = talloc_array(reply, char, user_name->vp_length + 1);
 	if (!reply->name) {
 		talloc_free(reply);
 		return NULL;
@@ -289,40 +279,34 @@ leap_packet_t *eapleap_stage6(leap_packet_t *packet, REQUEST *request,
 	/*
 	 *	Copy the name over, and ensure it's NUL terminated.
 	 */
-	memcpy(reply->name, user_name->vp_strvalue, user_name->length);
-	reply->name[user_name->length] = '\0';
-	reply->name_len = user_name->length;
+	memcpy(reply->name, user_name->vp_strvalue, user_name->vp_length);
+	reply->name[user_name->vp_length] = '\0';
+	reply->name_len = user_name->vp_length;
 
 	/*
 	 *  MPPE hash = ntpwdhash(ntpwdhash(unicode(pw)))
 	 */
-	if (!eapleap_ntpwdhash(ntpwdhash, password)) {
+	if (!eap_leap_ntpwdhash(hash, request, password)) {
 		talloc_free(reply);
 		return NULL;
 	}
-	fr_md4_calc(ntpwdhashhash, ntpwdhash, 16);
+	fr_md4_calc(mppe, hash, 16);
 
 	/*
-	 *	Calculate our response, to authenticate ourselves
-	 *	to the AP.
+	 *	Calculate our response, to authenticate ourselves to the AP.
 	 */
-	eapleap_mschap(ntpwdhashhash, packet->challenge, reply->challenge);
+	eap_leap_mschap(mppe, packet->challenge, reply->challenge);
 
 	/*
-	 *  Calculate the leap:session-key attribute
+	 *	Calculate the leap:session-key attribute
 	 */
-	vp = pairmake_reply("Cisco-AVPair", NULL, T_OP_ADD);
-	if (!vp) {
-		ERROR("rlm_eap_leap: Failed to create Cisco-AVPair attribute.  LEAP cancelled");
-		talloc_free(reply);
-		return NULL;
-	}
+	MEM(pair_add_reply(&vp, attr_cisco_avpair) >= 0);
 
 	/*
 	 *	And calculate the MPPE session key.
 	 */
 	p = buffer;
-	memcpy(p, ntpwdhashhash, 16); /* MPPEHASH */
+	memcpy(p, mppe, 16); /* MPPEHASH */
 	p += 16;
 	memcpy(p, packet->challenge, 8); /* APC */
 	p += 8;
@@ -335,20 +319,17 @@ leap_packet_t *eapleap_stage6(leap_packet_t *packet, REQUEST *request,
 	/*
 	 *	These 16 bytes are the session key to use.
 	 */
-	fr_md5_calc(ntpwdhash, buffer, 16 + 8 + 24 + 8 + 24);
+	fr_md5_calc(hash, buffer, 16 + 8 + 24 + 8 + 24);
 
-	q = talloc_array(vp, char, 16 + sizeof("leap:session-key="));
+	q = talloc_array(vp, char, FR_TUNNEL_FR_ENC_LENGTH(16) + sizeof("leap:session-key="));
 	strcpy(q, "leap:session-key=");
 
-	memcpy(q + 17, ntpwdhash, 16);
+	memcpy(q + 17, hash, 16);
 
 	i = 16;
-	rad_tunnel_pwencode(q + 17, &i,
-			    request->client->secret, request->packet->vector);
-	vp->length = 17 + i;
-//	talloc_free(vp->vp_strvalue);
-	vp->vp_strvalue = q;
-	vp->type = VT_DATA;
+	fr_radius_encode_tunnel_password(q + 17, &i, request->client->secret, request->packet->vector);
+	fr_pair_value_strsteal(vp, q);
+	vp->vp_length = 17 + i;
 
 	return reply;
 }
@@ -357,18 +338,18 @@ leap_packet_t *eapleap_stage6(leap_packet_t *packet, REQUEST *request,
  *	If an EAP LEAP request needs to be initiated then
  *	create such a packet.
  */
-leap_packet_t *eapleap_initiate(EAP_DS *eap_ds, VALUE_PAIR *user_name)
+leap_packet_t *eap_leap_initiate(REQUEST *request, eap_round_t *eap_round, VALUE_PAIR *user_name)
 {
 	int i;
 	leap_packet_t 	*reply;
 
-	reply = talloc(eap_ds, leap_packet_t);
+	reply = talloc(eap_round, leap_packet_t);
 	if (!reply)  {
 		return NULL;
 	}
 
-	reply->code = PW_EAP_REQUEST;
-	reply->length = LEAP_HEADER_LEN + 8 + user_name->length;
+	reply->code = FR_EAP_CODE_REQUEST;
+	reply->length = LEAP_HEADER_LEN + 8 + user_name->vp_length;
 	reply->count = 8;	/* random challenge */
 
 	reply->challenge = talloc_array(reply, uint8_t, reply->count);
@@ -383,13 +364,12 @@ leap_packet_t *eapleap_initiate(EAP_DS *eap_ds, VALUE_PAIR *user_name)
 	for (i = 0; i < reply->count; i++) {
 		reply->challenge[i] = fr_rand();
 	}
-
-	DEBUG2("  rlm_eap_leap: Issuing AP Challenge");
+	RDEBUG2("Issuing AP Challenge");
 
 	/*
 	 *	The LEAP packet also contains the user name.
 	 */
-	reply->name = talloc_array(reply, char, user_name->length + 1);
+	reply->name = talloc_array(reply, char, user_name->vp_length + 1);
 	if (!reply->name) {
 		talloc_free(reply);
 		return NULL;
@@ -398,9 +378,9 @@ leap_packet_t *eapleap_initiate(EAP_DS *eap_ds, VALUE_PAIR *user_name)
 	/*
 	 *	Copy the name over, and ensure it's NUL terminated.
 	 */
-	memcpy(reply->name, user_name->vp_strvalue, user_name->length);
-	reply->name[user_name->length] = '\0';
-	reply->name_len = user_name->length;
+	memcpy(reply->name, user_name->vp_strvalue, user_name->vp_length);
+	reply->name[user_name->vp_length] = '\0';
+	reply->name_len = user_name->vp_length;
 
 	return reply;
 }
@@ -408,26 +388,26 @@ leap_packet_t *eapleap_initiate(EAP_DS *eap_ds, VALUE_PAIR *user_name)
 /*
  * compose the LEAP reply packet in the EAP reply typedata
  */
-int eapleap_compose(EAP_DS *eap_ds, leap_packet_t *reply)
+int eap_leap_compose(REQUEST *request, eap_round_t *eap_round, leap_packet_t *reply)
 {
 	leap_packet_raw_t *data;
+
+	rad_assert(eap_round->request);
+	rad_assert(reply);
 
 	/*
 	 *  We need the name and the challenge.
 	 */
 	switch (reply->code) {
-	case PW_EAP_REQUEST:
-	case PW_EAP_RESPONSE:
-		eap_ds->request->type.num = PW_EAP_LEAP;
-		eap_ds->request->type.length = reply->length;
+	case FR_EAP_CODE_REQUEST:
+	case FR_EAP_CODE_RESPONSE:
+		eap_round->request->type.num = FR_EAP_LEAP;
+		eap_round->request->type.length = reply->length;
 
-		eap_ds->request->type.data = talloc_array(eap_ds->request,
-							  uint8_t,
-							  reply->length);
-		if (!eap_ds->request->type.data) {
-			return 0;
-		}
-		data = (leap_packet_raw_t *) eap_ds->request->type.data;
+		eap_round->request->type.data = talloc_array(eap_round->request, uint8_t, reply->length);
+		if (!eap_round->request->type.data) return 0;
+
+		data = (leap_packet_raw_t *) eap_round->request->type.data;
 		data->version = 0x01;
 		data->unused = 0;
 		data->count = reply->count;
@@ -436,28 +416,26 @@ int eapleap_compose(EAP_DS *eap_ds, leap_packet_t *reply)
 		 *	N bytes of the challenge, followed by the user name.
 		 */
 		memcpy(&data->challenge[0], reply->challenge, reply->count);
-		memcpy(&data->challenge[reply->count],
-		       reply->name, reply->name_len);
+		memcpy(&data->challenge[reply->count], reply->name, reply->name_len);
 		break;
 
 		/*
 		 *	EAP-Success packets don't contain any data
 		 *	other than the header.
 		 */
-	case PW_EAP_SUCCESS:
-		eap_ds->request->type.length = 0;
+	case FR_EAP_CODE_SUCCESS:
+		eap_round->request->type.length = 0;
 		break;
 
 	default:
-		ERROR("rlm_eap_leap: Internal sanity check failed");
+		REDEBUG("Internal sanity check failed");
 		return 0;
-		break;
 	}
 
 	/*
 	 *	Set the EAP code.
 	 */
-	eap_ds->request->code = reply->code;
+	eap_round->request->code = reply->code;
 
 	return 1;
 }

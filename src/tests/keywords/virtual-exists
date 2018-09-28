@@ -1,0 +1,10 @@
+#
+#  PRE: update if
+#
+update control {
+       Cleartext-Password := 'hello'
+}
+
+if (&Client-Shortname) {
+	success
+}

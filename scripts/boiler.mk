@@ -27,6 +27,28 @@
 #       instances of "$" within them need to be escaped with a second "$" to
 #       accomodate the double expansion that occurs when eval is invoked.
 
+#
+#  You can watch what it's doing by:
+#
+#	$ VERBOSE=1 make ... args ...
+#
+ifeq "${VERBOSE}" ""
+    Q=@
+else
+    Q=
+endif
+
+#
+#  If you want HTML output of the scanner to be rendered to the terminal:
+#
+#	$ ANALYZE_C_DUMP=1 make ... args ...
+#
+ifeq "${ANALYZE_C_DUMP}" ""
+    ANALYZE_C_DUMP=false
+else
+    ANALYZE_C_DUMP=true
+endif
+
 # ADD_CLEAN_RULE - Parameterized "function" that adds a new rule and phony
 #   target for cleaning the specified target (removing its build-generated
 #   files).
@@ -37,7 +59,7 @@ define ADD_CLEAN_RULE
     clean: clean_$(notdir ${1})
     .PHONY: clean_$(notdir ${1})
     clean_$(notdir ${1}):
-	@$(strip rm -f ${${1}_BUILD}/${1} ${${1}_NOLIBTOOL} ${${1}_BUILD}/${${1}_RELINK} $${${1}_OBJS} $${${1}_DEPS} $${${1}_OBJS:%.${OBJ_EXT}=%.[do]}) $(if ${TARGET_DIR},$${TARGET_DIR}/$(notdir ${1}))
+	$(Q)$(strip rm -f ${${1}_BUILD}/${1} $${${1}_OBJS} $${${1}_DEPS} $${${1}_OBJS:%.${OBJ_EXT}=%.[do]}) $(if ${TARGET_DIR},$${TARGET_DIR}/$(notdir ${1}))
 	$${${1}_POSTCLEAN}
 
 endef
@@ -64,9 +86,9 @@ endef
 #	delete references to ${BUILD_DIR}/make/include, the "config.mk"
 #	file adds these dependencies automatically.
 #	replace "build/" with "${BUILD_DIR}/" when it's in the middle of a line
-#	
+#
 #	remove sequential duplicate lines
-#	
+#
 #  2) Create empty dependencies from the files
 #
 #	COMMON
@@ -77,9 +99,9 @@ endef
 #	remove sequential duplicate lines
 #
 define FILTER_DEPENDS
-	@mkdir -p $$(dir $${BUILD_DIR}/make/src/$$*)
-	@mkdir -p $$(dir $${BUILD_DIR}/objs/$$*)
-	@sed  -e 's/#.*//' \
+	$(Q)mkdir -p $$(dir $${BUILD_DIR}/make/src/$$*)
+	$(Q)mkdir -p $$(dir $${BUILD_DIR}/objs/$$*)
+	$(Q)sed  -e 's/#.*//' \
 	  -e 's,^$${top_srcdir},$$$${top_srcdir},' \
 	  -e 's, $${top_srcdir}, $$$${top_srcdir},' \
 	  -e 's,^$${BUILD_DIR},$$$${BUILD_DIR},' \
@@ -92,7 +114,7 @@ define FILTER_DEPENDS
 	  -e '/^ *\\$$$$/ d' \
 	  < $${BUILD_DIR}/objs/$$*.d | sed -e '$$$$!N; /^\(.*\)\n\1$$$$/!P; D' \
 	  >  $${BUILD_DIR}/make/src/$$*.mk
-	@sed -e 's/#.*//' \
+	$(Q)sed -e 's/#.*//' \
 	  -e 's, $${BUILD_DIR}/make/include/[^ :]*,,' \
 	  -e 's, /[^: ]*,,g' \
 	  -e 's,^ *[^:]* *: *$$$$,,' \
@@ -117,20 +139,25 @@ endef
 #
 ifeq "${CPP_MAKEDEPEND}" "yes"
 define ADD_OBJECT_RULE
-$${BUILD_DIR}/objs/%.${OBJ_EXT} $${BUILD_DIR}/objs/%.d: ${1} ${JLIBTOOL}
+$${BUILD_DIR}/objs/%.${OBJ_EXT} $${BUILD_DIR}/objs/%.d: ${1} | ${BOOTSTRAP_BUILD}
 	${2}
-	$${CPP} $${CPPFLAGS} $${SRC_INCDIRS} $${SRC_DEFS} $$< | sed \
+	$${CPP} $${CPPFLAGS} $$(addprefix -I,$${SRC_INCDIRS}) $${SRC_DEFS} $$< | sed \
 	  -n 's,^\# *[0-9][0-9]* *"\([^"]*\)".*,$$@: \1,p' > $${BUILD_DIR}/objs/$$*.d
 ${FILTER_DEPENDS}
 endef
 
 else
 define ADD_OBJECT_RULE
-$${BUILD_DIR}/objs/%.${OBJ_EXT} $${BUILD_DIR}/objs/%.d: ${1} ${JLIBTOOL}
+$${BUILD_DIR}/objs/%.${OBJ_EXT} $${BUILD_DIR}/objs/%.d: ${1} | ${BOOTSTRAP_BUILD}
 	${2}
 ${FILTER_DEPENDS}
 endef
 endif
+
+define ADD_ANALYZE_RULE
+$${BUILD_DIR}/plist/%.plist: ${1}
+	${2}
+endef
 
 # ADD_TARGET_DIR - Parameterized "function" that makes a link from
 #   TARGET_DIR to the executable or library in the BUILD_DIR directory.
@@ -159,7 +186,7 @@ endef
 
 # ADD_TARGET_RULE.* - Parameterized "functions" that adds a new target to the
 #   Makefile.  There should be one ADD_TARGET_RULE definition for each
-#   type of target that is used in the build.  
+#   type of target that is used in the build.
 #
 #   New rules can be added by copying one of the existing ones, and
 #   replacing the line after the "mkdir"
@@ -176,13 +203,19 @@ define ADD_TARGET_RULE.exe
 
     # Create executable ${1}
     $${${1}_BUILD}/${1}: $${${1}_OBJS} $${${1}_PRBIN} $${${1}_PRLIBS}
-	    @$(strip mkdir -p $(dir $${${1}_BUILD}/${1}))
-	    @$(ECHO) LINK $${${1}_BUILD}/${1}
-	    @$${${1}_LINKER} -o $${${1}_BUILD}/${1} $${RPATH_FLAGS} $${LDFLAGS} \
+	    $(Q)$(strip mkdir -p $(dir $${${1}_BUILD}/${1}))
+	    $(Q)$(ECHO) LINK $${${1}_BUILD}/${1}
+	    $(Q)$${${1}_LINKER} -o $${${1}_BUILD}/${1} $${RPATH_FLAGS} $${LDFLAGS} \
                 $${${1}_LDFLAGS} $${${1}_OBJS} $${${1}_PRLIBS} \
                 $${LDLIBS} $${${1}_LDLIBS}
-	    @$${${1}_POSTMAKE}
+	    $(Q)$${${1}_POSTMAKE}
 
+    ifneq "${ANALYZE.c}" ""
+        scan.${1}: $${${1}_PLISTS}
+    endif
+
+    .PHONY: $(DIR)
+    $(DIR)/: ${1}
 endef
 
 # ADD_TARGET_RULE.a - Build a static library target.
@@ -196,11 +229,17 @@ define ADD_TARGET_RULE.a
 
     # Create static library ${1}
     $${${1}_BUILD}/${1}: $${${1}_OBJS} $${${1}_PRLIBS}
-	    @$(strip mkdir -p $(dir $${${1}_BUILD}/${1}))
-	    @$(ECHO) LINK $${${1}_BUILD}/${1}
-	    @$${AR} $${ARFLAGS} $${${1}_BUILD}/${1} $${${1}_OBJS}
-	    @$${${1}_POSTMAKE}
+	    $(Q)$(strip mkdir -p $(dir $${${1}_BUILD}/${1}))
+	    $(Q)$(ECHO) LINK $${${1}_BUILD}/${1}
+	    $(Q)$${AR} $${ARFLAGS} $${${1}_BUILD}/${1} $${${1}_OBJS}
+	    $(Q)$${${1}_POSTMAKE}
 
+    ifneq "${ANALYZE.c}" ""
+        scan.${1}: $${${1}_PLISTS}
+    endif
+
+    .PHONY: $(DIR)
+    $(DIR)/: ${1}
 endef
 
 # ADD_TARGET_RULE.so - Build a ".so" target.
@@ -238,18 +277,45 @@ $(patsubst ${CURDIR}/%,%,$(abspath ${1}))
 endef
 
 # COMPILE_C_CMDS - Commands for compiling C source code.
+ifeq "$(CPPCHECK)" ""
 define COMPILE_C_CMDS
-	@mkdir -p $(dir $@)
-	@$(ECHO) CC $<
-	@$(strip ${COMPILE.c} -o $@ -c -MD ${CFLAGS} ${SRC_CFLAGS} ${INCDIRS} \
-	    ${SRC_INCDIRS} ${SRC_DEFS} ${DEFS} $<)
+	$(Q)mkdir -p $(dir $@)
+	$(Q)$(ECHO) CC $<
+	$(Q)$(strip ${COMPILE.c} -o $@ -c -MD ${CPPFLAGS} ${CFLAGS} ${SRC_CFLAGS} ${INCDIRS} \
+	    $(addprefix -I, ${SRC_INCDIRS}) ${SRC_DEFS} ${DEFS} $<)
+endef
+else
+#
+#  do cppcheck AND compilation, so that we have correct dependencies
+#  Suppress variable scope warnings for now.  They're style, and don't really
+#  affect anything.
+#
+define COMPILE_C_CMDS
+	$(Q)mkdir -p $(dir $@)
+	$(Q)$(ECHO) CC $<
+	$(Q)$(strip ${COMPILE.c} -o $@ -c -MD ${CPPFLAGS} ${CFLAGS} ${SRC_CFLAGS} ${INCDIRS} \
+             $(addprefix -I,${SRC_INCDIRS}) ${SRC_DEFS} ${DEFS} $<)
+	$(Q)cppcheck --enable=style -q ${CHECKFLAGS} $(filter -isystem%,${SRC_CFLAGS}) \
+	     $(filter -I%,${SRC_CFLAGS}) $(filter -D%,${SRC_CFLAGS}) ${INCDIRS} \
+	     $(addprefix -I,${SRC_INCDIRS}) ${SRC_DEFS} ${DEFS} --suppress=variableScope --suppress=invalidscanf $<
+endef
+endif
+
+# ANALYZE_C_CMDS - Commands for analyzing C source code with clang.
+define ANALYZE_C_CMDS
+	$(Q)mkdir -p $(dir $@)
+	$(Q)$(ECHO) SCAN $<
+	$(Q)$(strip ${ANALYZE.c} --analyze -Xanalyzer -analyzer-output=html -c $< -o $@ ${CPPFLAGS} \
+	    ${CFLAGS} ${SRC_CFLAGS} ${INCDIRS} $(addprefix -I,${SRC_INCDIRS}) ${SRC_DEFS} ${DEFS}) || (rm -f $@ && false)
+	$(Q)if $(ANALYZE_C_DUMP) && which lynx > /dev/null && test -d "$@"; then lynx -width=200 -dump $@/*.html; fi
+	$(Q)touch $@
 endef
 
 # COMPILE_CXX_CMDS - Commands for compiling C++ source code.
 define COMPILE_CXX_CMDS
-	@mkdir -p $(dir $@)
-	@$(strip ${COMPILE.cxx} -o $@ -c -MD ${CXXFLAGS} ${SRC_CXXFLAGS} ${INCDIRS} \
-	    ${SRC_INCDIRS} ${SRC_DEFS} ${DEFS} $<)
+	$(Q)mkdir -p $(dir $@)
+	$(Q)$(strip ${COMPILE.cxx} -o $@ -c -MD ${CPPFLAGS} ${CXXFLAGS} ${SRC_CXXFLAGS} ${INCDIRS} \
+	    $(addprefix -I,${SRC_INCDIRS}) ${SRC_DEFS} ${DEFS} $<)
 endef
 
 # INCLUDE_SUBMAKEFILE - Parameterized "function" that includes a new
@@ -274,6 +340,7 @@ define INCLUDE_SUBMAKEFILE
     TGT_CHECK_LIBS :=
 
     SOURCES :=
+    HEADERS :=
     SRC_CFLAGS :=
     SRC_CXXFLAGS :=
     SRC_DEFS :=
@@ -323,6 +390,14 @@ define INCLUDE_SUBMAKEFILE
         $${TGT}_SOURCES :=
         $${TGT}_MAN := $${MAN}
         $${TGT}_SUFFIX := $$(if $$(suffix $${TGT}),$$(suffix $${TGT}),.exe)
+
+        # If it's an EXE, ensure that transitive library linking works.
+        # i.e. we build libfoo.a which in turn requires -lbar.  So, the executable
+        # has to be linked to both libfoo.a and -lbar.
+	ifeq "$${$${TGT}_SUFFIX}" ".exe"
+		$${TGT}_LDLIBS += $$(filter-out %.a %.so %.la,$${$${TGT_PREREQS}_LDLIBS})
+	endif
+
         $${TGT}_BUILD := $$(if $$(suffix $${TGT}),$${BUILD_DIR}/lib,$${BUILD_DIR}/bin)
         $${TGT}_MAKEFILES += ${1}
         $${TGT}_CHECK_HEADERS := $${TGT_CHECK_HEADERS}
@@ -361,16 +436,22 @@ define INCLUDE_SUBMAKEFILE
 
         # Save the list of source files for this target.
         $${TGT}_SOURCES += $${SOURCES}
+        $${TGT}_HEADERS += $${HEADERS}
 
         # Convert the source file names to their corresponding object file
         # names.
         OBJS := $$(addprefix $${BUILD_DIR}/objs/,\
                    $$(addsuffix .${OBJ_EXT},$$(basename $${SOURCES})))
 
+	PLISTS := $$(addprefix $${BUILD_DIR}/plist/,\
+                   $$(addsuffix .plist,$$(basename $${SOURCES})))
+	ALL_PLISTS += ${PLISTS}
+
         # Add the objects to the current target's list of objects, and create
         # target-specific variables for the objects based on any source
         # variables that were defined.
         $${TGT}_OBJS += $${OBJS}
+        $${TGT}_PLISTS += $${PLISTS}
         $${TGT}_DEPS += $$(addprefix $${BUILD_DIR}/make/src/,\
                    $$(addsuffix .mk,$$(basename $${SOURCES})))
 
@@ -380,8 +461,14 @@ define INCLUDE_SUBMAKEFILE
         $${OBJS}: SRC_CFLAGS := $${SRC_CFLAGS}
         $${OBJS}: SRC_CXXFLAGS := $${SRC_CXXFLAGS}
         $${OBJS}: SRC_DEFS := $$(addprefix -D,$${SRC_DEFS})
-        $${OBJS}: SRC_INCDIRS := $$(addprefix -I,$${SRC_INCDIRS})
+        $${OBJS}: SRC_INCDIRS := $${SRC_INCDIRS}
         $${OBJS}: ${1}
+
+        $${PLISTS}: SRC_CFLAGS := $${SRC_CFLAGS}
+        $${PLISTS}: SRC_CXXFLAGS := $${SRC_CXXFLAGS}
+        $${PLISTS}: SRC_DEFS := $$(addprefix -D,$${SRC_DEFS})
+        $${PLISTS}: SRC_INCDIRS := $${SRC_INCDIRS}
+        $${PLISTS}: ${1}
     endif
     endif
 
@@ -420,6 +507,12 @@ define INCLUDE_SUBMAKEFILE
 
         # add rules to build the target
         $$(eval $$(call ADD_TARGET_RULE$${$${TGT}_SUFFIX},$${TGT}))
+
+        # add rules to install the header files
+	ifneq "${HEADERS}" ""
+	  $(foreach h, ${HEADERS},\
+	    $(eval $(call ADD_INSTALL_RULE.h,${h},src/include/${h})))
+        endif
 
         # generate the clean rule for this target.
         $$(eval $$(call ADD_CLEAN_RULE,$${TGT}))
@@ -522,8 +615,13 @@ else
     BUILD_DIR := $(call CANONICAL_PATH,${BUILD_DIR})
 endif
 
+.PHONY: $(BUILD_DIR)
+$(BUILD_DIR):
+	@mkdir -p $@
+
 # Define compilers and linkers
 #
+BOOTSTRAP_BUILD = 
 COMPILE.c = ${CC}
 COMPILE.cxx = ${CXX}
 CPP = cc -E
@@ -536,7 +634,7 @@ ECHO = echo
 # Define the "all" target (which simply builds all user-defined targets) as the
 # default goal.
 .PHONY: all
-all: 
+all:
 
 # Add "clean" rules to remove all build-generated files.
 .PHONY: clean
@@ -546,6 +644,10 @@ top_makedir := $(dir $(lastword ${MAKEFILE_LIST}))
 
 -include ${top_makedir}/install.mk
 -include ${top_makedir}/libtool.mk
+
+ifneq "${CPPCHECK}" ""
+CHECKFLAGS := -DCPPCHECK $(filter -isystem%,$(CPPFLAGS) $(CFLAGS)) $(filter -I%,$(CPPFLAGS) $(CFLAGS)) $(filter -D%,$(CPPFLAGS) $(CFLAGS))
+endif
 
 # Include the main user-supplied submakefile. This also recursively includes
 # all other user-supplied submakefiles.
@@ -559,6 +661,11 @@ INCDIRS := $(addprefix -I,$(call CANONICAL_PATH,${INCDIRS}))
 $(foreach EXT,${C_SRC_EXTS},\
   $(eval $(call ADD_OBJECT_RULE,${EXT},$${COMPILE_C_CMDS})))
 
+ifneq "${ANALYZE.c}" ""
+$(foreach EXT,${C_SRC_EXTS},\
+  $(eval $(call ADD_ANALYZE_RULE,${EXT},$${ANALYZE_C_CMDS})))
+endif
+
 # Add pattern rule(s) for creating compiled object code from C++ source.
 $(foreach EXT,${CXX_SRC_EXTS},\
   $(eval $(call ADD_OBJECT_RULE,${EXT},$${COMPILE_CXX_CMDS})))
@@ -570,3 +677,15 @@ ifneq "$(MAKECMDGOALS)" "clean"
     $(foreach TGT,${ALL_TGTS},\
       $(eval -include ${${TGT}_DEPS}))
 endif
+
+# Build rules for installation subdirectories
+$(foreach D,$(patsubst %/,%,$(sort $(dir ${ALL_INSTALL}))),\
+  $(eval $(call ADD_INSTALL_RULE.dir,${D})))
+
+scan: ${ALL_PLISTS}
+
+.PHONY: clean.scan
+clean.scan:
+	$(Q)rm -rf ${ALL_PLISTS}
+
+clean: clean.scan

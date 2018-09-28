@@ -2,7 +2,7 @@
 #
 #  Format the dictionaries according to a standard scheme.
 #
-#  Usage: cat dictionary | ./format.pl > new
+#  Usage: ./format.pl dictionary.foo
 #
 #  We don't over-write the dictionaries in place, so that the process
 #  can be double-checked by hand.
@@ -69,9 +69,15 @@ while (@ARGV) {
 	s/\s*$/\n/;
 
 	#
+	#  Suppress leading whitespace, so long as it's
+	#  not followed by a comment..
+	#
+	s/^\s*([^#])/$1/;
+
+	#
 	#  Remember the vendor
 	#
-	if (/^VENDOR\s+([\w-]+)\s+(\w+)(.*)/) {
+	if (/^VENDOR\s+([-\w]+)\s+(\w+)(.*)/) {
 	    $name=$1;
 	    $len = length $name;
 	    if ($len < 32) {
@@ -89,9 +95,24 @@ while (@ARGV) {
 	}
 
 	#
-	#  Remember if we did begin-vendor.
+	#  Remember if we did BEGIN-VENDOR format=
 	#
-	if (/^BEGIN-VENDOR\s+([\w-]+)/) {
+	if (/^BEGIN-VENDOR\s+([-\w]+)\s+(format=[-\w]+)/) {
+	    $begin_vendor = 1;
+	    if (!defined $vendor) {
+		$vendor = $1;
+	    } elsif ($vendor ne $1) {
+		# do something smart
+	    }
+
+	    push @output, "BEGIN-VENDOR\t$vendor $2\n";
+	    next;
+	}
+
+	#
+	#  Or just a plain BEGIN-VENDOR
+	#
+	if (/^BEGIN-VENDOR\s+([-\w]+)/) {
 	    $begin_vendor = 1;
 	    if (!defined $vendor) {
 		$vendor = $1;
@@ -106,7 +127,7 @@ while (@ARGV) {
 	#
 	#  Get attribute.
 	#
-	if (/^ATTRIBUTE\s+([\w-]+)\s+([\w.]+)\s+(\w+)(.*)/) {
+	if (/^ATTRIBUTE\s+([-\w]+)\s+([\w.]+)\s+(\w+)(.*)/) {
 	    $name=$1;
 	    $len = length $name;
 	    if ($len < 40) {
@@ -146,7 +167,7 @@ while (@ARGV) {
 	#
 	#  Values.
 	#
-	if (/^VALUE\s+([\w-]+)\s+([\w-\/,.]+)\s+(\w+)(.*)/) {
+	if (/^VALUE\s+([-\w]+)\s+([-\w\/,.]+)\s+(\w+)(.*)/) {
 	    $attr=$1;
 	    $len = length $attr;
 	    if ($len < 32) {
@@ -192,6 +213,29 @@ while (@ARGV) {
 	    }
 
 	    push @output, "VALUE\t$attr$tabsa$name$tabsn$3$4\n";
+	    next;
+	}
+
+	#
+	#  Get flags.
+	#
+	if (/^FLAGS\s+([!-\w]+)\s+(.*)/) {
+	    $name=$1;
+	    $len = length $name;
+	    if ($len < 40) {
+		$lenx = 40 - $len;
+		$lenx += 7;		# round up
+		$lenx /= 8;
+		$lenx = int $lenx;
+		$tabs = "\t" x $lenx;
+		if ($tabs eq "") {
+		    $tabs = " ";
+		}
+	    } else {
+		$tabs = " ";
+	    }
+
+	    push @output, "FLAGS\t$name$stuff\n";
 	    next;
 	}
 

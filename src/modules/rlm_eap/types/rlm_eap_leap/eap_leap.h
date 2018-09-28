@@ -1,15 +1,13 @@
-#ifndef _EAP_LEAP_H
-#define _EAP_LEAP_H
-
+#pragma once
 RCSIDH(eap_leap_h, "$Id$")
 
 #include "eap.h"
 
-#define PW_LEAP_CHALLENGE	1
-#define PW_LEAP_RESPONSE	2
-#define PW_LEAP_SUCCESS		3
-#define PW_LEAP_FAILURE		4
-#define PW_LEAP_MAX_CODES	4
+#define FR_LEAP_CHALLENGE	1
+#define FR_LEAP_RESPONSE	2
+#define FR_LEAP_SUCCESS		3
+#define FR_LEAP_FAILURE		4
+#define FR_LEAP_MAX_CODES	4
 
 /*
  *  Version + unused + count
@@ -18,7 +16,7 @@ RCSIDH(eap_leap_h, "$Id$")
 
 /*
  ****
- * EAP - LEAP doesnot specify code, id & length but chap specifies them,
+ * EAP - LEAP does not specify code, id & length but chap specifies them,
  *	for generalization purpose, complete header should be sent
  *	and not just value_size, value and name.
  *	future implementation.
@@ -41,10 +39,10 @@ typedef struct leap_packet_raw_t {
 typedef struct leap_packet {
 	unsigned char	code;
 	unsigned char	id;
-	int		length;
+	size_t		length;
 	int		count;
 	unsigned char	*challenge;
-	int		name_len;
+	size_t		name_len;
 	char		*name;
 } leap_packet_t;
 
@@ -58,18 +56,18 @@ typedef struct leap_session_t {
 	uint8_t		peer_response[24];
 } leap_session_t;
 
+extern fr_dict_attr_t const *attr_cleartext_password;
+extern fr_dict_attr_t const *attr_nt_password;
+extern fr_dict_attr_t const *attr_cisco_avpair;
+extern fr_dict_attr_t const *attr_user_password;
+
 /* function declarations here */
 
-int 		eapleap_compose(EAP_DS *auth, leap_packet_t *reply);
-leap_packet_t 	*eapleap_extract(EAP_DS *auth);
-leap_packet_t 	*eapleap_initiate(EAP_DS *eap_ds, VALUE_PAIR *user_name);
-int		eapleap_stage4(leap_packet_t *packet, VALUE_PAIR* password,
-			       leap_session_t *session);
-leap_packet_t	*eapleap_stage6(leap_packet_t *packet, REQUEST *request,
-				VALUE_PAIR *user_name, VALUE_PAIR* password,
+int 		eap_leap_compose(REQUEST *request, eap_round_t *auth, leap_packet_t *reply);
+leap_packet_t 	*eap_leap_extract(REQUEST *request, eap_round_t *eap_round);
+leap_packet_t 	*eap_leap_initiate(REQUEST *request, eap_round_t *eap_round, VALUE_PAIR *user_name);
+int		eap_leap_stage4(REQUEST *request, leap_packet_t *packet, VALUE_PAIR* password, leap_session_t *session);
+leap_packet_t	*eap_leap_stage6(REQUEST *request, leap_packet_t *packet, VALUE_PAIR *user_name, VALUE_PAIR* password,
 				leap_session_t *session);
 
-void eapleap_lmpwdhash(unsigned char const *password,unsigned char *lmhash);
-void eapleap_mschap(unsigned char const *win_password, unsigned char const *challenge, unsigned char *response);
-
-#endif /*_EAP_LEAP_H*/
+void eap_leap_mschap(unsigned char const *win_password, unsigned char const *challenge, unsigned char *response);

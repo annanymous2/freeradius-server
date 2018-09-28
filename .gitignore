@@ -17,6 +17,7 @@
 *.substvars
 *-stamp
 *.swp
+*.swo
 *.cache
 *.dist
 *.dylib
@@ -26,14 +27,23 @@
 *.patch
 .pc
 
+# Editor projects
+*.kdev4
+*.cproject
+*.project
+*.bbprojectd
+
+# Exuberant ctags
+tags
+
+# Local icon files
+icon.png
+
 # OS specific cruft
 .DS_Store
 
-# Certificates and signing requests
-*.pem
-*.der
-*.csr
-*.key
+# Archives
+freeradius-server-*tar*
 
 # Autoconf and libtool output
 build
@@ -47,7 +57,17 @@ autom4te.cache
 config.guess
 config.sub
 config.h
-debian/*
-src/main/radattr
+src/bin/unit_test_attribute
 src/modules/lib/
 warnings.txt
+
+# Redis setup script output
+nodes*.conf
+dump*.rdb
+appendonly*.aof
+
+# Analyzer output
+*.plist
+
+# Local scripts
+run.sh

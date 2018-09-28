@@ -38,6 +38,10 @@ CREATE TABLE [radacct] (
 	[ServiceType] [varchar] (32) NULL ,
 	[FramedProtocol] [varchar] (32) NULL ,
 	[FramedIPAddress] [varchar] (15) DEFAULT ('') FOR [FramedIPAddress],
+	[FramedIPv6Address] [varchar] (44) DEFAULT ('') FOR [FramedIPv6Address],
+	[FramedIPv6Prefix] [varchar] (44) DEFAULT ('') FOR [FramedIPv6Prefix],
+	[FramedInterfaceId] [varchar] (44) DEFAULT ('') FOR [FramedInterfaceId],
+	[DelegatedIPv6Prefix] [varchar] (44) DEFAULT ('') FOR [DelegatedIPv6Prefix],
 	[XAscendSessionSvrKey] [varchar] (10) DEFAULT (null) FOR [XAscendSessionSvrKey],
 	[AcctStartDelay] [int] NULL ,
 	[AcctStopDelay] [int] NULL
@@ -89,17 +93,18 @@ GO
 CREATE TABLE [radusergroup] (
 	[id] [int] IDENTITY (1, 1) NOT NULL ,
 	[UserName] [varchar] (64) NOT NULL ,
-	[GroupName] [varchar] (64) NULL
+	[GroupName] [varchar] (64) NULL ,
+	[Priority] [int] NULL
 ) ON [PRIMARY]
 GO
 
 /****** Object:  Table [radusergroup]    Script Date: 16.04.08 19:44:11 ******/
 CREATE TABLE [radpostauth] (
-        [id] [int] IDENTITY (1, 1) NOT NULL ,
-        [userName] [varchar] (64) NOT NULL ,
-        [pass] [varchar] (64) NOT NULL ,
-        [reply] [varchar] (32) NOT NULL ,
-        [authdate] [datetime] NOT NULL
+	[id] [int] IDENTITY (1, 1) NOT NULL ,
+	[userName] [varchar] (64) NOT NULL ,
+	[pass] [varchar] (64) NOT NULL ,
+	[reply] [varchar] (32) NOT NULL ,
+	[authdate] [datetime] NOT NULL
 )
 GO
 
@@ -126,6 +131,10 @@ ALTER TABLE [radacct] WITH NOCHECK ADD
 	CONSTRAINT [DF_radacct_ServiceType] DEFAULT (null) FOR [ServiceType],
 	CONSTRAINT [DF_radacct_FramedProtocol] DEFAULT (null) FOR [FramedProtocol],
 	CONSTRAINT [DF_radacct_FramedIPAddress] DEFAULT ('') FOR [FramedIPAddress],
+	CONSTRAINT [DF_radacct_FramedIPv6Address] DEFAULT ('') FOR [FramedIPv6Address],
+	CONSTRAINT [DF_radacct_FramedIPv6Prefix] DEFAULT ('') FOR [FramedIPv6Prefix],
+	CONSTRAINT [DF_radacct_FramedInterfaceId] DEFAULT ('') FOR [FramedInterfaceId],
+	CONSTRAINT [DF_radacct_DelegatedIPv6Prefix] DEFAULT ('') FOR [DelegatedIPv6Prefix],
 	CONSTRAINT [DF_radacct_AcctStartDelay] DEFAULT (null) FOR [AcctStartDelay],
 	CONSTRAINT [DF_radacct_AcctStopDelay] DEFAULT (null) FOR [AcctStopDelay],
 	CONSTRAINT [PK_radacct] PRIMARY KEY  NONCLUSTERED
@@ -189,20 +198,32 @@ ALTER TABLE [radusergroup] WITH NOCHECK ADD
 GO
 
 ALTER TABLE [radpostauth] WITH NOCHECK ADD
-        CONSTRAINT [DF_radpostauth_userName] DEFAULT ('') FOR [userName],
-        CONSTRAINT [DF_radpostauth_pass] DEFAULT ('') FOR [pass],
-        CONSTRAINT [DF_radpostauth_reply] DEFAULT ('') FOR [reply],
-        CONSTRAINT [DF_radpostauth_authdate] DEFAULT (getdate()) FOR [authdate],
-        CONSTRAINT [PK_radpostauth] PRIMARY KEY NONCLUSTERED
-        (
-                [id]
-        ) ON [PRIMARY]
+	CONSTRAINT [DF_radpostauth_userName] DEFAULT ('') FOR [userName],
+	CONSTRAINT [DF_radpostauth_pass] DEFAULT ('') FOR [pass],
+	CONSTRAINT [DF_radpostauth_reply] DEFAULT ('') FOR [reply],
+	CONSTRAINT [DF_radpostauth_authdate] DEFAULT (getdate()) FOR [authdate],
+	CONSTRAINT [PK_radpostauth] PRIMARY KEY NONCLUSTERED
+	(
+		[id]
+	) ON [PRIMARY]
 GO
 
  CREATE  INDEX [UserName] ON [radacct]([UserName]) ON [PRIMARY]
 GO
 
  CREATE  INDEX [FramedIPAddress] ON [radacct]([FramedIPAddress]) ON [PRIMARY]
+GO
+
+ CREATE  INDEX [FramedIPv6Address] ON [radacct]([FramedIPv6Address]) ON [PRIMARY]
+GO
+
+ CREATE  INDEX [FramedIPv6Prefix] ON [radacct]([FramedIPv6Prefix]) ON [PRIMARY]
+GO
+
+ CREATE  INDEX [FramedInterfaceId] ON [radacct]([FramedInterfaceId]) ON [PRIMARY]
+GO
+
+ CREATE  INDEX [DelegatedIPv6Prefix] ON [radacct]([DelegatedIPv6Prefix]) ON [PRIMARY]
 GO
 
  CREATE  INDEX [AcctSessionId] ON [radacct]([AcctSessionId]) ON [PRIMARY]
@@ -218,6 +239,10 @@ GO
 GO
 
  CREATE  INDEX [NASIPAddress] ON [radacct]([NASIPAddress]) ON [PRIMARY]
+GO
+
+ /* For use by onoff */
+ CREATE  INDEX [RadacctBulkClose] ON [radacct]([NASIPAddress],[AcctStartTime]) WHERE [AcctStopTime] IS NULL ON [PRIMARY]
 GO
 
  CREATE  INDEX [UserName] ON [radcheck]([UserName]) ON [PRIMARY]

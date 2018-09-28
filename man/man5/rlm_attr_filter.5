@@ -23,10 +23,8 @@ decisions, such as restricting a client to certain ranges of
 Idle-Timeout or Session-Timeout.
 .PP
 Filter rules are normally defined and applied on a per-realm basis,
-where the realm is anything that is defined and matched based on the
-configuration of the \fIrlm_realm\fP module.  Filter rules can
-optionally be applied using another attribute, by editing the
-\fIkey\fP configuration for this module.
+Filter rules can optionally be applied using another attribute, by
+editing the \fIkey\fP configuration for this module.
 .PP
 In 2.0.1 and earlier versions, the "accounting" section filtered the
 Accounting-Request, even though it was documented as filtering the
@@ -97,7 +95,7 @@ Regular Expression Equal
 .B    !~  
 Regular Expression Not Equal
 .PP
-See the default \fI/etc/raddb/attrs\fP for working examples of
+See the default \fI/etc/raddb/mods-config/attr_filter/\fP for working examples of
 sample rule ordering and how to use the different operators.
 .DE
 .PP
@@ -135,7 +133,7 @@ Filters Access-Accept or Access-Reject packets.
 .PP
 .SH FILES
 .I /etc/raddb/radiusd.conf
-.I /etc/raddb/filter/*
+.I /etc/raddb/mods-config/attr_filter/*
 .PP
 .SH "SEE ALSO"
 .BR radiusd (8),

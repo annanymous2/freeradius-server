@@ -17,221 +17,181 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * Copyright 2001  hereUare Communications, Inc. <raghud@hereuare.com>
- * Copyright 2003  Alan DeKok <aland@freeradius.org>
- * Copyright 2006  The FreeRADIUS server project
+ * @copyright 2001  hereUare Communications, Inc. <raghud@hereuare.com>
+ * @copyright 2003  Alan DeKok <aland@freeradius.org>
+ * @copyright 2006  The FreeRADIUS server project
  *
  */
-
 RCSID("$Id$")
 USES_APPLE_DEPRECATED_API	/* OpenSSL API has been deprecated by Apple */
 
+#define LOG_PREFIX "rlm_eap_tls - "
+
 #ifdef HAVE_OPENSSL_RAND_H
-#include <openssl/rand.h>
+#  include <openssl/rand.h>
 #endif
 
 #ifdef HAVE_OPENSSL_EVP_H
-#include <openssl/evp.h>
+#  include <openssl/evp.h>
 #endif
 
 #include "rlm_eap_tls.h"
 
 #ifdef HAVE_SYS_STAT_H
-#include <sys/stat.h>
+#  include <sys/stat.h>
 #endif
 
-static CONF_PARSER module_config[] = {
-	{ "tls", PW_TYPE_STRING_PTR,
-	  offsetof(rlm_eap_tls_t, tls_conf_name), NULL, NULL },
+#include <freeradius-devel/unlang/base.h>
 
-	{ "virtual_server", PW_TYPE_STRING_PTR,
-	  offsetof(rlm_eap_tls_t, virtual_server), NULL, NULL },
+static CONF_PARSER submodule_config[] = {
+	{ FR_CONF_OFFSET("tls", FR_TYPE_STRING, rlm_eap_tls_t, tls_conf_name) },
 
- 	{ NULL, -1, 0, NULL, NULL }	   /* end the list */
+	{ FR_CONF_OFFSET("require_client_cert", FR_TYPE_BOOL, rlm_eap_tls_t, req_client_cert), .dflt = "yes" },
+	{ FR_CONF_OFFSET("include_length", FR_TYPE_BOOL, rlm_eap_tls_t, include_length), .dflt = "yes" },
+	{ FR_CONF_OFFSET("virtual_server", FR_TYPE_STRING, rlm_eap_tls_t, virtual_server) },
+	CONF_PARSER_TERMINATOR
 };
 
+static fr_dict_t *dict_freeradius;
 
-/*
- *	Attach the EAP-TLS module.
- */
-static int eaptls_attach(CONF_SECTION *cs, void **instance)
-{
-	rlm_eap_tls_t		*inst;
+extern fr_dict_autoload_t rlm_eap_tls_dict[];
+fr_dict_autoload_t rlm_eap_tls_dict[] = {
+	{ .out = &dict_freeradius, .proto = "freeradius" },
+	{ NULL }
+};
 
-	/*
-	 *	Parse the config file & get all the configured values
-	 */
-	*instance = inst = talloc_zero(cs, rlm_eap_tls_t);
-	if (!inst) return -1;
+static fr_dict_attr_t const *attr_eap_tls_require_client_cert;
+static fr_dict_attr_t const *attr_virtual_server;
 
-	if (cf_section_parse(cs, inst, module_config) < 0) {
-		return -1;
-	}
-
-	inst->tls_conf = eaptls_conf_parse(cs, "tls");
-
-	if (!inst->tls_conf) {
-		ERROR("rlm_eap_tls: Failed initializing SSL context");
-		return -1;
-	}
-
-	return 0;
-}
-
-
-/*
- *	Send an initial eap-tls request to the peer, using the libeap functions.
- */
-static int eaptls_initiate(void *type_arg, eap_handler_t *handler)
-{
-	int		status;
-	tls_session_t	*ssn;
-	rlm_eap_tls_t	*inst;
-	REQUEST		*request = handler->request;
-
-	inst = type_arg;
-
-	handler->tls = true;
-	handler->finished = false;
-
-	/*
-	 *	EAP-TLS always requires a client certificate.
-	 */
-	ssn = eaptls_session(inst->tls_conf, handler, true);
-	if (!ssn) {
-		return 0;
-	}
-
-	handler->opaque = ((void *)ssn);
-	handler->free_opaque = session_free;
-
-	/*
-	 *	Set up type-specific information.
-	 */
-	ssn->prf_label = "client EAP encryption";
-
-	/*
-	 *	TLS session initialization is over.  Now handle TLS
-	 *	related handshaking or application data.
-	 */
-	status = eaptls_start(handler->eap_ds, ssn->peap_flag);
-	RDEBUG2("Start returned %d", status);
-	if (status == 0) {
-		return 0;
-	}
-
-	/*
-	 *	The next stage to process the packet.
-	 */
-	handler->stage = AUTHENTICATE;
-
-	return 1;
-}
+extern fr_dict_attr_autoload_t rlm_eap_tls_dict_attr[];
+fr_dict_attr_autoload_t rlm_eap_tls_dict_attr[] = {
+	{ .out = &attr_eap_tls_require_client_cert, .name = "EAP-TLS-Require-Client-Cert", .type = FR_TYPE_UINT32, .dict = &dict_freeradius },
+	{ .out = &attr_virtual_server, .name = "Virtual-Server", .type = FR_TYPE_STRING, .dict = &dict_freeradius },
+	{ NULL }
+};
 
 /*
  *	Do authentication, by letting EAP-TLS do most of the work.
  */
-static int mod_authenticate(void *type_arg, eap_handler_t *handler)
+static rlm_rcode_t CC_HINT(nonnull) mod_process(void *instance, eap_session_t *eap_session);
+
+static unlang_action_t eap_tls_virtual_server_result(REQUEST *request, rlm_rcode_t *presult,
+						     UNUSED int *priority, void *uctx)
 {
-	fr_tls_status_t	status;
-	tls_session_t *tls_session = (tls_session_t *) handler->opaque;
-	REQUEST *request = handler->request;
-	rlm_eap_tls_t *inst;
+	eap_session_t	*eap_session = talloc_get_type_abort(uctx, eap_session_t);
 
-	inst = type_arg;
+	switch (*presult) {
+	case RLM_MODULE_OK:
+	case RLM_MODULE_UPDATED:
+		if (eap_tls_success(eap_session) < 0) *presult = RLM_MODULE_FAIL;
+		break;
 
-	RDEBUG2("Authenticate");
+	default:
+		REDEBUG2("Certificate rejected by the virtual server");
+		eap_tls_fail(eap_session);
+		*presult = RLM_MODULE_REJECT;
+		break;
+	}
 
-	status = eaptls_process(handler);
-	RDEBUG2("eaptls_process returned %d\n", status);
+	return UNLANG_ACTION_CALCULATE_RESULT;
+}
+
+static rlm_rcode_t eap_tls_virtual_server(rlm_eap_tls_t *inst, eap_session_t *eap_session)
+{
+	REQUEST		*request = eap_session->request;
+	CONF_SECTION	*server_cs;
+	CONF_SECTION	*section;
+	VALUE_PAIR	*vp;
+
+	/* set the virtual server to use */
+	vp = fr_pair_find_by_da(request->control, attr_virtual_server, TAG_ANY);
+	if (vp) {
+		server_cs = virtual_server_find(vp->vp_strvalue);
+		if (!server_cs) {
+			REDEBUG2("Virtual server \"%s\" not found", vp->vp_strvalue);
+		error:
+			eap_tls_fail(eap_session);
+			return RLM_MODULE_INVALID;
+		}
+	} else {
+		server_cs = virtual_server_find(inst->virtual_server);
+		rad_assert(server_cs);
+	}
+
+	section = cf_section_find(server_cs, "recv", "Access-Request");
+	if (!section) {
+		REDEBUG2("Failed finding 'recv Access-Request { ... }' section of virtual server %s",
+			 cf_section_name2(server_cs));
+		goto error;
+	}
+
+	if (!unlang_section(section)) {
+		REDEBUG("Failed to find pre-compiled unlang for section %s %s { ... }",
+			cf_section_name1(server_cs), cf_section_name2(server_cs));
+		goto error;
+	}
+
+	RDEBUG2("Validating certificate");
+
+	/*
+	 *	Catch the interpreter on the way back up the stack
+	 */
+	unlang_push_function(request, NULL, eap_tls_virtual_server_result, eap_session);
+
+	/*
+	 *	Push unlang instructions for the virtual server section
+	 */
+	unlang_push_section(request, section, RLM_MODULE_NOOP, UNLANG_SUB_FRAME);
+
+	return RLM_MODULE_YIELD;
+}
+
+static rlm_rcode_t mod_process(void *instance, eap_session_t *eap_session)
+{
+	eap_tls_status_t	status;
+	eap_tls_session_t	*eap_tls_session = talloc_get_type_abort(eap_session->opaque, eap_tls_session_t);
+	tls_session_t		*tls_session = eap_tls_session->tls_session;
+	REQUEST			*request = eap_session->request;
+	rlm_eap_tls_t		*inst = talloc_get_type_abort(instance, rlm_eap_tls_t);
+
+	status = eap_tls_process(eap_session);
+	if ((status == EAP_TLS_INVALID) || (status == EAP_TLS_FAIL)) {
+		REDEBUG("[eap-tls process] = %s", fr_int2str(eap_tls_status_table, status, "<INVALID>"));
+	} else {
+		RDEBUG2("[eap-tls process] = %s", fr_int2str(eap_tls_status_table, status, "<INVALID>"));
+	}
+
 	switch (status) {
-		/*
-		 *	EAP-TLS handshake was successful, return an
-		 *	EAP-TLS-Success packet here.
-		 *
-		 *	If a virtual server was configured, check that
-		 *	it accepts the certificates, too.
-		 */
-	case FR_TLS_SUCCESS:
-		if (inst->virtual_server) {
-			VALUE_PAIR *vp;
-			REQUEST *fake;
+	/*
+	 *	EAP-TLS handshake was successful, return an
+	 *	EAP-TLS-Success packet here.
+	 *
+	 *	If a virtual server was configured, check that
+	 *	it accepts the certificates, too.
+	 */
+	case EAP_TLS_ESTABLISHED:
+		if (inst->virtual_server) return eap_tls_virtual_server(inst, eap_session);
+		if (eap_tls_success(eap_session) < 0) return RLM_MODULE_FAIL;
 
-			/* create a fake request */
-			fake = request_alloc_fake(request);
-			rad_assert(!fake->packet->vps);
+		return RLM_MODULE_OK;
 
-			fake->packet->vps = paircopy(fake->packet, request->packet->vps);
+	/*
+	 *	The TLS code is still working on the TLS
+	 *	exchange, and it's a valid TLS request.
+	 *	do nothing.
+	 */
+	case EAP_TLS_HANDLED:
+		return RLM_MODULE_HANDLED;
 
-			/* set the virtual server to use */
-			if ((vp = pairfind(request->config_items, PW_VIRTUAL_SERVER, 0, TAG_ANY)) != NULL) {
-				fake->server = vp->vp_strvalue;
-			} else {
-				fake->server = inst->virtual_server;
-			}
+	/*
+	 *	Handshake is done, proceed with decoding tunneled
+	 *	data.
+	 */
+	case EAP_TLS_RECORD_RECV_COMPLETE:
+		REDEBUG("Received unexpected tunneled data after successful handshake");
+		eap_tls_fail(eap_session);
 
-			RDEBUG("Processing EAP-TLS Certificate check:");
-			debug_pair_list(fake->packet->vps);
-
-			RDEBUG("server %s {", fake->server);
-
-			rad_virtual_server(fake);
-
-			RDEBUG("} # server %s", fake->server);
-
-			/* copy the reply vps back to our reply */
-			pairfilter(request->reply, &request->reply->vps,
-				  &fake->reply->vps, 0, 0, TAG_ANY);
-
-			/* reject if virtual server didn't return accept */
-			if (fake->reply->code != PW_CODE_AUTHENTICATION_ACK) {
-				RDEBUG2("Certificates were rejected by the virtual server");
-				request_free(&fake);
-				eaptls_fail(handler, 0);
-				return 0;
-			}
-
-			request_free(&fake);
-			/* success */
-		}
-		break;
-
-		/*
-		 *	The TLS code is still working on the TLS
-		 *	exchange, and it's a valid TLS request.
-		 *	do nothing.
-		 */
-	case FR_TLS_HANDLED:
-		return 1;
-
-		/*
-		 *	Handshake is done, proceed with decoding tunneled
-		 *	data.
-		 */
-	case FR_TLS_OK:
-		RDEBUG2("Received unexpected tunneled data after successful handshake");
-#ifndef NDEBUG
-		if ((debug_flag > 2) && fr_log_fp) {
-			unsigned int i;
-			unsigned int data_len;
-			unsigned char buffer[1024];
-
-			data_len = (tls_session->record_minus)(&tls_session->dirty_in,
-						buffer, sizeof(buffer));
-			DEBUG("  Tunneled data (%u bytes)", data_len);
-			for (i = 0; i < data_len; i++) {
-				if ((i & 0x0f) == 0x00) fprintf(fr_log_fp, "  %x: ", i);
-				if ((i & 0x0f) == 0x0f) fprintf(fr_log_fp, "\n");
-
-				fprintf(fr_log_fp, "%02x ", buffer[i]);
-			}
-			fprintf(fr_log_fp, "\n");
-		}
-#endif
-
-		eaptls_fail(handler, 0);
-		return 0;
-		break;
+		return RLM_MODULE_INVALID;
 
 		/*
 		 *	Anything else: fail.
@@ -240,26 +200,112 @@ static int mod_authenticate(void *type_arg, eap_handler_t *handler)
 		 *	the client can't re-use it.
 		 */
 	default:
-		tls_fail(tls_session);
+		tls_cache_deny(tls_session);
 
-		return 0;
+		return RLM_MODULE_REJECT;
+	}
+}
+
+/*
+ *	Send an initial eap-tls request to the peer, using the libeap functions.
+ */
+static rlm_rcode_t mod_session_init(void *uctx, eap_session_t *eap_session)
+{
+	eap_tls_session_t	*eap_tls_session;
+	rlm_eap_tls_t		*inst = talloc_get_type_abort(uctx, rlm_eap_tls_t);
+	VALUE_PAIR		*vp;
+	bool			client_cert;
+
+	eap_session->tls = true;
+
+	/*
+	 *	EAP-TLS-Require-Client-Cert attribute will override
+	 *	the require_client_cert configuration option.
+	 */
+	vp = fr_pair_find_by_da(eap_session->request->control, attr_eap_tls_require_client_cert, TAG_ANY);
+	if (vp) {
+		client_cert = vp->vp_uint32 ? true : false;
+	} else {
+		client_cert = inst->req_client_cert;
 	}
 
 	/*
-	 *	Success: Automatically return MPPE keys.
+	 *	EAP-TLS always requires a client certificate.
 	 */
-	return eaptls_success(handler, 0);
+	eap_session->opaque = eap_tls_session = eap_tls_session_init(eap_session, inst->tls_conf, client_cert);
+	if (!eap_tls_session) return RLM_MODULE_FAIL;
+
+	eap_tls_session->include_length = inst->include_length;
+	eap_tls_session->tls_session->prf_label = "client EAP encryption";
+
+	/*
+	 *	TLS session initialization is over.  Now handle TLS
+	 *	related handshaking or application data.
+	 */
+	if (eap_tls_start(eap_session) < 0) {
+		talloc_free(eap_tls_session);
+		return RLM_MODULE_FAIL;
+	}
+
+	eap_session->process = mod_process;
+
+	return RLM_MODULE_HANDLED;
+}
+
+/*
+ *	Attach the EAP-TLS module.
+ */
+static int mod_instantiate(void *instance, CONF_SECTION *cs)
+{
+	rlm_eap_tls_t *inst = talloc_get_type_abort(instance, rlm_eap_tls_t);
+
+	inst->tls_conf = eap_tls_conf_parse(cs, "tls");
+	if (!inst->tls_conf) {
+		ERROR("Failed initializing SSL context");
+		return -1;
+	}
+
+	/*
+	 *	Compile virtual server sections.
+	 *
+	 *	FIXME - We can use proper section names now instead of relying on Autz-Type
+	 */
+	if (inst->virtual_server) {
+		CONF_SECTION	*server_cs;
+		int		ret;
+
+		server_cs = virtual_server_find(inst->virtual_server);
+		if (!server_cs) {
+			ERROR("Can't find virtual server \"%s\"", inst->virtual_server);
+			return -1;
+		}
+
+		ret = unlang_compile_subsection(server_cs, "recv", "Access-Request", MOD_AUTHORIZE, NULL);
+		if (ret == 0) {
+			cf_log_err(server_cs, "Failed finding 'recv Access-Request { ... }' "
+				   "section of virtual server %s", cf_section_name2(server_cs));
+			return -1;
+		}
+		if (ret < 0) return -1;
+	}
+
+	return 0;
 }
 
 /*
  *	The module name should be the only globally exported symbol.
  *	That is, everything else should be 'static'.
  */
-rlm_eap_module_t rlm_eap_tls = {
-	"eap_tls",
-	eaptls_attach,			/* attach */
-	eaptls_initiate,		/* Start the initial request */
-	NULL,				/* authorization */
-	mod_authenticate,		/* authentication */
-	NULL				/* detach */
+extern rlm_eap_submodule_t rlm_eap_tls;
+rlm_eap_submodule_t rlm_eap_tls = {
+	.name		= "eap_tls",
+	.magic		= RLM_MODULE_INIT,
+
+	.provides	= { FR_EAP_TLS },
+	.inst_size	= sizeof(rlm_eap_tls_t),
+	.config		= submodule_config,
+	.instantiate	= mod_instantiate,	/* Create new submodule instance */
+
+	.session_init	= mod_session_init,	/* Initialise a new EAP session */
+	.entry_point	= mod_process		/* Process next round of EAP method */
 };

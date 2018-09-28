@@ -15,14 +15,16 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * Copyright 2012  The FreeRADIUS server project
- * Copyright 2012  Alan DeKok <aland@networkradius.com>
+ * @copyright 2012  The FreeRADIUS server project
+ * @copyright 2012  Alan DeKok <aland@networkradius.com>
  */
+
+#define LOG_PREFIX "rlm_securid - "
 
 #include <stdio.h>
 #include "rlm_securid.h"
 
-static void		securid_sessionlist_clean_expired(rlm_securid_t *inst, REQUEST *request, time_t timestamp);
+static void securid_sessionlist_clean_expired(rlm_securid_t *inst, REQUEST *request, time_t timestamp);
 
 static SECURID_SESSION* securid_sessionlist_delete(rlm_securid_t *inst,
 						   SECURID_SESSION *session);
@@ -31,9 +33,7 @@ SECURID_SESSION* securid_session_alloc(void)
 {
 	SECURID_SESSION	*session;
 
-	session = rad_malloc(sizeof(SECURID_SESSION));
-	memset(session, 0, sizeof(SECURID_SESSION));
-
+	session = talloc_zero(NULL, SECURID_SESSION);
 	session->sdiHandle = SDI_HANDLE_NONE;
 
 	return session;
@@ -42,27 +42,17 @@ SECURID_SESSION* securid_session_alloc(void)
 void securid_session_free(UNUSED rlm_securid_t *inst,REQUEST *request,
 			  SECURID_SESSION *session)
 {
-	if (!session)
-		return;
+	if (!session) return;
 
-	RDEBUG2("Freeing session id=%d identity='%s' state='%s'",
-			 session->session_id,SAFE_STR(session->identity),session->state);
-
-	if (session->identity) {
-		free(session->identity);
-		session->identity = NULL;
-	}
-	if (session->pin) {
-		free(session->pin);
-		session->pin = NULL;
-	}
+	RDEBUG2("Freeing session id=%d identity='%s' state='%s'", session->session_id,
+		SAFE_STR(session->identity), session->state);
 
 	if (session->sdiHandle != SDI_HANDLE_NONE) {
 		SD_Close(session->sdiHandle);
 		session->sdiHandle = SDI_HANDLE_NONE;
 	}
 
-	free(session);
+	talloc_free(session);
 }
 
 
@@ -72,7 +62,7 @@ void securid_sessionlist_free(rlm_securid_t *inst,REQUEST *request)
 
 	pthread_mutex_lock(&(inst->session_mutex));
 
-       	for (node = inst->session_head; node != NULL; node = next) {
+	for (node = inst->session_head; node != NULL; node = next) {
 		next = node->next;
 		securid_session_free(inst,request,node);
 	}
@@ -90,20 +80,16 @@ void securid_sessionlist_free(rlm_securid_t *inst,REQUEST *request)
  *	Since we're adding it to the list, we guess that this means
  *	the packet needs a State attribute.  So add one.
  */
-int securid_sessionlist_add(rlm_securid_t *inst,REQUEST *request,
-			    SECURID_SESSION *session)
+int securid_sessionlist_add(rlm_securid_t *inst,REQUEST *request, SECURID_SESSION *session)
 {
 	int		status = 0;
 	VALUE_PAIR	*state;
-
-	rad_assert(session != NULL);
-	rad_assert(request != NULL);
 
 	/*
 	 *	The time at which this request was made was the time
 	 *	at which it was received by the RADIUS server.
 	 */
-	session->timestamp = request->timestamp;
+	session->timestamp = request->packet->timestamp;
 
 	session->src_ipaddr = request->packet->src_ipaddr;
 
@@ -127,6 +113,8 @@ int securid_sessionlist_add(rlm_securid_t *inst,REQUEST *request,
 		session->session_id = inst->last_session_id;
 		RDEBUG2("Creating a new session with id=%d\n",session->session_id);
 	}
+
+	memset(session->state, 0, sizeof(session->state));
 	snprintf(session->state,sizeof(session->state)-1,"FRR-CH %d|%d",session->session_id,session->trips+1);
 	RDEBUG2("Inserting session id=%d identity='%s' state='%s' to the session list",
 			 session->session_id,SAFE_STR(session->identity),session->state);
@@ -136,9 +124,8 @@ int securid_sessionlist_add(rlm_securid_t *inst,REQUEST *request,
 	 *	Generate State, since we've been asked to add it to
 	 *	the list.
 	 */
-	state = pairmake_reply("State", session->state, T_OP_EQ);
-	if (!state) return -1;
-	state->length = SECURID_STATE_LEN;
+	MEM(pair_update_reply(&state, attr_state) >= 0);
+	fr_pair_value_memcpy(state, session->state, sizeof(session->state));
 
 	status = rbtree_insert(inst->session_tree, session);
 	if (status) {
@@ -168,8 +155,8 @@ int securid_sessionlist_add(rlm_securid_t *inst,REQUEST *request,
 	pthread_mutex_unlock(&(inst->session_mutex));
 
 	if (!status) {
-		pairfree(&state);
-		ERROR("rlm_securid: Failed to store session");
+		fr_pair_list_free(&state);
+		ERROR("Failed to store session");
 		return -1;
 	}
 
@@ -190,19 +177,19 @@ SECURID_SESSION *securid_sessionlist_find(rlm_securid_t *inst, REQUEST *request)
 
 	/* clean expired sessions if any */
 	pthread_mutex_lock(&(inst->session_mutex));
-	securid_sessionlist_clean_expired(inst, request, request->timestamp);
+	securid_sessionlist_clean_expired(inst, request, request->packet->timestamp);
 	pthread_mutex_unlock(&(inst->session_mutex));
 
 	/*
 	 *	We key the sessions off of the 'state' attribute
 	 */
-	state = pairfind(request->packet->vps, PW_STATE, 0, TAG_ANY);
+	state = fr_pair_find_by_da(request->packet->vps, attr_state, TAG_ANY);
 	if (!state) {
 		return NULL;
 	}
 
-	if (state->length != SECURID_STATE_LEN) {
-	  ERROR("rlm_securid: Invalid State variable. length=%d", (int) state->length);
+	if (state->vp_length != SECURID_STATE_LEN) {
+	  ERROR("Invalid State variable. length=%d", (int) state->vp_length);
 		return NULL;
 	}
 
@@ -222,7 +209,7 @@ SECURID_SESSION *securid_sessionlist_find(rlm_securid_t *inst, REQUEST *request)
 	 *	Might not have been there.
 	 */
 	if (!session) {
-		ERROR("rlm_securid: No SECURID session matching the State variable");
+		ERROR("No SECURID session matching the State variable");
 		return NULL;
 	}
 
@@ -285,7 +272,7 @@ static void securid_sessionlist_clean_expired(rlm_securid_t *inst, REQUEST *requ
 	 *	Delete old sessions from the list
 	 *
 	 */
-       	while((session = inst->session_head)) {
+	while((session = inst->session_head)) {
 		if ((timestamp - session->timestamp) > inst->timer_limit) {
 			rbnode_t *node;
 			node = rbtree_find(inst->session_tree, session);

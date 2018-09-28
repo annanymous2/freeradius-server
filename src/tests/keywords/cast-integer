@@ -1,0 +1,23 @@
+#
+#  PRE: update if
+#
+update {
+	&control:Cleartext-Password := 'hello'
+	&request:Class := 0x00000101
+}
+
+if (<integer>&Class[0] == 257) {
+	success
+}
+
+if (<integer>&Class[0] < 256) {
+	update reply {
+		&Filter-Id += "wrong"
+	}
+}
+
+if (<integer>&Class[0] > 257) {
+	update reply {
+		&Filter-Id += "wrong"
+	}
+}

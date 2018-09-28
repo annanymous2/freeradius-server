@@ -23,6 +23,17 @@
 #   replacing the line after the "mkdir"
 #
 
+#
+#  You can watch what it's doing by:
+#
+#	$ VERBOSE=1 make ... args ...
+#
+ifeq "${VERBOSE}" ""
+    Q=@
+else
+    Q=
+endif
+
 # ADD_INSTALL_RULE.exe - Parameterized "function" that adds a new rule
 #   and phony target for installing an executable.
 #
@@ -35,11 +46,10 @@ define ADD_INSTALL_RULE.exe
     install: $${${1}_INSTALLDIR}/$(notdir ${1})
 
     # Install executable ${1}
-    $${${1}_INSTALLDIR}/$(notdir ${1}): $${${1}_BUILD}/${1}
+    $${${1}_INSTALLDIR}/$(notdir ${1}): ${JLIBTOOL} $${${1}_BUILD}/${1} | $${${1}_INSTALLDIR}
 	@$(ECHO) INSTALL ${1}
-	@$${PROGRAM_INSTALL} -d -m 755 $${${1}_INSTALLDIR}
-	@$${PROGRAM_INSTALL} -c -m 755 $${BUILD_DIR}/bin/${1} $${${1}_INSTALLDIR}/
-	@$${${1}_POSTINSTALL}
+	$(Q)$${PROGRAM_INSTALL} -c -m 755 $${BUILD_DIR}/bin/${1} $${${1}_INSTALLDIR}/
+	$(Q)$${${1}_POSTINSTALL}
 
 endef
 
@@ -55,11 +65,10 @@ define ADD_INSTALL_RULE.a
     install: $${${1}_INSTALLDIR}/$(notdir ${1})
 
     # Install static library ${1}
-    $${${1}_INSTALLDIR}/$(notdir ${1}): ${1}
+    $${${1}_INSTALLDIR}/$(notdir ${1}): ${JLIBTOOL} ${1} | $${${1}_INSTALLDIR}
 	@$(ECHO) INSTALL ${1}
-	@$${PROGRAM_INSTALL} -d -m 755 $${${1}_INSTALLDIR}
-	@$${PROGRAM_INSTALL} -c -m 755 $${BUILD_DIR}/lib/${1} $${${1}_INSTALLDIR}/
-	@$${${1}_POSTINSTALL}
+	$(Q)$${PROGRAM_INSTALL} -c -m 755 $${BUILD_DIR}/lib/${1} $${${1}_INSTALLDIR}/
+	$(Q)$${${1}_POSTINSTALL}
 
 endef
 
@@ -78,11 +87,10 @@ define ADD_INSTALL_RULE.la
     install: $${${1}_INSTALLDIR}/$(notdir ${1})
 
     # Install libtool library ${1}
-    $${${1}_INSTALLDIR}/$(notdir ${1}): $${${1}_BUILD}/${1}
+    $${${1}_INSTALLDIR}/$(notdir ${1}): ${JLIBTOOL} $${${1}_BUILD}/${1} | $${${1}_INSTALLDIR}
 	@$(ECHO) INSTALL ${1}
-	@$${PROGRAM_INSTALL} -d -m 755 $${${1}_INSTALLDIR}
-	@$${PROGRAM_INSTALL} -c -m 755 $${RELINK_FLAGS_MIN} $${BUILD_DIR}/lib/${1} $${${1}_INSTALLDIR}/
-	@$${${1}_POSTINSTALL}
+	$(Q)$${PROGRAM_INSTALL} -c -m 755 $${LOCAL_FLAGS_MIN} $${BUILD_DIR}/lib/${1} $${${1}_INSTALLDIR}/
+	$(Q)$${${1}_POSTINSTALL}
 
 endef
 
@@ -99,11 +107,57 @@ define ADD_INSTALL_RULE.man
     install: ${2}/$(notdir ${1})
 
     # Install manual page ${1}
-    ${2}/$(notdir ${1}): ${1}
+    ${2}/$(notdir ${1}): ${JLIBTOOL} ${1} | ${2}
 	@$(ECHO) INSTALL $(notdir ${1})
-	@[ -d ${2} ] || $${PROGRAM_INSTALL} -d -m 755 ${2}
-	@$${PROGRAM_INSTALL} -c -m 644 ${1} ${2}/
+	$(Q)$${PROGRAM_INSTALL} -c -m 644 ${1} ${2}/
 
+endef
+
+
+# ADD_INSTALL_RULE.h - Parameterized "function" that adds a new rule
+#   and phony target for installing a header file.
+#
+#  Note that we re-write the header files to get rid of
+#  "freeradius-devel" and replace it with "freeradius"
+#
+#  install-sh function for creating directories gets confused
+#  if there's a trailing slash, tries to create a directory
+#  it already created, and fails...
+#
+# ${1} = filename where it will be installed
+# ${2} = filename in the source
+#
+#  Because things in .../src/lib/io/foo.h go into .../io/foo.h
+#
+#  For 'sed', the expression must deal with indentation after the hash
+#  and copy it to the substitution string.  The hash is not anchored
+#  in order to allow substitution in function documentation.
+#
+#   USE WITH EVAL
+#
+define ADD_INSTALL_RULE.h
+    ALL_INSTALL += $(DESTDIR)/${includedir}/${1}
+
+    install: $(DESTDIR)/${includedir}/${1}
+
+    $(DESTDIR)/${includedir}/${1}: ${2}
+	${Q}echo INSTALL ${1}
+	${Q}$(INSTALL) -d -m 755 `echo $$(dir $$@) | sed 's/\/$$$$//'`
+	${Q}sed -e 's/#\([\\t ]*\)include <freeradius-devel\/\([^>]*\)>/#\1include <freeradius\/\2>/g' < $$< > $$@
+	${Q}chmod 644 $$@
+endef
+
+# ADD_INSTALL_RULE.dir - Parameterized "function" that adds a new rule
+#   and phony target for installing a directory
+#
+#   USE WITH EVAL
+#
+define ADD_INSTALL_RULE.dir
+    # Install directory
+    .PHONY: ${1}
+    ${1}: ${JLIBTOOL}
+	@$(ECHO) INSTALL -d -m 755 ${1}
+	$(Q)$${PROGRAM_INSTALL} -d -m 755 ${1}
 endef
 
 
@@ -118,16 +172,16 @@ define ADD_INSTALL_TARGET
         ifeq "$${TGT_INSTALLDIR}" ".."
             TGT_INSTALLDIR := $${bindir}
         endif
-    else 
+    else
         ifeq "$${TGT_INSTALLDIR}" ".."
             TGT_INSTALLDIR := $${libdir}
         endif
     endif
 
-    ${1}_INSTALLDIR := ${LL}$${DESTDIR}$${TGT_INSTALLDIR}
-
     # add rules to install the target
-    ifneq "$${${1}_INSTALLDIR}" ""
+    ifneq "$${TGT_INSTALLDIR}" ""
+        ${1}_INSTALLDIR := ${LL}$${DESTDIR}$${TGT_INSTALLDIR}
+
         $$(eval $$(call ADD_INSTALL_RULE$${${1}_SUFFIX},${1}))
     endif
 
@@ -184,15 +238,13 @@ ifeq "${mandir}" ""
     mandir = ${datadir}/man
 endif
 ifeq "${docdir}" ""
-    ifneq "${PROJECT_NAME}" ""
-        docdir = ${datadir}/doc/${PROJECT_NAME}
-    endif
+    docdir = ${datadir}/doc/${PROJECT_NAME}
 endif
 ifeq "${logdir}" ""
     logdir = ${localstatedir}/log/
 endif
 ifeq "${includedir}" ""
-    includedir = ${prefix}/include
+    includedir = ${prefix}/include/
 endif
 
 
@@ -203,7 +255,7 @@ endif
 # We also want to uninstall only when there are "install_foo" targets.
 .PHONY: uninstall
 uninstall:
-	@rm -f ${ALL_INSTALL} ./.no_such_file
+	$(Q)rm -f ${ALL_INSTALL} ./.no_such_file
 
 # Wrapper around INSTALL
 ifeq "${PROGRAM_INSTALL}" ""
@@ -225,5 +277,5 @@ install: install_ERROR
 .PHONY: install_ERROR
 install_ERROR:
 	@$(ECHO) Please define INSTALL in order to enable the installation rules.
-	@exit 1
+	$(Q)exit 1
 endif

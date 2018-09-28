@@ -1,61 +1,59 @@
 /**
  * $Id$
- * @file validate.c
+ * @file rlm_yubikey/validate.c
  * @brief Authentication for yubikey OTP tokens using the ykclient library.
  *
  * @author Arran Cudbard-Bell <a.cudbardb@networkradius.com>
  * @copyright 2013 The FreeRADIUS server project
  * @copyright 2013 Network RADIUS <info@networkradius.com>
  */
+#define LOG_PREFIX "rlm_yubikey (%s) - "
+#define LOG_PREFIX_ARGS inst->name
+
 #include "rlm_yubikey.h"
 
 #ifdef HAVE_YKCLIENT
-#include <freeradius-devel/connection.h>
-
-/** Creates a new connection handle for use by the FR connection API.
- *
- * Matches the fr_connection_create_t function prototype, is passed to
- * fr_connection_pool_init, and called when a new connection is required by the
- * connection pool API.
- *
- * @see mod_conn_delete
- * @see fr_connection_pool_init
- * @see fr_connection_create_t
- * @see connection.c
- *
- * @param[in] instance configuration data.
- * @return connection handle or NULL if the connection failed or couldn't
- *	be initialised.
- */
-static void *mod_socket_create(void *instance)
-{
-	rlm_yubikey_t *inst = instance;
-	ykclient_rc status;
-	ykclient_handle_t *yandle;
-
-	status = ykclient_handle_init(inst->ykc, &yandle);
-	if (status != YKCLIENT_OK) {
-		EDEBUG("rlm_yubikey (%s): %s", inst->name, ykclient_strerror(status));
-
-		return NULL;
-	}
-
-	return yandle;
-}
+#include <freeradius-devel/server/pool.h>
 
 /** Frees a ykclient handle
  *
- * @param[in] instance configuration data.
- * @param[in] handle rlm_yubikey_handle_t to close and free.
- * @return returns true.
+ * @param[in] yandle rlm_yubikey_handle_t to close and free.
+ * @return returns 0.
  */
-static int mod_socket_delete(UNUSED void *instance, void *handle)
+static int _mod_conn_free(ykclient_handle_t **yandle)
 {
-	ykclient_handle_t *yandle = handle;
+	ykclient_handle_done(yandle);
 
-	ykclient_handle_done(&yandle);
+	return 0;
+}
 
-	return true;
+/** Creates a new connection handle for use by the FR connection API.
+ *
+ * Matches the fr_pool_connection_create_t function prototype, is passed to
+ * fr_pool_init, and called when a new connection is required by the
+ * connection pool API.
+ *
+ * @see fr_pool_init
+ * @see fr_pool_connection_create_t
+ * @see connection.c
+ */
+static void *mod_conn_create(TALLOC_CTX *ctx, void *instance, UNUSED struct timeval const *timeout)
+{
+	rlm_yubikey_t const *inst = instance;
+	ykclient_rc status;
+	ykclient_handle_t *yandle, **marker;
+
+	status = ykclient_handle_init(inst->ykc, &yandle);
+	if (status != YKCLIENT_OK) {
+		ERROR("%s", ykclient_strerror(status));
+
+		return NULL;
+	}
+	marker = talloc(ctx, ykclient_handle_t *);
+	talloc_set_destructor(marker, _mod_conn_free);
+	*marker = yandle;
+
+	return yandle;
 }
 
 int rlm_yubikey_ykclient_init(CONF_SECTION *conf, rlm_yubikey_t *inst)
@@ -63,38 +61,34 @@ int rlm_yubikey_ykclient_init(CONF_SECTION *conf, rlm_yubikey_t *inst)
 	ykclient_rc status;
 	CONF_SECTION *servers;
 
-	char prefix[100];
-
 	int count = 0;
 
 	if (!inst->client_id) {
-		EDEBUG("rlm_yubikey (%s): client_id must be set when validation is enabled", inst->name);
+		ERROR("validation.client_id must be set (to a valid id) when validation is enabled");
 
 		return -1;
 	}
 
-	if (!inst->api_key) {
-		EDEBUG("rlm_yubikey (%s): api_key must be set when validation is enabled", inst->name);
+	if (!inst->api_key || !*inst->api_key || is_zero(inst->api_key)) {
+		ERROR("validation.api_key must be set (to a valid key) when validation is enabled");
 
 		return -1;
 	}
 
-	DEBUG("rlm_yubikey (%s): Initialising ykclient", inst->name);
+	DEBUG("Initialising ykclient");
 
 	status = ykclient_global_init();
 	if (status != YKCLIENT_OK) {
 yk_error:
-		EDEBUG("rlm_yubikey (%s): %s", ykclient_strerror(status), inst->name);
+		ERROR("%s", ykclient_strerror(status));
 
 		return -1;
 	}
 
 	status = ykclient_init(&inst->ykc);
-	if (status != YKCLIENT_OK) {
-		goto yk_error;
-	}
+	if (status != YKCLIENT_OK) goto yk_error;
 
-	servers = cf_section_sub_find(conf, "servers");
+	servers = cf_section_find(conf, "servers", CF_IDENT_ANY);
 	if (servers) {
 		CONF_PAIR *uri, *first;
 		/*
@@ -129,14 +123,13 @@ yk_error:
 init:
 	status = ykclient_set_client_b64(inst->ykc, inst->client_id, inst->api_key);
 	if (status != YKCLIENT_OK) {
-		EDEBUG("rlm_yubikey (%s): Failed setting API credentials: %s", ykclient_strerror(status), inst->name);
+		ERROR("%s", ykclient_strerror(status));
 
 		return -1;
 	}
 
-	snprintf(prefix, sizeof(prefix), "rlm_yubikey (%s)", inst->name);
-	inst->conn_pool = fr_connection_pool_init(conf, inst, mod_socket_create, NULL, mod_socket_delete, prefix);
-	if (!inst->conn_pool) {
+	inst->pool = module_connection_pool_init(conf, inst, mod_conn_create, NULL, inst->name, NULL, NULL);
+	if (!inst->pool) {
 		ykclient_done(&inst->ykc);
 
 		return -1;
@@ -147,23 +140,21 @@ init:
 
 int rlm_yubikey_ykclient_detach(rlm_yubikey_t *inst)
 {
-	fr_connection_pool_delete(inst->conn_pool);
+	fr_pool_free(inst->pool);
 	ykclient_done(&inst->ykc);
 	ykclient_global_done();
 
 	return 0;
 }
 
-rlm_rcode_t rlm_yubikey_validate(rlm_yubikey_t *inst, REQUEST *request,  VALUE_PAIR *otp)
+rlm_rcode_t rlm_yubikey_validate(rlm_yubikey_t const *inst, REQUEST *request, char const *passcode)
 {
 	rlm_rcode_t rcode = RLM_MODULE_OK;
 	ykclient_rc status;
 	ykclient_handle_t *yandle;
 
-	yandle = fr_connection_get(inst->conn_pool);
-	if (!yandle) {
-		return RLM_MODULE_FAIL;
-	}
+	yandle = fr_pool_connection_get(inst->pool, request);
+	if (!yandle) return RLM_MODULE_FAIL;
 
 	/*
 	 *	The libcurl multi-handle interface will tear down the TCP sockets for any partially completed
@@ -181,26 +172,25 @@ rlm_rcode_t rlm_yubikey_validate(rlm_yubikey_t *inst, REQUEST *request,  VALUE_P
 	 */
 	ykclient_handle_cleanup(yandle);
 
-	status = ykclient_request_process(inst->ykc, yandle, otp->vp_strvalue);
+	status = ykclient_request_process(inst->ykc, yandle, passcode);
 	if (status != YKCLIENT_OK) {
 		REDEBUG("%s", ykclient_strerror(status));
-
 		switch (status) {
-			case YKCLIENT_BAD_OTP:
-			case YKCLIENT_REPLAYED_OTP:
-				rcode = RLM_MODULE_REJECT;
-				break;
+		case YKCLIENT_BAD_OTP:
+		case YKCLIENT_REPLAYED_OTP:
+			rcode = RLM_MODULE_REJECT;
+			break;
 
-			case YKCLIENT_NO_SUCH_CLIENT:
-				rcode = RLM_MODULE_NOTFOUND;
-				break;
+		case YKCLIENT_NO_SUCH_CLIENT:
+			rcode = RLM_MODULE_NOTFOUND;
+			break;
 
-			default:
-				rcode = RLM_MODULE_FAIL;
+		default:
+			rcode = RLM_MODULE_FAIL;
 		}
 	}
 
-	fr_connection_release(inst->conn_pool, yandle);
+	fr_pool_connection_release(inst->pool, request, yandle);
 
 	return rcode;
 }

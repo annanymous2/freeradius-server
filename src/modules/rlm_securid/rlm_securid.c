@@ -1,7 +1,8 @@
 /*
  *   This program is is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License, version 2 if the
- *   License as published by the Free Software Foundation.
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation; either version 2 of the License, or (at
+ *   your option) any later version.
  *
  *   This program is distributed in the hope that it will be useful,
  *   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,8 +24,10 @@
  * @copyright 2012  The FreeRADIUS server project
  * @copyright 2012  Alan DeKok <aland@networkradius.com>
  */
-#include <freeradius-devel/radiusd.h>
-#include <freeradius-devel/modules.h>
+#define "rlm_securid - "
+
+#include <freeradius-devel/server/base.h>
+#include <freeradius-devel/server/modules.h>
 #include <ctype.h>
 
 #include "rlm_securid.h"
@@ -39,17 +42,34 @@ typedef enum {
 
 
 static const CONF_PARSER module_config[] = {
-	{ "timer_expire", PW_TYPE_INTEGER,
-	  offsetof(rlm_securid_t, timer_limit), NULL, "600"},
-	{ "max_sessions", PW_TYPE_INTEGER,
-	  offsetof(rlm_securid_t, max_sessions), NULL, "2048"},
-	{ "max_trips_per_session", PW_TYPE_INTEGER,
-	  offsetof(rlm_securid_t, max_trips_per_session), NULL, NULL},
-	{ "max_round_trips", PW_TYPE_INTEGER,
-	  offsetof(rlm_securid_t, max_trips_per_session), NULL, "6"},
-	{ NULL, -1, 0, NULL, NULL }		/* end the list */
+	{ FR_CONF_OFFSET("timer_expire", FR_TYPE_UINT32, rlm_securid_t, timer_limit), .dflt = "600" },
+	{ FR_CONF_OFFSET("max_sessions", FR_TYPE_UINT32, rlm_securid_t, max_sessions), .dflt = "2048" },
+	{ FR_CONF_OFFSET("max_trips_per_session", FR_TYPE_UINT32, rlm_securid_t, max_trips_per_session) },
+	{ FR_CONF_OFFSET("max_round_trips", FR_TYPE_UINT32, rlm_securid_t, max_trips_per_session), .dflt = "6" },
+	CONF_PARSER_TERMINATOR
 };
 
+static fr_dict_t *dict_radius;
+
+extern fr_dict_autoload_t mem_dict[];
+fr_dict_autoload_t mem_dict[] = {
+	{ .out = &dict_radius, .proto = "radius" },
+	{ NULL }
+};
+
+fr_dict_attr_t const *attr_prompt;
+fr_dict_attr_t const *attr_reply_message;
+fr_dict_attr_t const *attr_state;
+fr_dict_attr_t const *attr_user_password;
+
+extern fr_dict_attr_autoload_t mem_dict_attr[];
+fr_dict_attr_autoload_t mem_dict_attr[] = {
+	{ .out = &attr_prompt, .name = "Prompt", .type = FR_TYPE_UINT32, .dict = &dict_radius },
+	{ .out = &attr_reply_message, .name = "Reply-Message", .type = FR_TYPE_STRING, .dict = &dict_radius },
+	{ .out = &attr_state, .name = "State", .type = FR_TYPE_OCTETS, .dict = &dict_radius },
+	{ .out = &attr_user_password, .name = "User-Password", .type = FR_TYPE_STRING, .dict = &dict_radius },
+	{ NULL }
+};
 
 static SD_CHAR empty_pin[] = "";
 
@@ -143,7 +163,7 @@ static SECURID_AUTH_RC securidAuth(void *instance, REQUEST *request,
 			securid_session = securid_session_alloc();
 			securid_session->sdiHandle = sdiHandle; /* save ACE handle for future use */
 			securid_session->securidSessionState = NEW_PIN_REQUIRED_STATE;
-			securid_session->identity = strdup(username);
+			securid_session->identity = talloc_typed_strdup(securid_session, username);
 
 			/* Get PIN requirements */
 			acm_ret = AceGetPinParams(sdiHandle, &pin_params);
@@ -184,7 +204,7 @@ static SECURID_AUTH_RC securidAuth(void *instance, REQUEST *request,
 			securid_session = securid_session_alloc();
 			securid_session->sdiHandle = sdiHandle;
 			securid_session->securidSessionState = NEXT_CODE_REQUIRED_STATE;
-			securid_session->identity = strdup(username);
+			securid_session->identity = talloc_typed_strdup(securid_session, username);
 
 			/* insert new session in the session list */
 			securid_sessionlist_add(inst, request, securid_session);
@@ -228,11 +248,8 @@ static SECURID_AUTH_RC securidAuth(void *instance, REQUEST *request,
 				username);
 
 			/* save the previous pin */
-			if (securid_session->pin) {
-				free(securid_session->pin);
-				securid_session->pin = NULL;
-			}
-			securid_session->pin = strdup(passcode);
+			if (securid_session->pin) TALLOC_FREE(securid_session->pin);
+			securid_session->pin = talloc_typed_strdup(securid_session, passcode);
 
 			strlcpy(replyMsgBuffer, "\r\n		 Please re-enter new PIN:", replyMsgBufferSize);
 
@@ -297,12 +314,11 @@ static SECURID_AUTH_RC securidAuth(void *instance, REQUEST *request,
 		case NEW_PIN_AUTH_VALIDATE_STATE:
 			acm_ret = SD_Check(securid_session->sdiHandle, securid_pass, securid_user);
 			if (acm_ret == ACM_OK) {
-				RDEBUG("New SecurID passcode accepted for %s.",
-				       securid_session->identity);
+				RDEBUG("New SecurID passcode accepted for %s", securid_session->identity);
 				rc = RC_SECURID_AUTH_SUCCESS;
 
 			} else {
-				INFO("SecurID: New passcode rejected for [%s].", securid_session->identity);
+				INFO("SecurID: New passcode rejected for [%s]", securid_session->identity);
 				rc = RC_SECURID_AUTH_FAILURE;
 			}
 
@@ -316,11 +332,8 @@ static SECURID_AUTH_RC securidAuth(void *instance, REQUEST *request,
 
 				/* Save the PIN for the next session
 				 * continuation */
-				if (securid_session->pin) {
-					free(securid_session->pin);
-					securid_session->pin = NULL;
-				}
-				securid_session->pin = strdup(new_pin);
+				if (securid_session->pin) TALLOC_FREE(securid_session->pin);
+				securid_session->pin = talloc_typed_strdup(securid_session, new_pin);
 
 				snprintf(replyMsgBuffer, replyMsgBufferSize,
 					 "\r\nYour new PIN is: %s\r\nDo you accept this [y/n]?",
@@ -337,9 +350,7 @@ static SECURID_AUTH_RC securidAuth(void *instance, REQUEST *request,
 				SD_Pin(securid_session->sdiHandle, &empty_pin[0]); //Cancel new PIN
 
 				/* deallocate session */
-				securid_session_free(inst, request,
-						     securid_session);
-
+				securid_session_free(inst, request, securid_session);
 				rc = RC_SECURID_AUTH_FAILURE;
 			}
 
@@ -358,8 +369,7 @@ static SECURID_AUTH_RC securidAuth(void *instance, REQUEST *request,
 				SD_Pin(securid_session->sdiHandle, &empty_pin[0]); //Cancel new PIN
 				strlcpy(replyMsgBuffer, " \r\n\r\nPin Rejected. Wait for the code on your card to change, then try again.\r\n\r\nEnter PASSCODE:", replyMsgBufferSize);
 				/* deallocate session */
-				securid_session_free(inst, request,
-						     securid_session);
+				securid_session_free(inst, request, securid_session);
 				rc = RC_SECURID_AUTH_FAILURE;
 			}
 
@@ -404,8 +414,7 @@ static SECURID_AUTH_RC securidAuth(void *instance, REQUEST *request,
 			return rc;
 
 		default:
-			ERROR("rlm_securid: Invalid session state %d for user [%s]",
-			       securid_session->securidSessionState,
+			ERROR("Invalid session state %d for user \"%s\"", securid_session->securidSessionState,
 			       username);
 			break;
 		}
@@ -422,7 +431,7 @@ static int mod_detach(void *instance)
 
 	/* delete session tree */
 	if (inst->session_tree) {
-		rbtree_free(inst->session_tree);
+		talloc_free(inst->session_tree);
 		inst->session_tree = NULL;
 	}
 
@@ -432,7 +441,7 @@ static int mod_detach(void *instance)
 }
 
 
-static int mod_instantiate(UNUSED CONF_SECTION *conf, void *instance)
+static int mod_instantiate(void *instance, UNUSED CONF_SECTION *conf)
 {
 	rlm_securid_t *inst = instance;
 
@@ -440,9 +449,9 @@ static int mod_instantiate(UNUSED CONF_SECTION *conf, void *instance)
 	 *	Lookup sessions in the tree.  We don't free them in
 	 *	the tree, as that's taken care of elsewhere...
 	 */
-	inst->session_tree = rbtree_create(securid_session_cmp, NULL, 0);
+	inst->session_tree = rbtree_talloc_create(NULL, securid_session_cmp, SECURID_SESSION NULL, 0);
 	if (!inst->session_tree) {
-		ERROR("rlm_securid: Cannot initialize session tree");
+		ERROR("Cannot initialize session tree");
 		return -1;
 	}
 
@@ -454,40 +463,41 @@ static int mod_instantiate(UNUSED CONF_SECTION *conf, void *instance)
 /*
  *	Authenticate the user via one of any well-known password.
  */
-static rlm_rcode_t mod_authenticate(void *instance, REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_authenticate(void *instance, UNUSED void *thread, REQUEST *request)
 {
-	int rcode;
-	rlm_securid_t *inst = instance;
-	char  buffer[MAX_STRING_LEN]="";
-	char const *username=NULL, *password=NULL;
-	VALUE_PAIR *vp;
+	int		rcode;
+	rlm_securid_t	const *inst = instance;
+	char		 buffer[FR_MAX_STRING_LEN]="";
+	char const	*username=NULL, *password=NULL;
+	VALUE_PAIR	*vp;
 
 	/*
 	 *	We can only authenticate user requests which HAVE
 	 *	a User-Name attribute.
 	 */
 	if (!request->username) {
-		AUTH("rlm_securid: Attribute \"User-Name\" is required for authentication");
+		REDEBUG("Attribute \"User-Name\" is required for authentication");
 		return RLM_MODULE_INVALID;
 	}
 
 	if (!request->password) {
-		RAUTH("Attribute \"Password\" is required for authentication");
+		REDEBUG("Attribute \"Password\" is required for authentication");
 		return RLM_MODULE_INVALID;
 	}
 
 	/*
 	 *	Clear-text passwords are the only ones we support.
 	 */
-	if (request->password->da->attr != PW_USER_PASSWORD) {
-		RAUTH("Attribute \"User-Password\" is required for authentication. Cannot use \"%s\".", request->password->da->name);
+	if (request->password->da != attr_user_password) {
+		REDEBUG("Attribute \"User-Password\" is required for authentication. Cannot use \"%s\"",
+			request->password->da->name);
 		return RLM_MODULE_INVALID;
 	}
 
 	/*
 	 *	The user MUST supply a non-zero-length password.
 	 */
-	if (request->password->length == 0) {
+	if (request->password->vp_length == 0) {
 		REDEBUG("Password should not be empty");
 		return RLM_MODULE_INVALID;
 	}
@@ -498,8 +508,11 @@ static rlm_rcode_t mod_authenticate(void *instance, REQUEST *request)
 	username = request->username->vp_strvalue;
 	password = request->password->vp_strvalue;
 
-	RDEBUG("User [%s] login attempt with password [%s]",
-	       username, password);
+	if (RDEBUG_ENABLED3) {
+		RDEBUG3("Login attempt with password \"%s\"", password);
+	} else {
+		RDEBUG("Login attempt with password");
+	}
 
 	rcode = securidAuth(inst, request, username, password,
 			    buffer, sizeof(buffer));
@@ -513,14 +526,11 @@ static rlm_rcode_t mod_authenticate(void *instance, REQUEST *request)
 		/* reply with Access-challenge message code (11) */
 
 		/* Generate Prompt attribute */
-		vp = paircreate(request->reply, PW_PROMPT, 0);
-
-		rad_assert(vp != NULL);
-		vp->vp_integer = 0; /* no echo */
-		pairadd(&request->reply->vps, vp);
+		MEM(pair_update_reply(&vp, attr_prompt) >= 0);
+		vp->vp_uint32 = 0; /* no echo */
 
 		/* Mark the packet as a Acceess-Challenge Packet */
-		request->reply->code = PW_CODE_ACCESS_CHALLENGE;
+		request->reply->code = FR_CODE_ACCESS_CHALLENGE;
 		RDEBUG("Sending Access-Challenge");
 		rcode = RLM_MODULE_HANDLED;
 		break;
@@ -533,8 +543,10 @@ static rlm_rcode_t mod_authenticate(void *instance, REQUEST *request)
 		break;
 	}
 
-	if (*buffer) pairmake_reply("Reply-Message", buffer, T_OP_EQ);
-
+	if (*buffer) {
+		MEM(pair_update_reply(&vp, attr_reply_message) >= 0);
+		fr_pair_value_strcpy(vp, buffer);
+	}
 	return rcode;
 }
 
@@ -548,22 +560,15 @@ static rlm_rcode_t mod_authenticate(void *instance, REQUEST *request)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-module_t rlm_securid = {
-	RLM_MODULE_INIT,
-	"securid",
-	RLM_TYPE_CHECK_CONFIG_SAFE | RLM_TYPE_HUP_SAFE,   	/* type */
-	sizeof(rlm_securid_t),
-	module_config,
-	mod_instantiate, 		/* instantiation */
-	mod_detach, 			/* detach */
-	{
-		mod_authenticate, 	/* authentication */
-		NULL, 			/* authorization */
-		NULL, 			/* preaccounting */
-		NULL, 			/* accounting */
-		NULL, 			/* checksimul */
-		NULL, 			/* pre-proxy */
-		NULL, 			/* post-proxy */
-		NULL			/* post-auth */
+extern rad_module_t rlm_securid;
+rad_module_t rlm_securid = {
+	.magic		= RLM_MODULE_INIT,
+	.name		= "securid",
+	.inst_size	= sizeof(rlm_securid_t),
+	.config		= module_config,
+	.instantiate	= mod_instantiate,
+	.detach		= mod_detach,
+	.methods = {
+		[MOD_AUTHENTICATE]	= mod_authenticate
 	},
 };

@@ -1,18 +1,38 @@
+#  Create the soft link for the protocol-specific include files
+#  before building the lib.
 #
-# Makefile
+define LIB_INCLUDE
 #
-# Version:      $Id$
+#  This is a hack to get the include files linked correctly.  We would
+#  LOVE to be able to do:
 #
-TARGET		:= libfreeradius-radius.a
+#	$${libfreeradius-${1}.la_OBJS}: | src/include/${1}
+#
+#  but GNU Make is too stupid to wait until that variable is defined
+#  to evaluate the condition.  Instead, it evaluates the rule
+#  immediately, and decides that nothing is there.
+#
+#  So, we instead depend on a targe which has already been defined.t
+#  - This is a terrible hack
+#
+src/freeradius-devel: | src/include/${1}
 
-SOURCES		:= dict.c filters.c hash.c hmac.c hmacsha1.c isaac.c log.c \
-		  misc.c missing.c md4.c md5.c pcap.c print.c radius.c rbtree.c \
-		  sha1.c snprintf.c strlcat.c strlcpy.c token.c udpfromto.c \
-		  valuepair.c fifo.c packet.c event.c getaddrinfo.c \
-		  heap.c tcp.c base64.c
+src/include/${1}:
+	$${Q}[ -e $$@ ] || ln -sf $${top_srcdir}/src/lib/${1} $$@
+	@echo LN-SF src/lib/${1} $$@
 
-SRC_CFLAGS	:= -D_LIBRADIUS -I$(top_builddir)/src
+install.src.include: $(addprefix ${SRC_INCLUDE_DIR}/,${1}/base.h)
+endef
 
-# System libraries discovered by our top level configure script, links things
-# like pthread and the regexp libraries.
-TGT_LDLIBS	:= $(LIBS) $(PCAP_LIBS)
+
+#
+#  All lib go into subdirectories of the "lib" directory.
+#
+SUBMAKEFILES := $(wildcard ${top_srcdir}/src/lib/*/all.mk)
+
+#
+#  Add library-specific rules to link include files, etc.
+#
+$(foreach x,$(SUBMAKEFILES), \
+	$(eval $(call LIB_INCLUDE,$(subst /all.mk,,$(subst ${top_srcdir}/src/lib/,,$x)))) \
+)

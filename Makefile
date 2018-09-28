@@ -7,9 +7,30 @@
 # Version:	$Id$
 #
 
-$(if $(wildcard Make.inc),,$(error Missing 'Make.inc' Run './configure [options]' and retry")) 
+#
+#  The default rule is "all".
+#
+all:
+
+#
+#  Catch people who try to use BSD make
+#
+ifeq "0" "1"
+.error GNU Make is required to build FreeRADIUS
+endif
+
+#
+#  We require Make.inc, UNLESS the target is "make deb"
+#
+#  Since "make deb" re-runs configure... there's no point in
+#  requiring the developer to run configure *before* making
+#  the debian packages.
+#
+ifneq "$(MAKECMDGOALS)" "deb"
+$(if $(wildcard Make.inc),,$(error Missing 'Make.inc' Run './configure [options]' and retry))
 
 include Make.inc
+endif
 
 MFLAGS += --no-print-directory
 
@@ -20,21 +41,52 @@ $(error The build system requires GNU Make 3.81 or later.)
 endif
 
 export DESTDIR := $(R)
+export PROJECT_NAME := freeradius
 
 # And over-ride all of the other magic.
+ifneq "$(MAKECMDGOALS)" "deb"
 include scripts/boiler.mk
+endif
 
-test: build.raddb ${BUILD_DIR}/bin/radiusd ${BUILD_DIR}/bin/radclient
-	@$(MAKE) -C raddb/certs
-	@./build/make/jlibtool --mode=execute ./build/bin/radiusd -XxxCMd ./raddb -n debug -D ./share
+#
+#  To work around OpenSSL issues with travis.
+#
+.PHONY:
+raddb/test.conf:
+	@echo 'security {' >> $@
+	@echo '        allow_vulnerable_openssl = yes' >> $@
+	@echo '}' >> $@
+	@echo '$$INCLUDE radiusd.conf' >> $@
+
+#
+#  Run "radiusd -C", looking for errors.
+#
+# Only redirect STDOUT, which should contain details of why the test failed.
+# Don't molest STDERR as this may be used to receive output from a debugger.
+$(BUILD_DIR)/tests/radiusd-c: raddb/test.conf ${BUILD_DIR}/bin/radiusd $(GENERATED_CERT_FILES) | build.raddb
+	@printf "radiusd -C... "
+	@if ! FR_LIBRARY_PATH=./build/lib/local/.libs/ ./build/make/jlibtool --mode=execute ./build/bin/local/radiusd -XCd ./raddb -n debug -D ./share -n test > $(BUILD_DIR)/tests/radiusd.config.log; then \
+		cat $(BUILD_DIR)/tests/radiusd.config.log; \
+		echo "fail"; \
+		echo "FR_LIBRARY_PATH=./build/lib/local/.libs/ ./build/make/jlibtool --mode=execute ./build/bin/local/radiusd -XCd ./raddb -n debug -D ./share -n test"; \
+		exit 1; \
+	fi
+	@rm -f raddb/test.conf
+	@echo "ok"
+	@touch $@
+
+test: ${BUILD_DIR}/bin/radiusd ${BUILD_DIR}/bin/radclient tests.trie tests.unit tests.xlat tests.keywords tests.auth tests.modules $(BUILD_DIR)/tests/radiusd-c tests.eap | build.raddb
 	@$(MAKE) -C src/tests tests
 
-#  Tests specifically for Travis.  We do a LOT more than just
-#  the above tests
+#  Tests specifically for Travis. We do a LOT more than just
+#  the above tests
 ifneq "$(findstring travis,${prefix})" ""
-travis-test: test
+travis-test: raddb/test.conf test
+	@FR_LIBRARY_PATH=./build/lib/local/.libs/ ./build/make/jlibtool --mode=execute ./build/bin/local/radiusd -xxxv -n test
+	@rm -f raddb/test.conf
 	@$(MAKE) install
-	@$(MAKE) deb
+	@perl -p -i -e 's/allow_vulnerable_openssl = no/allow_vulnerable_openssl = yes/' ${raddbdir}/radiusd.conf
+	@${sbindir}/radiusd -XC
 endif
 
 #
@@ -56,23 +108,6 @@ endif
 #
 export DESTDIR := $(R)
 
-.PHONY: install.bindir
-install.bindir:
-	@[ -d $(R)$(bindir) ] || $(INSTALL) -d -m 755 $(R)$(bindir)
-
-.PHONY: install.sbindir
-install.sbindir:
-	@[ -d $(R)$(sbindir) ] || $(INSTALL) -d -m 755 $(R)$(sbindir)
-
-.PHONY: install.dirs
-install.dirs: install.bindir install.sbindir
-	@$(INSTALL) -d -m 755	$(R)$(mandir)
-	@$(INSTALL) -d -m 755	$(R)$(RUNDIR)
-	@$(INSTALL) -d -m 700	$(R)$(logdir)
-	@$(INSTALL) -d -m 700	$(R)$(radacctdir)
-	@$(INSTALL) -d -m 755	$(R)$(datadir)
-	@$(INSTALL) -d -m 755	$(R)$(dictdir)
-
 DICTIONARIES := $(wildcard share/dictionary*)
 install.share: $(addprefix $(R)$(dictdir)/,$(notdir $(DICTIONARIES)))
 
@@ -85,9 +120,20 @@ install.man: $(subst man/,$(R)$(mandir)/,$(MANFILES))
 
 $(R)$(mandir)/%: man/%
 	@echo INSTALL $(notdir $<)
-	@$(INSTALL) -m 644 $< $@
+	@sed -e "s,/etc/raddb,$(raddbdir),g" \
+		-e "s,/usr/local/share,$(datarootdir),g" \
+		$< > $<.subst
+	@$(INSTALL) -m 644 $<.subst $@
+	@rm $<.subst
 
-install: install.dirs install.share install.man
+#
+#  Don't install rlm_test
+#
+ALL_INSTALL := $(patsubst %rlm_test.la,,$(ALL_INSTALL))
+
+install: install.share install.man
+	@$(INSTALL) -d -m 700	$(R)$(logdir)
+	@$(INSTALL) -d -m 700	$(R)$(radacctdir)
 
 ifneq ($(RADMIN),)
 ifneq ($(RGROUP),)
@@ -133,8 +179,8 @@ distclean: clean
 #
 ifeq "$(MAKECMDGOALS)" "reconfig"
 
-CONFIGURE_IN_FILES := $(shell find . -name configure.ac -print)
-CONFIGURE_FILES	   := $(patsubst %.in,%,$(CONFIGURE_IN_FILES))
+CONFIGURE_AC_FILES := $(shell find . -name configure.ac -print)
+CONFIGURE_FILES	   := $(patsubst %.ac,%,$(CONFIGURE_AC_FILES))
 
 #
 #  The GNU tools make autoconf=="missing autoconf", which then returns
@@ -183,6 +229,7 @@ CONFIGURE_ARGS	   := $(shell head -10 config.log | grep '^  \$$' | sed 's/^..../
 
 src/%all.mk: src/%all.mk.in src/%configure
 	@echo CONFIGURE $(dir $@)
+	@rm -f ./config.cache $(dir $<)/config.cache
 	@cd $(dir $<) && ./configure $(CONFIGURE_ARGS)
 endif
 
@@ -199,7 +246,7 @@ TAGS:
 #
 .PHONY: certs
 certs:
-	@cd raddb/certs && $(MAKE)
+	@$(MAKE) -C raddb/certs
 
 ######################################################################
 #
@@ -209,17 +256,29 @@ certs:
 #  BEFORE running this command!
 #
 ######################################################################
-freeradius-server-$(RADIUSD_VERSION_STRING).tar.gz: .git
-	git archive --format=tar --prefix=freeradius-server-$(RADIUSD_VERSION_STRING)/ stable | gzip > $@
+BRANCH = $(shell git rev-parse --abbrev-ref HEAD)
 
-freeradius-server-$(RADIUSD_VERSION_STRING).tar.gz.sig: freeradius-server-$(RADIUSD_VERSION_STRING).tar.gz
-	gpg --default-key aland@freeradius.org -b $<
+.PHONY: freeradius-server-$(RADIUSD_VERSION_STRING).tar
+freeradius-server-$(RADIUSD_VERSION_STRING).tar: .git
+	git archive --format=tar --prefix=freeradius-server-$(RADIUSD_VERSION_STRING)/ $(BRANCH) > $@
+ifneq "$(EXT_MODULES)" ""
+	rm -rf build/freeradius-server-$(RADIUSD_VERSION_STRING)
+	cd $(BUILD_DIR) && tar -xf ../$@
+	for x in $(subst _ext,,$(EXT_MODULES)); do \
+		cd ${top_srcdir}/$${x}_ext; \
+		git archive --format=tar --prefix=freeradius-server-$(RADIUSD_VERSION_STRING)/$$x/ $(BRANCH) | (cd ${top_srcdir}/$(BUILD_DIR) && tar -xf -); \
+	done
+	cd $(BUILD_DIR) && tar -cf ../$@ freeradius-server-$(RADIUSD_VERSION_STRING)
+endif
 
-freeradius-server-$(RADIUSD_VERSION_STRING).tar.bz2: .git
-	git archive --format=tar --prefix=freeradius-server-$(RADIUSD_VERSION_STRING)/ stable | bzip2 > $@
+freeradius-server-$(RADIUSD_VERSION_STRING).tar.gz: freeradius-server-$(RADIUSD_VERSION_STRING).tar
+	gzip < $^ > $@
 
-freeradius-server-$(RADIUSD_VERSION_STRING).tar.bz2.sig: freeradius-server-$(RADIUSD_VERSION_STRING).tar.bz2
-	gpg --default-key aland@freeradius.org -b $<
+freeradius-server-$(RADIUSD_VERSION_STRING).tar.bz2: freeradius-server-$(RADIUSD_VERSION_STRING).tar
+	bzip2 < $^ > $@
+
+%.sig: %
+	gpg --default-key packages@freeradius.org -b $<
 
 # high-level targets
 .PHONY: dist-check
@@ -236,7 +295,7 @@ dist-check: redhat/freeradius.spec suse/freeradius.spec debian/changelog
 		echo suse/freeradius.spec 'Version' needs to be updated; \
 		exit 1; \
 	fi
-	@if [ `head -n 1 debian/changelog | sed 's/.*(//;s/-0).*//;s/-1).*//;'`  != "$(RADIUSD_VERSION_STRING)" ]; then \
+	@if [ `head -n 1 debian/changelog | sed 's/.*(//;s/-0).*//;s/-1).*//;s/\+.*//'`  != "$(RADIUSD_VERSION_STRING)" ]; then \
 		echo debian/changelog needs to be updated; \
 		exit 1; \
 	fi
@@ -261,10 +320,68 @@ dist-tag: freeradius-server-$(RADIUSD_VERSION_STRING).tar.gz freeradius-server-$
 #
 .PHONY: deb
 deb:
+	fakeroot debian/rules debian/control #clean
 	fakeroot dpkg-buildpackage -b -uc
 
 # Developer checks
 .PHONY: warnings
 warnings:
-	@(make clean all 2>&1) | egrep -v '^/|deprecated|^In file included|: In function|   from |^HEADER|^CC|^LINK' > warnings.txt
+	@(make clean all 2>&1) | egrep -v '^/|deprecated|^In file included|: In function|   from |^HEADER|^CC|^LINK|^LN' > warnings.txt
 	@wc -l warnings.txt
+
+#
+#  Ensure we're using tabs in the configuration files,
+#  and remove trailing whitespace in source files.
+#
+.PHONY: whitespace
+whitespace:
+	@for x in $$(git ls-files raddb/ src/); do unexpand $$x > $$x.bak; cp $$x.bak $$x; rm -f $$x.bak;done
+	@perl -p -i -e 'trim' $$(git ls-files src/)
+
+CONF_FILES := $(filter-out %~,$(wildcard raddb/*conf raddb/mods-available/* raddb/sites-available/* raddb/dictionary))
+ADOC_FILES := $(patsubst raddb/%,asciidoc/%.adoc,$(CONF_FILES))
+ADOC_FILES += $(patsubst raddb/%.md,asciidoc/%.adoc,$(shell find raddb -name "*\.md" -print))
+PDF_FILES := $(patsubst asciidoc/%.adoc,asciidoc/%.pdf,$(ADOC_FILES))
+HTML_FILES := $(patsubst asciidoc/%.adoc,asciidoc/%.html,$(ADOC_FILES))
+
+#
+#  Markdown files get converted to asciidoc via pandoc.
+#
+#  Many documentation files are in markdown because it's a simpler
+#  format to read/write than asciidoc.  But we want a consistent "look
+#  and feel" for the documents, so we make all of them asciidoc.
+#
+asciidoc/%.adoc: raddb/%.md
+	@echo PANDOC $^
+	@mkdir -p $(dir $@)
+	@pandoc --filter=scripts/asciidoc/pandoc-filter -w asciidoc -o $@ $^
+
+#
+#  Conf files get converted to Asciidoc via our own magic script.
+#
+asciidoc/%.adoc: raddb/%
+	@echo ADOC $^
+	@mkdir -p $(dir $@)
+	@./scripts/asciidoc/conf2adoc -a ${top_srcdir}/asciidoc < $^ > $@
+
+asciidoc/%.html: asciidoc/%.adoc
+	@echo HTML $^
+	@asciidoctor $< -b html5 -o $@ $<
+
+asciidoc/%.pdf: asciidoc/%.adoc
+	@echo PDF $^
+	@asciidoctor $< -b docbook5 -o - | \
+		pandoc -f docbook -t latex --latex-engine=xelatex \
+			-V papersize=letter \
+			-V images=yes \
+			--template=./scripts/asciidoc/freeradius.template -o $@
+
+asciidoc/%.pdf: raddb/%.md
+	@echo PDF $^
+	pandoc -f markdown -t latex --latex-engine=xelatex \
+		-V papersize=letter \
+		--template=./scripts/asciidoc/freeradius.template -o $@ $<
+
+.PHONY: asciidoc asciidoc-html
+asciidoc: $(ADOC_FILES)
+asciidoc-html: $(HTML_FILES)

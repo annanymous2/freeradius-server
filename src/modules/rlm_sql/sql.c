@@ -18,16 +18,19 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * Copyright 2001,2006  The FreeRADIUS server project
- * Copyright 2000  Mike Machado <mike@innercite.com>
- * Copyright 2000  Alan DeKok <aland@ox.org>
- * Copyright 2001  Chad Miller <cmiller@surfsouth.com>
+ * @copyright 2001,2006  The FreeRADIUS server project
+ * @copyright 2000  Mike Machado <mike@innercite.com>
+ * @copyright 2000  Alan DeKok <aland@ox.org>
+ * @copyright 2001  Chad Miller <cmiller@surfsouth.com>
  */
 
 RCSID("$Id$")
 
-#include	<freeradius-devel/radiusd.h>
-#include	<freeradius-devel/rad_assert.h>
+#define LOG_PREFIX "rlm_sql (%s) - "
+#define LOG_PREFIX_ARGS inst->name
+
+#include	<freeradius-devel/server/base.h>
+#include	<freeradius-devel/server/rad_assert.h>
 
 #include	<sys/file.h>
 #include	<sys/stat.h>
@@ -36,27 +39,38 @@ RCSID("$Id$")
 
 #include	"rlm_sql.h"
 
-#ifdef HAVE_PTHREAD_H
-#endif
+/*
+ *	Translate rlm_sql rcodes to humanly
+ *	readable reason strings.
+ */
+const FR_NAME_NUMBER sql_rcode_table[] = {
+	{ "success",		RLM_SQL_OK		},
+	{ "need alt query",	RLM_SQL_ALT_QUERY	},
+	{ "server error",	RLM_SQL_ERROR		},
+	{ "query invalid",	RLM_SQL_QUERY_INVALID	},
+	{ "no connection",	RLM_SQL_RECONNECT	},
+	{ "no more rows",	RLM_SQL_NO_MORE_ROWS	},
+	{ NULL, 0 }
+};
 
-static int _sql_conn_destructor(rlm_sql_handle_t *conn)
-{
-	rlm_sql_t *inst = conn->inst;
-
-	rad_assert(inst);
-
-	exec_trigger(NULL, inst->cs, "modules.sql.close", false);
-
-	return 0;
-}
-
-static void *mod_conn_create(void *instance)
+void *mod_conn_create(TALLOC_CTX *ctx, void *instance, struct timeval const *timeout)
 {
 	int rcode;
 	rlm_sql_t *inst = instance;
 	rlm_sql_handle_t *handle;
 
-	handle = talloc_zero(instance, rlm_sql_handle_t);
+	/*
+	 *	Connections cannot be alloced from the inst or
+	 *	pool contexts due to threading issues.
+	 */
+	handle = talloc_zero(ctx, rlm_sql_handle_t);
+	if (!handle) return NULL;
+
+	handle->log_ctx = talloc_pool(handle, 2048);
+	if (!handle->log_ctx) {
+		talloc_free(handle);
+		return NULL;
+	}
 
 	/*
 	 *	Handle requires a pointer to the SQL inst so the
@@ -64,114 +78,44 @@ static void *mod_conn_create(void *instance)
 	 */
 	handle->inst = inst;
 
-	/*
-	 *	When something frees this handle the destructor set by
-	 *	the driver will be called first, closing any open sockets.
-	 *	Then we call our destructor to trigger an modules.sql.close
-	 *	event, then all the memory is freed.
-	 */
-	talloc_set_destructor(handle, _sql_conn_destructor);
-
-	rcode = (inst->module->sql_socket_init)(handle, inst->config);
-	if (rcode == 0) {
-		exec_trigger(NULL, inst->cs, "modules.sql.open", false);
-
-		return handle;
+	rcode = (inst->driver->sql_socket_init)(handle, inst->config, timeout);
+	if (rcode != 0) {
+	fail:
+		/*
+		 *	Destroy any half opened connections.
+		 */
+		talloc_free(handle);
+		return NULL;
 	}
 
-	exec_trigger(NULL, inst->cs, "modules.sql.fail", true);
+	if (inst->config->connect_query) {
+		if (rlm_sql_select_query(inst, NULL, &handle, inst->config->connect_query) != RLM_SQL_OK) goto fail;
+		(inst->driver->sql_finish_select_query)(handle, inst->config);
+	}
 
-	/*
-	 *	Destroy any half opened connections.
-	 */
-	talloc_free(handle);
-	return NULL;
-}
-
-/*
- *	@todo Calls to this should eventually go away.
- */
-static int mod_conn_delete(UNUSED void *instance, void *handle)
-{
-	return talloc_free(handle);
+	return handle;
 }
 
 /*************************************************************************
  *
- *	Function: sql_socket_pool_init
- *
- *	Purpose: Connect to the sql server, if possible
- *
- *************************************************************************/
-int sql_socket_pool_init(rlm_sql_t * inst)
-{
-	inst->pool = fr_connection_pool_init(inst->cs, inst,
-					     mod_conn_create, NULL, mod_conn_delete,
-					     NULL);
-	if (!inst->pool) return -1;
-
-	return 1;
-}
-
-/*************************************************************************
- *
- *     Function: sql_poolfree
- *
- *     Purpose: Clean up and free sql pool
- *
- *************************************************************************/
-void sql_poolfree(rlm_sql_t * inst)
-{
-	fr_connection_pool_delete(inst->pool);
-}
-
-
-/*************************************************************************
- *
- *	Function: sql_get_socket
- *
- *	Purpose: Return a SQL handle from the connection pool
- *
- *************************************************************************/
-rlm_sql_handle_t * sql_get_socket(rlm_sql_t * inst)
-{
-	return fr_connection_get(inst->pool);
-}
-
-/*************************************************************************
- *
- *	Function: sql_release_socket
- *
- *	Purpose: Frees a SQL handle back to the connection pool
- *
- *************************************************************************/
-int sql_release_socket(rlm_sql_t * inst, rlm_sql_handle_t * handle)
-{
-	fr_connection_release(inst->pool, handle);
-	return 0;
-}
-
-
-/*************************************************************************
- *
- *	Function: sql_userparse
+ *	Function: sql_fr_pair_list_afrom_str
  *
  *	Purpose: Read entries from the database and fill VALUE_PAIR structures
  *
  *************************************************************************/
-int sql_userparse(TALLOC_CTX *ctx, VALUE_PAIR **head, rlm_sql_row_t row)
+int sql_fr_pair_list_afrom_str(TALLOC_CTX *ctx, REQUEST *request, VALUE_PAIR **head, rlm_sql_row_t row)
 {
 	VALUE_PAIR *vp;
 	char const *ptr, *value;
-	char buf[MAX_STRING_LEN];
+	char buf[FR_MAX_STRING_LEN];
 	char do_xlat = 0;
-	FR_TOKEN token, operator = T_EOL;
+	FR_TOKEN token, op = T_EOL;
 
 	/*
 	 *	Verify the 'Attribute' field
 	 */
 	if (!row[2] || row[2][0] == '\0') {
-		ERROR("rlm_sql: The 'Attribute' field is empty or NULL, skipping the entire row");
+		REDEBUG("Attribute field is empty or NULL, skipping the entire row");
 		return -1;
 	}
 
@@ -180,10 +124,9 @@ int sql_userparse(TALLOC_CTX *ctx, VALUE_PAIR **head, rlm_sql_row_t row)
 	 */
 	if (row[4] != NULL && row[4][0] != '\0') {
 		ptr = row[4];
-		operator = gettoken(&ptr, buf, sizeof(buf));
-		if ((operator < T_OP_ADD) ||
-		    (operator > T_OP_CMP_EQ)) {
-			ERROR("rlm_sql: Invalid operator \"%s\" for attribute %s", row[4], row[2]);
+		op = gettoken(&ptr, buf, sizeof(buf), false);
+		if (!fr_assignment_op[op] && !fr_equality_op[op]) {
+			REDEBUG("Invalid op \"%s\" for attribute %s", row[4], row[2]);
 			return -1;
 		}
 
@@ -191,15 +134,21 @@ int sql_userparse(TALLOC_CTX *ctx, VALUE_PAIR **head, rlm_sql_row_t row)
 		/*
 		 *  Complain about empty or invalid 'op' field
 		 */
-		operator = T_OP_CMP_EQ;
-		ERROR("rlm_sql: The 'op' field for attribute '%s = %s' is NULL, or non-existent.", row[2], row[3]);
-		ERROR("rlm_sql: You MUST FIX THIS if you want the configuration to behave as you expect");
+		op = T_OP_CMP_EQ;
+		REDEBUG("The op field for attribute '%s = %s' is NULL, or non-existent.", row[2], row[3]);
+		REDEBUG("You MUST FIX THIS if you want the configuration to behave as you expect");
 	}
 
 	/*
 	 *	The 'Value' field may be empty or NULL
 	 */
+	if (!row[3]) {
+		REDEBUG("Value field is empty or NULL, skipping the entire row");
+		return -1;
+	}
+
 	value = row[3];
+
 	/*
 	 *	If we have a new-style quoted string, where the
 	 *	*entire* string is quoted, do xlat's.
@@ -208,22 +157,21 @@ int sql_userparse(TALLOC_CTX *ctx, VALUE_PAIR **head, rlm_sql_row_t row)
 	   ((row[3][0] == '\'') || (row[3][0] == '`') || (row[3][0] == '"')) &&
 	   (row[3][0] == row[3][strlen(row[3])-1])) {
 
-		token = gettoken(&value, buf, sizeof(buf));
+		token = gettoken(&value, buf, sizeof(buf), false);
 		switch (token) {
+		/*
+		 *	Mark the pair to be allocated later.
+		 */
+		case T_BACK_QUOTED_STRING:
+			do_xlat = 1;
+			/* FALL-THROUGH */
+
 		/*
 		 *	Take the unquoted string.
 		 */
 		case T_SINGLE_QUOTED_STRING:
 		case T_DOUBLE_QUOTED_STRING:
 			value = buf;
-			break;
-
-		/*
-		 *	Mark the pair to be allocated later.
-		 */
-		case T_BACK_QUOTED_STRING:
-			value = NULL;
-			do_xlat = 1;
 			break;
 
 		/*
@@ -238,23 +186,22 @@ int sql_userparse(TALLOC_CTX *ctx, VALUE_PAIR **head, rlm_sql_row_t row)
 	/*
 	 *	Create the pair
 	 */
-	vp = pairmake(ctx, NULL, row[2], NULL, operator);
+	vp = fr_pair_make(ctx, NULL, row[2], NULL, op);
 	if (!vp) {
-		ERROR("rlm_sql: Failed to create the pair: %s",
-		       fr_strerror());
+		RPEDEBUG("Failed to create the pair");
 		return -1;
 	}
 
 	if (do_xlat) {
-		if (pairmark_xlat(vp, value) < 0) {
-			ERROR("rlm_sql: Error marking pair for xlat");
+		if (fr_pair_mark_xlat(vp, value) < 0) {
+			RPEDEBUG("Error marking pair for xlat");
 
 			talloc_free(vp);
 			return -1;
 		}
 	} else {
-		if (!pairparsevalue(vp, value)) {
-			ERROR("rlm_sql: Error parsing value");
+		if (fr_pair_value_from_str(vp, value, -1, '\0', true) < 0) {
+			RPEDEBUG("Error parsing value");
 
 			talloc_free(vp);
 			return -1;
@@ -264,140 +211,275 @@ int sql_userparse(TALLOC_CTX *ctx, VALUE_PAIR **head, rlm_sql_row_t row)
 	/*
 	 *	Add the pair into the packet
 	 */
-	pairadd(head, vp);
+	fr_pair_add(head, vp);
 	return 0;
 }
 
-
-/*************************************************************************
+/** Call the driver's sql_fetch_row function
  *
- *	Function: rlm_sql_fetch_row
+ * Calls the driver's sql_fetch_row logging any errors. On success, will
+ * write row data to ``(*handle)->row``.
  *
- *	Purpose: call the module's sql_fetch_row and implement re-connect
- *
- *************************************************************************/
-int rlm_sql_fetch_row(rlm_sql_handle_t **handle, rlm_sql_t *inst)
+ * @param out Where to write row data.
+ * @param inst Instance of #rlm_sql_t.
+ * @param request The Current request, may be NULL.
+ * @param handle Handle to retrieve errors for.
+ * @return
+ *	- #RLM_SQL_OK on success.
+ *	- other #sql_rcode_t constants on error.
+ */
+sql_rcode_t rlm_sql_fetch_row(rlm_sql_row_t *out, rlm_sql_t const *inst, REQUEST *request, rlm_sql_handle_t **handle)
 {
-	int ret;
+	sql_rcode_t ret;
 
-	if (!*handle || !(*handle)->conn) {
-		return -1;
-	}
+	if (!*handle || !(*handle)->conn) return RLM_SQL_ERROR;
 
 	/*
-	 * We can't implement reconnect logic here, because the caller may require
-	 * the original connection to free up queries or result sets associated with
-	 * that connection.
+	 *	We can't implement reconnect logic here, because the caller
+	 *	may require the original connection to free up queries or
+	 *	result sets associated with that connection.
 	 */
-	ret = (inst->module->sql_fetch_row)(*handle, inst->config);
+	ret = (inst->driver->sql_fetch_row)(out, *handle, inst->config);
+	switch (ret) {
+	case RLM_SQL_OK:
+		rad_assert(*out != NULL);
+		return ret;
 
-	if (ret < 0) {
-		char const *error = (inst->module->sql_error)(*handle, inst->config);
-		EDEBUG("rlm_sql (%s): Error fetching row: %s",
-		       inst->config->xlat_name, error ? error : "<UNKNOWN>");
-	}
+	case RLM_SQL_NO_MORE_ROWS:
+		rad_assert(*out == NULL);
+		return ret;
 
-	return ret;
-}
-
-/*************************************************************************
- *
- *	Function: rlm_sql_query
- *
- *	Purpose: call the module's sql_query and implement re-connect
- *
- *************************************************************************/
-int rlm_sql_query(rlm_sql_handle_t **handle, rlm_sql_t *inst, char const *query)
-{
-	int ret;
-
-	/*
-	 *	If there's no query, return an error.
-	 */
-	if (!query || !*query) {
-		return -1;
-	}
-
-	if (!*handle || !(*handle)->conn) {
-		ret = -1;
-		goto sql_down;
-	}
-
-	while (1) {
-		DEBUG("rlm_sql (%s): Executing query: '%s'",
-		      inst->config->xlat_name, query);
-
-		ret = (inst->module->sql_query)(*handle, inst->config, query);
-		/*
-		 * Run through all available sockets until we exhaust all existing
-		 * sockets in the pool and fail to establish a *new* connection.
-		 */
-		if (ret == RLM_SQL_RECONNECT) {
-			sql_down:
-			*handle = fr_connection_reconnect(inst->pool, *handle);
-			if (!*handle) return RLM_SQL_RECONNECT;
-
-			continue;
-		}
-
-		if (ret < 0) {
-			char const *error = (inst->module->sql_error)(*handle, inst->config);
-			ERROR("rlm_sql (%s): Database query error: %s",
-			      inst->config->xlat_name, error ? error : "<UNKNOWN>");
-		}
-
+	default:
+		ROPTIONAL(RERROR, ERROR, "Error fetching row");
+		rlm_sql_print_error(inst, request, *handle, false);
 		return ret;
 	}
 }
 
-/*************************************************************************
+/** Retrieve any errors from the SQL driver
  *
- *	Function: rlm_sql_select_query
+ * Retrieves errors from the driver from the last operation and writes them to
+ * to request/global log, in the ERROR, WARN, INFO and DEBUG categories.
  *
- *	Purpose: call the module's sql_select_query and implement re-connect
- *
- *************************************************************************/
-int rlm_sql_select_query(rlm_sql_handle_t **handle, rlm_sql_t *inst, char const *query)
+ * @param inst Instance of rlm_sql.
+ * @param request Current request, may be NULL.
+ * @param handle Handle to retrieve errors for.
+ * @param force_debug Force all errors to be logged as debug messages.
+ */
+void rlm_sql_print_error(rlm_sql_t const *inst, REQUEST *request, rlm_sql_handle_t *handle, bool force_debug)
 {
-	int ret;
+	char const	*driver;
+	sql_log_entry_t	log[20];
+	size_t		num, i;
+
+	num = (inst->driver->sql_error)(handle->log_ctx, log, (sizeof(log) / sizeof(*log)), handle, inst->config);
+	if (num == 0) {
+		ROPTIONAL(RERROR, ERROR, "Unknown error");
+		return;
+	}
+
+	driver = inst->config->sql_driver_name;
+
+	for (i = 0; i < num; i++) {
+		if (force_debug) goto debug;
+
+		switch (log[i].type) {
+		case L_ERR:
+			ROPTIONAL(RERROR, ERROR, "%s: %s", driver, log[i].msg);
+			break;
+
+		case L_WARN:
+			ROPTIONAL(RWARN, WARN, "%s: %s", driver, log[i].msg);
+			break;
+
+		case L_INFO:
+			ROPTIONAL(RINFO, INFO, "%s: %s", driver, log[i].msg);
+			break;
+
+		case L_DBG:
+		default:
+		debug:
+			ROPTIONAL(RDEBUG, DEBUG, "%s: %s", driver, log[i].msg);
+			break;
+		}
+	}
+
+	talloc_free_children(handle->log_ctx);
+}
+
+/** Call the driver's sql_query method, reconnecting if necessary.
+ *
+ * @note Caller must call ``(inst->driver->sql_finish_query)(handle, inst->config);``
+ *	after they're done with the result.
+ *
+ * @param handle to query the database with. *handle should not be NULL, as this indicates
+ * 	previous reconnection attempt has failed.
+ * @param request Current request.
+ * @param inst #rlm_sql_t instance data.
+ * @param query to execute. Should not be zero length.
+ * @return
+ *	- #RLM_SQL_OK on success.
+ *	- #RLM_SQL_RECONNECT if a new handle is required (also sets *handle = NULL).
+ *	- #RLM_SQL_QUERY_INVALID, #RLM_SQL_ERROR on invalid query or connection error.
+ *	- #RLM_SQL_ALT_QUERY on constraints violation.
+ */
+sql_rcode_t rlm_sql_query(rlm_sql_t const *inst, REQUEST *request, rlm_sql_handle_t **handle, char const *query)
+{
+	int ret = RLM_SQL_ERROR;
+	int i, count;
+
+	/* Caller should check they have a valid handle */
+	rad_assert(*handle);
+
+	/* There's no query to run, return an error */
+	if (query[0] == '\0') {
+		if (request) REDEBUG("Zero length query");
+		return RLM_SQL_QUERY_INVALID;
+	}
 
 	/*
-	 *	If there's no query, return an error.
+	 *  inst->pool may be NULL is this function is called by mod_conn_create.
 	 */
-	if (!query || !*query) {
-		return -1;
-	}
+	count = inst->pool ? fr_pool_state(inst->pool)->num : 0;
 
-	if (!*handle || !(*handle)->conn) {
-		ret = -1;
-		goto sql_down;
-	}
+	/*
+	 *  Here we try with each of the existing connections, then try to create
+	 *  a new connection, then give up.
+	 */
+	for (i = 0; i < (count + 1); i++) {
+		ROPTIONAL(RDEBUG2, DEBUG2, "Executing query: %s", query);
 
-	while (1) {
-		DEBUG("rlm_sql (%s): Executing query: '%s'",
-		      inst->config->xlat_name, query);
+		ret = (inst->driver->sql_query)(*handle, inst->config, query);
+		switch (ret) {
+		case RLM_SQL_OK:
+			break;
 
-		ret = (inst->module->sql_select_query)(*handle, inst->config, query);
 		/*
-		 * Run through all available sockets until we exhaust all existing
-		 * sockets in the pool and fail to establish a *new* connection.
+		 *	Run through all available sockets until we exhaust all existing
+		 *	sockets in the pool and fail to establish a *new* connection.
 		 */
-		if (ret == RLM_SQL_RECONNECT) {
-			sql_down:
-			*handle = fr_connection_reconnect(inst->pool, *handle);
+		case RLM_SQL_RECONNECT:
+			*handle = fr_pool_connection_reconnect(inst->pool, request, *handle);
+			/* Reconnection failed */
 			if (!*handle) return RLM_SQL_RECONNECT;
-
+			/* Reconnection succeeded, try again with the new handle */
 			continue;
-		}
 
-		if (ret < 0) {
-			char const *error = (inst->module->sql_error)(*handle, inst->config);
-			ERROR("rlm_sql (%s): Database query error '%s'",
-			      inst->config->xlat_name, error ? error : "<UNKNOWN>");
+		/*
+		 *	These are bad and should make rlm_sql return invalid
+		 */
+		case RLM_SQL_QUERY_INVALID:
+			rlm_sql_print_error(inst, request, *handle, false);
+			(inst->driver->sql_finish_query)(*handle, inst->config);
+			break;
+
+		/*
+		 *	Server or client errors.
+		 *
+		 *	If the driver claims to be able to distinguish between
+		 *	duplicate row errors and other errors, and we hit a
+		 *	general error treat it as a failure.
+		 *
+		 *	Otherwise rewrite it to RLM_SQL_ALT_QUERY.
+		 */
+		case RLM_SQL_ERROR:
+			if (inst->driver->flags & RLM_SQL_RCODE_FLAGS_ALT_QUERY) {
+				rlm_sql_print_error(inst, request, *handle, false);
+				(inst->driver->sql_finish_query)(*handle, inst->config);
+				break;
+			}
+			ret = RLM_SQL_ALT_QUERY;
+			/* FALL-THROUGH */
+
+		/*
+		 *	Driver suggested using an alternative query
+		 */
+		case RLM_SQL_ALT_QUERY:
+			rlm_sql_print_error(inst, request, *handle, true);
+			(inst->driver->sql_finish_query)(*handle, inst->config);
+			break;
+
 		}
 
 		return ret;
 	}
+
+	ROPTIONAL(RERROR, ERROR, "Hit reconnection limit");
+
+	return RLM_SQL_ERROR;
+}
+
+/** Call the driver's sql_select_query method, reconnecting if necessary.
+ *
+ * @note Caller must call ``(inst->driver->sql_finish_select_query)(handle, inst->config);``
+ *	after they're done with the result.
+ *
+ * @param inst #rlm_sql_t instance data.
+ * @param request Current request.
+ * @param handle to query the database with. *handle should not be NULL, as this indicates
+ *	  previous reconnection attempt has failed.
+ * @param query to execute. Should not be zero length.
+ * @return
+ *	- #RLM_SQL_OK on success.
+ *	- #RLM_SQL_RECONNECT if a new handle is required (also sets *handle = NULL).
+ *	- #RLM_SQL_QUERY_INVALID, #RLM_SQL_ERROR on invalid query or connection error.
+ */
+sql_rcode_t rlm_sql_select_query(rlm_sql_t const *inst, REQUEST *request, rlm_sql_handle_t **handle, char const *query)
+{
+	int ret = RLM_SQL_ERROR;
+	int i, count;
+
+	/* Caller should check they have a valid handle */
+	rad_assert(*handle);
+
+	/* There's no query to run, return an error */
+	if (query[0] == '\0') {
+		if (request) REDEBUG("Zero length query");
+
+		return RLM_SQL_QUERY_INVALID;
+	}
+
+	/*
+	 *  inst->pool may be NULL is this function is called by mod_conn_create.
+	 */
+	count = inst->pool ? fr_pool_state(inst->pool)->num : 0;
+
+	/*
+	 *  For sanity, for when no connections are viable, and we can't make a new one
+	 */
+	for (i = 0; i < (count + 1); i++) {
+		ROPTIONAL(RDEBUG2, DEBUG2, "Executing select query: %s", query);
+
+		ret = (inst->driver->sql_select_query)(*handle, inst->config, query);
+		switch (ret) {
+		case RLM_SQL_OK:
+			break;
+
+		/*
+		 *	Run through all available sockets until we exhaust all existing
+		 *	sockets in the pool and fail to establish a *new* connection.
+		 */
+		case RLM_SQL_RECONNECT:
+			*handle = fr_pool_connection_reconnect(inst->pool, request, *handle);
+			/* Reconnection failed */
+			if (!*handle) return RLM_SQL_RECONNECT;
+			/* Reconnection succeeded, try again with the new handle */
+			continue;
+
+		case RLM_SQL_QUERY_INVALID:
+		case RLM_SQL_ERROR:
+		default:
+			rlm_sql_print_error(inst, request, *handle, false);
+			(inst->driver->sql_finish_select_query)(*handle, inst->config);
+			break;
+		}
+
+		return ret;
+	}
+
+	ROPTIONAL(RERROR, ERROR, "Hit reconnection limit");
+
+	return RLM_SQL_ERROR;
 }
 
 
@@ -408,30 +490,29 @@ int rlm_sql_select_query(rlm_sql_handle_t **handle, rlm_sql_t *inst, char const 
  *	Purpose: Get any group check or reply pairs
  *
  *************************************************************************/
-int sql_getvpdata(rlm_sql_t * inst, rlm_sql_handle_t **handle,
-		  TALLOC_CTX *ctx, VALUE_PAIR **pair, char const *query)
+int sql_getvpdata(TALLOC_CTX *ctx, rlm_sql_t const *inst, REQUEST *request, rlm_sql_handle_t **handle,
+		  VALUE_PAIR **pair, char const *query)
 {
-	rlm_sql_row_t row;
-	int     rows = 0;
+	rlm_sql_row_t	row;
+	int		rows = 0;
+	sql_rcode_t	rcode;
 
-	if (rlm_sql_select_query(handle, inst, query)) {
-		return -1;
-	}
+	rad_assert(request);
 
-	while (rlm_sql_fetch_row(handle, inst) == 0) {
-		row = (*handle)->row;
-		if (!row)
-			break;
-		if (sql_userparse(ctx, pair, row) != 0) {
-			ERROR("rlm_sql (%s): Error getting data from database", inst->config->xlat_name);
+	rcode = rlm_sql_select_query(inst, request, handle, query);
+	if (rcode != RLM_SQL_OK) return -1; /* error handled by rlm_sql_select_query */
 
-			(inst->module->sql_finish_select_query)(*handle, inst->config);
+	while (rlm_sql_fetch_row(&row, inst, request, handle) == RLM_SQL_OK) {
+		if (sql_fr_pair_list_afrom_str(ctx, request, pair, row) != 0) {
+			REDEBUG("Error parsing user data from database result");
+
+			(inst->driver->sql_finish_select_query)(*handle, inst->config);
 
 			return -1;
 		}
 		rows++;
 	}
-	(inst->module->sql_finish_select_query)(*handle, inst->config);
+	(inst->driver->sql_finish_select_query)(*handle, inst->config);
 
 	return rows;
 }
@@ -439,41 +520,41 @@ int sql_getvpdata(rlm_sql_t * inst, rlm_sql_handle_t **handle,
 /*
  *	Log the query to a file.
  */
-void rlm_sql_query_log(rlm_sql_t *inst, REQUEST *request,
-		       sql_acct_section_t *section, char const *query)
+void rlm_sql_query_log(rlm_sql_t const *inst, REQUEST *request, sql_acct_section_t *section, char const *query)
 {
 	int fd;
 	char const *filename = NULL;
 	char *expanded = NULL;
+	size_t len;
+	bool failed = false;	/* Write the log message outside of the critical region */
 
-	if (section) {
-		filename = section->logfile;
-	} else {
-		filename = inst->config->logfile;
-	}
+	filename = inst->config->logfile;
+	if (section && section->logfile) filename = section->logfile;
 
-	if (!filename) {
+	if (!filename || !*filename) {
 		return;
 	}
 
-	if (radius_axlat(&expanded, request, filename, NULL, NULL) < 0) {
+	if (xlat_aeval(request, &expanded, request, filename, NULL, NULL) < 0) {
 		return;
 	}
 
-	fd = open(filename, O_WRONLY | O_APPEND | O_CREAT, 0666);
+	fd = exfile_open(inst->ef, request, filename, 0640);
 	if (fd < 0) {
-		ERROR("rlm_sql (%s): Couldn't open logfile '%s': %s", inst->config->xlat_name,
-		       expanded, fr_syserror(errno));
+		ERROR("Couldn't open logfile '%s': %s", expanded, fr_syserror(errno));
 
 		talloc_free(expanded);
+		/* coverity[missing_unlock] */
 		return;
 	}
 
-	if ((rad_lockfd(fd, MAX_QUERY_LEN) < 0) || (write(fd, query, strlen(query)) < 0) || (write(fd, ";\n", 2) < 0)) {
-		ERROR("rlm_sql (%s): Failed writing to logfile '%s': %s", inst->config->xlat_name, expanded,
-		       fr_syserror(errno));
+	len = strlen(query);
+	if ((write(fd, query, len) < 0) || (write(fd, ";\n", 2) < 0)) {
+		failed = true;
 	}
 
+	if (failed) ERROR("Failed writing to logfile '%s': %s", expanded, fr_syserror(errno));
+
 	talloc_free(expanded);
-	close(fd);		/* and release the lock */
+	exfile_close(inst->ef, request, fd);
 }

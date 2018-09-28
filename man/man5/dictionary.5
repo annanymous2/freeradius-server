@@ -10,7 +10,7 @@
 .RE
 .sp
 ..
-.TH dictionary 5 "16 Mar 2011"
+.TH dictionary 5 "24 Jul 2016"
 .SH NAME
 dictionary \- RADIUS dictionary file
 .SH DESCRIPTION
@@ -35,7 +35,7 @@ break your RADIUS deployment.
 .PP
 If you need to add new attributes, please edit the
 \fI/etc/raddb/dictionary\fP file.  It's sole purpose is to contain
-site-local defintions that are added by the local administrator.
+site-local definitions that are added by the local administrator.
 
 .SH FORMAT
 Every line starting with a hash sign
@@ -71,15 +71,25 @@ The \fItype\fP field can be one of the standard types:
      ifid         Interface Id (hex:hex:hex:hex)
      integer64	  64-bit unsigned integer
 
-The \fItype\fP field can be one of the following non-standard types:
+The \fItype\fP field can also be one of the following non-standard types:
 
      ether        Ethernet MAC address
      abinary      Ascend binary filter format
      byte         8-bit unsigned integer
      short        16-bit unsigned integer
      signed       31-bit signed integer (packed into 32-bit field)
+     struct       fixed-size structures
      tlv          Type-Length-Value (allows nested attributes)
      ipv4prefix   IPv4 Prefix as given in RFC 6572.
+
+The "struct" type is a compound type.  An attribute of data type
+"struct" can have multiple sub-attributes defined, just as with TLVs.
+Each sub-attribute has to be numbered sequentially, starting at 1.
+The numbers allow tracking of individual sub-fields, but have no other
+meaning.  Each sub-field of a "struct" type MUST be a fixed-width data
+type such as "integer", "ipaddr", etc.  Variable sized types such as
+"string", "octets", or "tlv" are not allowed.  Structs may not contain
+other structs.
 
 The last (optional) field of an attribute definition are additional
 flags for that attribute, in a comma-separated list.  Previous
@@ -113,6 +123,13 @@ that attribute by name in the dictionary, and uses the definition
 found there.
 
 .TP 0.5i
+.B FLAGS flag-name
+Set attribute flags for all subsequent attributes.  Flags can be
+unset by prefixing them with the "!" character.
+
+The only flag currently supported is "internal".
+
+.TP 0.5i
 .B VALUE attribute-name value-name number
 Define an attribute value name to number mapping, for an attribute of
 type \fIinteger\fP.  The \fIattribute-name\fP field MUST be previously
@@ -141,9 +158,6 @@ digit) are 1, 2, and 4.  The support values for the number of length
 octets (i.e. the second digit) are 0, 1, and 2.  Any combination of
 those values will work.
 
-You can also use "format=Extended-Vendor-Specific-1", through
-"format=Extended-Vendor-Specific-6".  These define VSAs in the
-"extended vendor-specific" space.
 .TP 0.5i
 .B BEGIN-VENDOR vendor-name
 Define the start of a block of Vendor-Specific attributes.  All of the
@@ -152,6 +166,12 @@ named vendor, until the block is closed by an "END-VENDOR" statement.
 
 This practice is preferred to placing the vendor name at the end of an
 \fIATTRIBUTE\fP  definition.
+
+For VSAs in the RFC 6929 "Extended vendor-specific" space, a format
+can be specified following the "vendor-name".  The format should be
+"format=Extended-Vendor-Specific-1", through
+"format=Extended-Vendor-Specific-6".  The matching "END-VENDOR" should
+just have the "vendor-name", without the format string.
 .TP 0.5i
 .B END-VENDOR vendor-name
 End a previously defined BEGIN-VENDOR block.  The "vendor-name" must match.
@@ -176,7 +196,7 @@ the attribute number should be used instead.
 .I /usr/share/freeradius/dictionary.*
 .SH "SEE ALSO"
 .BR radiusd (8),
-.BR naslist (5),
 .BR RFC2865,
 .BR RFC2866,
 .BR RFC2868
+.BR RFC6929

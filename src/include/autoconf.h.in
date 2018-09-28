@@ -9,6 +9,20 @@
 /* style of ctime_r function */
 #undef CTIMERSTYLE
 
+/* Define to 1 to have OpenSSL version check enabled */
+#undef ENABLE_OPENSSL_VERSION_CHECK
+
+/* Define to ensure each build is the same */
+#undef ENABLE_REPRODUCIBLE_BUILDS
+
+/* Define if your processor stores words with the most significant byte first
+   */
+#undef FR_BIG_ENDIAN
+
+/* Define if your processor stores words with the least significant byte first
+   */
+#undef FR_LITTLE_ENDIAN
+
 /* style of gethostbyaddr_r functions */
 #undef GETHOSTBYADDRRSTYLE
 
@@ -20,6 +34,34 @@
 
 /* Define to 1 if you have the <arpa/inet.h> header file. */
 #undef HAVE_ARPA_INET_H
+
+/* Define if your compiler supports the __bounded__ attribute (usually OpenBSD
+   gcc). */
+#undef HAVE_ATTRIBUTE_BOUNDED
+
+/* Define to 1 if you have the `bindat' function. */
+#undef HAVE_BINDAT
+
+/* Define if we have a binary safe regular expression library */
+#undef HAVE_BINSAFE_REGEX
+
+/* Define if the compiler supports __builtin_bswap64 */
+#undef HAVE_BUILTIN_BSWAP_64
+
+/* Define if the compiler supports __builtin_choose_expr */
+#undef HAVE_BUILTIN_CHOOSE_EXPR
+
+/* Define if the compiler supports __builtin_types_compatible_p */
+#undef HAVE_BUILTIN_TYPES_COMPATIBLE_P
+
+/* Define if the compiler supports the C11 _Generic construct */
+#undef HAVE_C11_GENERIC
+
+/* Define to 1 if you have the <sys/capability.h> header file. */
+#undef HAVE_CAPABILITY_H
+
+/* Define to 1 if you have the `clock_gettime' function. */
+#undef HAVE_CLOCK_GETTIME
 
 /* Define to 1 if you have the `closefrom' function. */
 #undef HAVE_CLOSEFROM
@@ -33,6 +75,9 @@
 /* Define to 1 if you have the <crypt.h> header file. */
 #undef HAVE_CRYPT_H
 
+/* Do we have the crypt_r function */
+#undef HAVE_CRYPT_R
+
 /* Define to 1 if you have the `ctime_r' function. */
 #undef HAVE_CTIME_R
 
@@ -44,11 +89,26 @@
    */
 #undef HAVE_DIRENT_H
 
+/* Define to 1 if you have the `dladdr' function. */
+#undef HAVE_DLADDR
+
 /* Define to 1 if you have the <dlfcn.h> header file. */
 #undef HAVE_DLFCN_H
 
 /* Define to 1 if you have the <errno.h> header file. */
 #undef HAVE_ERRNO_H
+
+/* Define to 1 if you have the `EVP_sha3_512' function. */
+#undef HAVE_EVP_SHA3_512
+
+/* define this if we have <execinfo.h> and symbols */
+#undef HAVE_EXECINFO
+
+/* Define to 1 if you have the `fchmodat' function. */
+#undef HAVE_FCHMODAT
+
+/* Define to 1 if you have the `fchownat' function. */
+#undef HAVE_FCHOWNAT
 
 /* Define to 1 if you have the `fcntl' function. */
 #undef HAVE_FCNTL
@@ -62,8 +122,17 @@
 /* Define to 1 if you have the <fnmatch.h> header file. */
 #undef HAVE_FNMATCH_H
 
+/* Define to 1 if you have the `fopencookie' function. */
+#undef HAVE_FOPENCOOKIE
+
+/* Define to 1 if you have the `funopen' function. */
+#undef HAVE_FUNOPEN
+
 /* Define to 1 if you have the `getaddrinfo' function. */
 #undef HAVE_GETADDRINFO
+
+/* Define to 1 if you have the getgrnam_r. */
+#undef HAVE_GETGRNAM_R
 
 /* Define to 1 if you have the `getnameinfo' function. */
 #undef HAVE_GETNAMEINFO
@@ -76,6 +145,9 @@
 
 /* Define to 1 if you have the `getpeereid' function. */
 #undef HAVE_GETPEEREID
+
+/* Define to 1 if you have the getpwnam_r. */
+#undef HAVE_GETPWNAM_R
 
 /* Define to 1 if you have the `getresuid' function. */
 #undef HAVE_GETRESUID
@@ -92,11 +164,23 @@
 /* Define to 1 if you have the `gmtime_r' function. */
 #undef HAVE_GMTIME_R
 
+/* Define to 1 if you have the <gperftools/profiler.h> header file. */
+#undef HAVE_GPERFTOOLS_PROFILER_H
+
 /* Define to 1 if you have the <grp.h> header file. */
 #undef HAVE_GRP_H
 
 /* Define to 1 if you have the <history.h> header file. */
 #undef HAVE_HISTORY_H
+
+/* Define if the function (or macro) htonll exists. */
+#undef HAVE_HTONLL
+
+/* Define if the function (or macro) htonlll exists. */
+#undef HAVE_HTONLLL
+
+/* Define to 1 if you have the `if_indextoname' function. */
+#undef HAVE_IF_INDEXTONAME
 
 /* define if you have IN6_PKTINFO (Linux) */
 #undef HAVE_IN6_PKTINFO
@@ -119,6 +203,9 @@
 /* define if you have IP_PKTINFO (Linux) */
 #undef HAVE_IP_PKTINFO
 
+/* Define to 1 if you have the `cap' library (-lcap). */
+#undef HAVE_LIBCAP
+
 /* Define to 1 if you have the `crypto' library (-lcrypto). */
 #undef HAVE_LIBCRYPTO
 
@@ -128,7 +215,8 @@
 /* Define to 1 if you have the `nsl' library (-lnsl). */
 #undef HAVE_LIBNSL
 
-/* Define to 1 if you have the `pcap' library (-lpcap). */
+/* Define to 1 if you have the `pcap' library (-lpcap) and header file
+   <pcap.h>. */
 #undef HAVE_LIBPCAP
 
 /* Define if you have a readline compatible library */
@@ -136,6 +224,9 @@
 
 /* Define to 1 if you have the `resolv' library (-lresolv). */
 #undef HAVE_LIBRESOLV
+
+/* Define to 1 if you have the `rt' library (-lrt). */
+#undef HAVE_LIBRT
 
 /* Define to 1 if you have the `socket' library (-lsocket). */
 #undef HAVE_LIBSOCKET
@@ -146,14 +237,26 @@
 /* Define to 1 if you have the `ws2_32' library (-lws2_32). */
 #undef HAVE_LIBWS2_32
 
+/* Define to 1 if you have the <limits.h> header file. */
+#undef HAVE_LIMITS_H
+
+/* Define to 1 if you have the <linux/if_packet.h> header file. */
+#undef HAVE_LINUX_IF_PACKET_H
+
 /* Define to 1 if you have the `localtime_r' function. */
 #undef HAVE_LOCALTIME_R
 
 /* Define to 1 if you have the <malloc.h> header file. */
 #undef HAVE_MALLOC_H
 
+/* Define to 1 if you have the `mallopt' function. */
+#undef HAVE_MALLOPT
+
 /* Define to 1 if you have the <memory.h> header file. */
 #undef HAVE_MEMORY_H
+
+/* Define to 1 if you have the `mkdirat' function. */
+#undef HAVE_MKDIRAT
 
 /* Define to 1 if you have the <ndir.h> header file, and it defines `DIR'. */
 #undef HAVE_NDIR_H
@@ -166,6 +269,9 @@
 
 /* Define to 1 if you have the <net/if.h> header file. */
 #undef HAVE_NET_IF_H
+
+/* Define to 1 if you have the `openat' function. */
+#undef HAVE_OPENAT
 
 /* Define to 1 if you have the <openssl/crypto.h> header file. */
 #undef HAVE_OPENSSL_CRYPTO_H
@@ -194,17 +300,17 @@
 /* Define to 1 if you have the <openssl/ssl.h> header file. */
 #undef HAVE_OPENSSL_SSL_H
 
-/* Define to 1 if you have the function pcap_dump_fopen. */
+/* Define to 1 if you have the `pcap_activate' function. */
+#undef HAVE_PCAP_ACTIVATE
+
+/* Define to 1 if you have the `pcap_create' function. */
+#undef HAVE_PCAP_CREATE
+
+/* Define to 1 if you have the `pcap_dump_fopen' function. */
 #undef HAVE_PCAP_DUMP_FOPEN
 
-/* Define to 1 if you have the function pcap_fopen_offline. */
+/* Define to 1 if you have the `pcap_fopen_offline' function. */
 #undef HAVE_PCAP_FOPEN_OFFLINE
-
-/* Define to 1 if you have the `pcap' library (-lpcap). */
-#undef HAVE_PCAP_H
-
-/* define this if we have the <pcreposix.h> header file */
-#undef HAVE_PCREPOSIX_H
 
 /* Define to 1 if you have the <prot.h> header file. */
 #undef HAVE_PROT_H
@@ -230,14 +336,32 @@
 /* Define to 1 if you have the <readline/readline.h> header file. */
 #undef HAVE_READLINE_READLINE_H
 
-/* define if we have any regex */
-#undef HAVE_REGEX_H
+/* Define if we have any regular expression library */
+#undef HAVE_REGEX
+
+/* define this if we have libpcre */
+#undef HAVE_REGEX_PCRE
+
+/* define this if we have libpcre2 */
+#undef HAVE_REGEX_PCRE2
+
+/* define this if we have POSIX regular expressions */
+#undef HAVE_REGEX_POSIX
+
+/* Define to 1 if you have the `regncomp' function. */
+#undef HAVE_REGNCOMP
+
+/* Define to 1 if you have the `regnexec' function. */
+#undef HAVE_REGNEXEC
 
 /* define this if we have REG_EXTENDED (from <regex.h>) */
 #undef HAVE_REG_EXTENDED
 
 /* Define to 1 if you have the <resource.h> header file. */
 #undef HAVE_RESOURCE_H
+
+/* Define to 1 if you have the <sanitizer/lsan_interface.h> header file. */
+#undef HAVE_SANITIZER_LSAN_INTERFACE_H
 
 /* Define to 1 if you have the <semaphore.h> header file. */
 #undef HAVE_SEMAPHORE_H
@@ -272,8 +396,23 @@
 /* Define to 1 if you have the `sigprocmask' function. */
 #undef HAVE_SIGPROCMASK
 
+/* Define if the type sig_t is defined by signal.h */
+#undef HAVE_SIG_T
+
 /* Define to 1 if you have the `snprintf' function. */
 #undef HAVE_SNPRINTF
+
+/* Define to 1 if you have the `SSL_get_client_random' function. */
+#undef HAVE_SSL_GET_CLIENT_RANDOM
+
+/* Define to 1 if you have the `SSL_get_server_random' function. */
+#undef HAVE_SSL_GET_SERVER_RANDOM
+
+/* Define to 1 if you have the <stdatomic.h> header file. */
+#undef HAVE_STDATOMIC_H
+
+/* Define to 1 if you have the <stdbool.h> header file. */
+#undef HAVE_STDBOOL_H
 
 /* Define to 1 if you have the <stddef.h> header file. */
 #undef HAVE_STDDEF_H
@@ -326,9 +465,22 @@
 /* Define to 1 if you have the <syslog.h> header file. */
 #undef HAVE_SYSLOG_H
 
+/* Define to 1 if you have the `systemd' library (-lsystemd). */
+#undef HAVE_SYSTEMD
+
+/* Define to 1 if you have the <systemd/sd-daemon.h> header file. */
+#undef HAVE_SYSTEMD_SD_DAEMON_H
+
+/* Define to 1 if you have watchdog support in the `systemd' library
+   (-lsystemd). */
+#undef HAVE_SYSTEMD_WATCHDOG
+
 /* Define to 1 if you have the <sys/dir.h> header file, and it defines `DIR'.
    */
 #undef HAVE_SYS_DIR_H
+
+/* Define to 1 if you have the <sys/event.h> header file. */
+#undef HAVE_SYS_EVENT_H
 
 /* Define to 1 if you have the <sys/fcntl.h> header file. */
 #undef HAVE_SYS_FCNTL_H
@@ -339,6 +491,9 @@
 
 /* Define to 1 if you have the <sys/prctl.h> header file. */
 #undef HAVE_SYS_PRCTL_H
+
+/* Define to 1 if you have the <sys/ptrace.h> header file. */
+#undef HAVE_SYS_PTRACE_H
 
 /* Define to 1 if you have the <sys/resource.h> header file. */
 #undef HAVE_SYS_RESOURCE_H
@@ -367,11 +522,20 @@
 /* Define to 1 if you have the <sys/wait.h> header file. */
 #undef HAVE_SYS_WAIT_H
 
-/* Define to 1 if you have the function talloc_set_memlimit. */
+/* Define to 1 if you have the `talloc_pooled_object' function. */
+#undef HAVE_TALLOC_POOLED_OBJECT
+
+/* Define to 1 if you have the `talloc_set_memlimit' function. */
 #undef HAVE_TALLOC_SET_MEMLIMIT
+
+/* 128 bit unsigned integer */
+#undef HAVE_UINT128_T
 
 /* Define to 1 if you have the <unistd.h> header file. */
 #undef HAVE_UNISTD_H
+
+/* Define to 1 if you have the `unlinkat' function. */
+#undef HAVE_UNLINKAT
 
 /* Define to 1 if you have the <utime.h> header file. */
 #undef HAVE_UTIME_H
@@ -382,11 +546,23 @@
 /* Define to 1 if you have the <utmp.h> header file. */
 #undef HAVE_UTMP_H
 
+/* Define to 1 if you have the <valgrind.h> header file. */
+#undef HAVE_VALGRIND_H
+
+/* Define to 1 if you have the `vdprintf' function. */
+#undef HAVE_VDPRINTF
+
 /* Define to 1 if you have the `vsnprintf' function. */
 #undef HAVE_VSNPRINTF
 
 /* Define to 1 if you have the <winsock.h> header file. */
 #undef HAVE_WINSOCK_H
+
+/* compiler specific 128 bit unsigned integer */
+#undef HAVE___UINT128_T
+
+/* Architecture information for the target platform */
+#undef HOSTINFO
 
 /* define if you have OSFC2 authentication */
 #undef OSFC2
@@ -420,6 +596,9 @@
 
 /* Commit HEAD at time of configuring */
 #undef RADIUSD_VERSION_COMMIT
+
+/* Version release number at time of configuring */
+#undef RADIUSD_VERSION_RELEASE
 
 /* Raw version string from VERSION file */
 #undef RADIUSD_VERSION_STRING
@@ -467,22 +646,22 @@
 /* include support for Ascend binary filter attributes */
 #undef WITH_ASCEND_BINARY
 
-/* define if you want DHCP support */
+/* define if you want dhcp */
 #undef WITH_DHCP
 
 /* define if the server was built with -DNDEBUG */
 #undef WITH_NDEBUG
 
-/* define if you want TCP support (For RADSec et al) */
-#undef WITH_TCP
+/* define if you want tacacs */
+#undef WITH_TACACS
 
-/* define if you want thread support */
-#undef WITH_THREADS
+/* define if you want tcp */
+#undef WITH_TCP
 
 /* define if you want udpfromto */
 #undef WITH_UDPFROMTO
 
-/* define if you want VMPS support */
+/* define if you want vmps */
 #undef WITH_VMPS
 
 /* Define WORDS_BIGENDIAN to 1 if your processor stores words with the most
@@ -518,6 +697,9 @@
 /* Define to 1 if you need to in order for `stat' and other things to work. */
 #undef _POSIX_SOURCE
 
+/* Force OSX >= 10.7 Lion to use RFC2292 IPv6 socket options */
+#undef __APPLE_USE_RFC_3542
+
 /* Define to empty if `const' does not conform to ANSI C. */
 #undef const
 
@@ -544,6 +726,9 @@
 
 /* uint32_t should be the canonical 'network integer' */
 #undef uint32_t
+
+/* uint64_t is required for larger counters */
+#undef uint64_t
 
 /* uint8_t should be the canonical 'octet' for network traffic */
 #undef uint8_t

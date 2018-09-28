@@ -21,12 +21,14 @@ dnl #
 dnl #############################################################
 
 AC_PREREQ([2.59])
-export CFLAGS LIBS PCAP_LIBS LDFLAGS CPPFLAGS
+export CFLAGS LIBS LDFLAGS CPPFLAGS
 
 AC_INIT([freeradius],[$]Id[$],[http://bugs.freeradius.org],,[http://www.freeradius.org])
-AC_CONFIG_SRCDIR([src/main/radiusd.c])
+AC_CONFIG_SRCDIR([src/bin/radiusd.c])
 AC_CONFIG_HEADER([src/include/autoconf.h])
 m4_include([m4/ax_cc.m4])
+m4_include([m4/ax_with_lib_args.m4])
+m4_include([m4/ax_with_feature_args.m4])
 
 dnl #############################################################
 dnl #
@@ -34,19 +36,20 @@ dnl #  Custom hackery to discover version at configure time
 dnl #
 dnl #############################################################
 
-RADIUSD_MAJOR_VERSION=`cat VERSION | sed 's/\..*//'`
-RADIUSD_MINOR_VERSION=`cat VERSION | sed 's/^[[^\.]]*\.//' | sed 's/\..*$//'`
-RADIUSD_INCRM_VERSION=`cat VERSION | sed 's/^.*\..*\.//' | sed 's/[[\.-]].*$//'`
+RADIUSD_VERSION_MAJOR=`cat VERSION | cut -f1 -d.`
+RADIUSD_VERSION_MINOR=`cat VERSION | cut -f2 -d.`
+RADIUSD_VERSION_INCRM=`cat VERSION | cut -f3 -d. | sed 's/[[\.-]].*$//'`
 
-RADIUSD_VERSION=`echo | awk -v major="$RADIUSD_MAJOR_VERSION" \
--v minor="$RADIUSD_MINOR_VERSION" \
--v incrm="$RADIUSD_INCRM_VERSION" \
-'{ printf "%02i%02i%02i", major, minor, incrm }'`
+AC_MSG_CHECKING([build version])
+RADIUSD_VERSION=`printf "%02i%02i%02i" $RADIUSD_VERSION_MAJOR $RADIUSD_VERSION_MINOR $RADIUSD_VERSION_INCRM`
+AC_MSG_RESULT($RADIUSD_VERSION)
 
 dnl #
 dnl #  Still useful for custom builds
 dnl #
+AC_MSG_CHECKING([build version string])
 RADIUSD_VERSION_STRING=`cat VERSION`
+AC_MSG_RESULT($RADIUSD_VERSION_STRING)
 
 dnl #
 dnl #  Add definitions to Make.inc as it's used by various build targets
@@ -68,6 +71,18 @@ dnl #
 dnl #############################################################
 
 dnl #
+dnl #  Unset ASAN_OPTIONS and LSAN_OPTIONS so they don't interfere
+dnl #  with the build process.
+dnl #
+unset ASAN_OPTIONS
+unset LSAN_OPTIONS
+
+dnl #
+dnl #  See if we have Git.
+dnl #
+AC_CHECK_PROG(GIT, git, yes, no)
+
+dnl #
 dnl #  Enable developer features like debugging symbols.
 dnl #  These checks must be done before expanding the AC_PROG_CC
 dnl #  and AC_PROG_CXX macros.
@@ -86,11 +101,32 @@ AC_ARG_ENABLE(developer,
 dnl #
 dnl #  Turn on the developer flag when taken from a git checkout (not a release)
 dnl #
-if test -d $srcdir/.git; then
+if test "x$GIT" = "xyes" && git status 2>&1 > /dev/null; then
+  if test "x$RADIUSD_VERSION_RELEASE" = "x"; then
+    AC_MSG_CHECKING([build release])
+    RADIUSD_VERSION_RELEASE=`git describe | sed -e 's/^.*-\([[0-9]]*\)-g[[0-9a-f]]*/\1/'`
+    AC_MSG_RESULT($RADIUSD_VERSION_RELEASE)
+  fi
+
+  if test "x$RADIUSD_VERSION_COMMIT" = "x"; then
+    AC_MSG_CHECKING([build commit])
+    RADIUSD_VERSION_COMMIT=`git log --pretty=format:'%h' -n 1`
+    AC_MSG_RESULT($RADIUSD_VERSION_COMMIT)
+  fi
+
   if test "x$developer" != "xno"; then
-    AC_MSG_NOTICE([found .git directory, enabling developer build implicitly, disable with --disable-developer])
+    AC_MSG_NOTICE([in git repository, enabling developer build implicitly, disable with --disable-developer])
     developer="yes"
   fi
+
+fi
+
+if test "x$RADIUSD_VERSION_RELEASE" != "x"; then
+  AC_DEFINE_UNQUOTED([RADIUSD_VERSION_RELEASE],[${RADIUSD_VERSION_RELEASE}],[Version release number at time of configuring])
+fi
+
+if test "x$RADIUSD_VERSION_COMMIT" != "x"; then
+  AC_DEFINE_UNQUOTED([RADIUSD_VERSION_COMMIT],[${RADIUSD_VERSION_COMMIT}],[Commit HEAD at time of configuring])
 fi
 
 dnl #
@@ -105,7 +141,7 @@ fi
 
 dnl #############################################################
 dnl #
-dnl #  0. Checks for compiler, libtool, and command line options.
+dnl #  0. Checks for compiler
 dnl #
 dnl #############################################################
 
@@ -113,8 +149,8 @@ dnl #
 dnl #  Get system information
 dnl #
 AC_CANONICAL_SYSTEM
+AC_SUBST(TARGET_SYSTEM, "$target")
 
-dnl #
 dnl #  Check for GNU cc
 dnl #
 AC_PROG_CC
@@ -134,12 +170,35 @@ dnl #
 dnl #  Definitive check for whether the compiler is clang
 dnl #
 AX_CC_IS_CLANG
+if test "x$ax_cv_cc_clang" = "xyes"; then
+  AC_SUBST(clang_path, "$CC")
+else
+  AC_SUBST(clang_path, "")
+fi
+
+AX_CC_STD_C11
+if test "x$ax_cv_cc_std_c11_flag" != x; then
+  CFLAGS="$CFLAGS $ax_cv_cc_std_c11_flag"
+else
+  AC_MSG_ERROR([FreeRADIUS requires a C11 compiler])
+fi
 
 dnl #
 dnl #  Set Default CFLAGS for GCC compatible compilers
 dnl #
 if test "x$GCC" = "xyes"; then
   CFLAGS="$CFLAGS -Wall -D_GNU_SOURCE"
+fi
+
+dnl #
+dnl # -Wno-unknown-warning-option means the compiler doesn't complain about diag pragmas
+dnl # for warnings it doesn't understand.  This may sound like a bad idea, but consider
+dnl # the number of different compiler versions we build under, and the fact that the
+dnl # more anally retentive warnings are likely to be added in later versions.
+dnl #
+AX_CC_NO_UNKNOWN_WARNING_OPTION_FLAG
+if test "x$ax_cv_cc_no_unknown_warning_option_flag" = "xyes"; then
+  CFLAGS="$CFLAGS -Wno-unknown-warning-option"
 fi
 
 dnl #
@@ -152,6 +211,12 @@ if test "x$ax_cv_cc_qunused_arguments_flag" = "xyes"; then
 fi
 
 dnl #
+dnl # Check for presence of -Wno-date-time warning. Older compilers
+dnl # don't have it, and newer compilers warn without it...
+dnl #
+AX_CC_NO_DATE_TIME_FLAG
+
+dnl #
 dnl #  Compile in large (2G+) file support.
 dnl #
 AC_SYS_LARGEFILE
@@ -160,7 +225,10 @@ dnl #
 dnl #  check for system bytesex
 dnl #  AC_DEFINES WORDS_BIGENDIAN
 dnl #
-AC_C_BIGENDIAN
+AC_C_BIGENDIAN(
+  [AC_DEFINE(FR_BIG_ENDIAN, 1, [Define if your processor stores words with the most significant byte first])],
+  [AC_DEFINE(FR_LITTLE_ENDIAN, 1, [Define if your processor stores words with the least significant byte first])]
+)
 
 dnl #
 dnl #  Find GNU Make.
@@ -192,12 +260,13 @@ dnl  : ${FR_MAKEFLAGS=-j$ax_cv_system_cores}
 dnl fi
 AC_SUBST(FR_MAKEFLAGS)
 
+dnl #############################################################
 dnl #
-dnl #  See if we have Git.
+dnl #  0a. Enable/disable compiler checks and library checks
 dnl #
-AC_CHECK_PROG(GIT, git, yes, no)
+dnl #############################################################
 
-dnl Put this in later, when all distributed modules use autoconf.
+dnl # Put this in later, when all distributed modules use autoconf.
 dnl AC_ARG_WITH(disablemodulefoo,
 dnl [  --without-rlm_foo         Disables module compilation.  Module list:]
 dnl esyscmd([find src/modules -type d -name rlm_\* -print |\
@@ -217,6 +286,132 @@ AC_ARG_ENABLE(werror,
       werror=yes
   esac ]
 )
+
+dnl #
+dnl #  Enable the -fsanitize=address and link in the address sanitizer
+dnl #  libraries.
+dnl #
+AC_ARG_ENABLE(llvm-address-sanitizer,
+[AS_HELP_STRING([--enable-llvm-address-sanitizer],
+                [build with support for LLVM's address sanitizer (if building with clang).])],
+[ case "$enableval" in
+  no)
+    llvm_address_sanitizer=no
+    ;;
+  *)
+    llvm_address_sanitizer=yes
+  esac ]
+)
+
+dnl #
+dnl #  extra argument: --disable-openssl-version-check
+dnl #
+AC_ARG_ENABLE(openssl-version-check,
+[AS_HELP_STRING([--disable-openssl-version-check],
+                [disable vulnerable OpenSSL version check])]
+)
+if test "x$enable_openssl_version_check" != "xno"; then
+  AC_DEFINE(ENABLE_OPENSSL_VERSION_CHECK, [1],
+            [Define to 1 to have OpenSSL version check enabled])
+  openssl_version_check_config="\
+	#
+	#  allow_vulnerable_openssl: Allow the server to start with
+	#  versions of OpenSSL known to have critical vulnerabilities.
+	#
+	#  This check is based on the version number reported by libssl
+	#  and may not reflect patches applied to libssl by
+	#  distribution maintainers.
+	#
+	allow_vulnerable_openssl = no"
+else
+  openssl_version_check_config=
+fi
+AC_SUBST([openssl_version_check_config])
+
+dnl #
+dnl #  extra argument: --enable-reproducible-builds
+dnl #
+AC_ARG_ENABLE(reproducible-builds,
+[AS_HELP_STRING([--enable-reproducible-builds],
+                [ensure the build does not change each time])],
+[ case "$enableval" in
+  yes)
+    AC_DEFINE(ENABLE_REPRODUCIBLE_BUILDS, [1],
+              [Define to ensure each build is the same])
+    reproducible_builds=yes
+    ;;
+  *)
+    reproducible_builds=no
+  esac ]
+)
+
+dnl #############################################################
+dnl #
+dnl #  0b. Enable/disable modules
+dnl #
+dnl #############################################################
+
+dnl #
+dnl #  These next two arguments don't actually do anything.  They're
+dnl #  place holders so that the top-level configure script can tell
+dnl #  the user how to configure lower-level modules
+dnl #
+
+dnl #
+dnl #  extra argument: --with-rlm-FOO-lib-dir
+dnl #
+AC_ARG_WITH(rlm-FOO-lib-dir,
+[AS_HELP_STRING([--with-rlm-FOO-lib-dir=DIR],
+[directory in which to look for library files used by module FOO])],
+[ case "$withval" in
+  *)
+    ;;
+  esac ]
+)
+
+dnl #
+dnl #  extra argument: --with-rlm-FOO-include-dir
+dnl #
+AC_ARG_WITH(rlm-FOO-include-dir,
+[AS_HELP_STRING([--with-rlm-FOO-include-dir=DIR],
+[directory in which to look for include files used by module FOO])],
+[ case "$withval" in
+  *)
+    ;;
+  esac ]
+)
+
+MODULES=
+AC_ARG_WITH(modules,
+[  --with-modules=QUOTED-MODULE-LIST],[
+ for i in $withval; do
+   MODULES="$MODULES $i"
+ done
+])
+
+dnl #
+dnl #  extra argument: --with-experimental-modules
+dnl #
+EXPERIMENTAL=
+AC_ARG_WITH(experimental-modules,
+[AS_HELP_STRING([--with-experimental-modules],
+[use experimental and unstable modules. (default=no, unless --enable-developer=yes)])],
+[ case "$withval" in
+  yes)
+    EXPERIMENTAL=yes
+    ;;
+  no)
+    EXPERIMENTAL=no
+    ;;
+  *)
+  esac ]
+)
+
+dnl #############################################################
+dnl #
+dnl #  0c. Set build/install directories
+dnl #
+dnl #############################################################
 
 dnl #
 dnl #  extra argument: --with-docdir
@@ -317,11 +512,41 @@ AC_ARG_WITH(raddbdir,
 AC_SUBST(raddbdir)
 AC_MSG_RESULT($raddbdir)
 
-modconfdir="$raddbdir/mods-config"
+dnl #
+dnl #  extra argument: --with-dictdir
+dnl #
+dictdir='${datarootdir}/freeradius'
+AC_MSG_CHECKING(dictdir)
+AC_ARG_WITH(dictdir,
+[  --with-dictdir=DIR      directory for dictionary files [DATAROOTDIR/freeradius] ],
+[ case "$withval" in
+  no)
+    AC_MSG_ERROR([Need dictdir])
+    ;;
+  yes)
+    ;;
+  [[\\/$]]* | ?:[[\\/]]* )
+    dictdir="$withval"
+    ;;
+  *)
+    AC_MSG_ERROR([expected an absolute directory name for --with-dictdir: $withval])
+    ;;
+  esac ]
+)
+AC_SUBST(dictdir)
+AC_MSG_RESULT($dictdir)
+
+modconfdir='${raddbdir}/mods-config'
 AC_SUBST(modconfdir)
 
+dnl #############################################################
 dnl #
-dnl #  extra argument: --with-ascend-binary
+dnl #  0d. Enable/disable build time features
+dnl #
+dnl #############################################################
+
+dnl #
+dnl #  extra argument:		--with-ascend-binary
 dnl #
 WITH_ASCEND_BINARY=yes
 AC_ARG_WITH(ascend-binary,
@@ -337,205 +562,44 @@ if test "x$WITH_ASCEND_BINARY" = "xyes"; then
   AC_DEFINE(WITH_ASCEND_BINARY, [1], [include support for Ascend binary filter attributes])
 fi
 
+AX_WITH_FEATURE_ARGS([tcp],[yes])
+AX_WITH_FEATURE_ARGS([vmps],[yes])
+AX_WITH_FEATURE_ARGS([dhcp],[yes])
+AX_WITH_FEATURE_ARGS([tacacs],[yes])
+AX_WITH_FEATURE_ARGS([udpfromto],[yes])
+
+dnl #############################################################
 dnl #
-dnl #  extra argument: --with-threads
+dnl #  0e. Library/include paths
 dnl #
-WITH_THREADS=yes
-AC_ARG_WITH(threads,
-[  --with-threads          Use threads, if available.  (default=yes) ],
+dnl #############################################################
+
+AX_WITH_LIB_ARGS_OPT([cap],[yes])
+AX_WITH_LIB_ARGS_OPT([collectdclient],[yes])
+AX_WITH_LIB_ARGS_OPT([execinfo],[yes])
+AX_WITH_LIB_ARGS_OPT([gperftools],[yes])
+AX_WITH_LIB_ARGS_OPT([openssl],[yes])
+AX_WITH_LIB_ARGS([kqueue])
+AX_WITH_LIB_ARGS_OPT([pcap],[yes])
+AX_WITH_LIB_ARGS_OPT([pcre],[yes])
+AX_WITH_LIB_ARGS_OPT([systemd],[yes])
+AX_WITH_LIB_ARGS([talloc])
+
+dnl #
+dnl # extra argument: --with-regex
+dnl #
+WITH_REGEX=
+AC_ARG_WITH(regex,
+[AS_HELP_STRING([--with-regex],
+[build with regular expressions if available(default=yes)])],
 [ case "$withval" in
-  yes)
-    ;;
-  *)
-    WITH_THREADS=no
+    no)
+	WITH_REGEX=no
+	;;
+    *)
+	;;
   esac ]
 )
-
-dnl #
-dnl #  extra argument: --with-tcp
-dnl #
-WITH_TCP=yes
-AC_ARG_WITH(tcp,
-[  --with-tcp              Compile in TCP support. (default=yes)],
-[ case "$withval" in
-  yes)
-    ;;
-  *)
-    WITH_TCP=no
-  esac ]
-)
-if test "x$WITH_TCP" = "xyes"; then
-  AC_DEFINE(WITH_TCP, [1], [define if you want TCP support (For RADSec et al)])
-fi
-
-dnl #
-dnl #  extra argument: --with-vmps
-dnl #
-WITH_VMPS=yes
-AC_ARG_WITH(vmps,
-[  --with-vmps             Compile in VMPS support. (default=yes)],
-[ case "$withval" in
-  yes)
-    ;;
-  *)
-    WITH_VMPS=no
-  esac ]
-)
-if test "x$WITH_VMPS" = "xyes"; then
-  AC_DEFINE(WITH_VMPS, [1], [define if you want VMPS support])
-fi
-
-dnl #
-dnl #  extra argument: --with-dhcp
-dnl #
-WITH_DHCP=yes
-AC_ARG_WITH(dhcp,
-[  --with-dhcp             Compile in DHCP support. (default=yes)],
-[ case "$withval" in
-  yes)
-    ;;
-  *)
-    WITH_DHCP=no
-  esac ]
-)
-if test "x$WITH_DHCP" = "xyes"; then
-  AC_DEFINE(WITH_DHCP, [1], [define if you want DHCP support])
-fi
-
-dnl #
-dnl #  Allow the user to specify a list of modules to be linked
-dnl #  statically to the server.
-dnl #
-STATIC_MODULES=
-AC_ARG_WITH(static_modules,
-[  --with-static-modules=QUOTED-MODULE-LIST],[
-  for i in $withval; do
-    STATIC_MODULES="$STATIC_MODULES -dlpreopen ../modules/rlm_$i/rlm_$i.la"
-  done
-])
-
-USE_SHARED_LIBS=yes
-AC_ARG_WITH(shared-libs,
-[  --with-shared-libs             Build dynamic libraries and link against them. (default=yes)],
-[ case "$withval" in
-  no)
-    USE_SHARED_LIBS=no
-    ;;
-  *)
-  esac
-])
-
-MODULES=
-AC_ARG_WITH(modules,
-[  --with-modules=QUOTED-MODULE-LIST],[
- for i in $withval; do
-   MODULES="$MODULES $i"
- done
-])
-
-dnl #
-dnl #  extra argument: --with-experimental-modules
-dnl #
-EXPERIMENTAL=
-AC_ARG_WITH(experimental-modules,
-[  --with-experimental-modules      Use experimental and unstable modules. (default=no, unless --enable-developer=yes) ],
-[ case "$withval" in
-  yes)
-    EXPERIMENTAL=yes
-    ;;
-  no)
-    EXPERIMENTAL=no
-    ;;
-  *)
-  esac ]
-)
-
-dnl #
-dnl #  extra argument: --with-openssl
-dnl #
-WITH_OPENSSL=yes
-AC_ARG_WITH(openssl,
-[  --with-openssl                   Use OpenSSL. (default=yes)],
-[ case "$withval" in
-  no)
-    WITH_OPENSSL=no
-    ;;
-  *)
-    WITH_OPENSSL=yes
-    ;;
-  esac ]
-)
-
-dnl #
-dnl #  extra argument: --with-openssl-includes=dir
-dnl #
-OPENSSL_INCLUDE_DIR=
-AC_ARG_WITH(openssl-includes,
-[  --with-openssl-includes=DIR      Directory to look for OpenSSL include files],
-[ case "$withval" in
-  *) OPENSSL_INCLUDE_DIR="$withval"
-    ;;
-  esac ]
-)
-
-dnl #
-dnl #  extra argument: --with-openssl-libraries=dir
-dnl #
-OPENSSL_LIB_DIR=
-AC_ARG_WITH(openssl-libraries,
-[  --with-openssl-libraries=DIR     Directory to look for OpenSSL library files],
-[ case "$withval" in
-  *) OPENSSL_LIB_DIR="$withval"
-    ;;
-  esac ]
-)
-
-dnl #
-dnl #  These next two arguments don't actually do anything.  They're
-dnl #  place holders so that the top-level configure script can tell
-dnl #  the user how to configure lower-level modules
-dnl #
-
-dnl #
-dnl #  extra argument: --with-rlm-FOO-lib-dir
-dnl #
-AC_ARG_WITH(rlm-FOO-lib-dir,
-[  --with-rlm-FOO-lib-dir=DIR       Directory to look for library files used by module FOO],
-[ case "$withval" in
-  *)
-    ;;
-  esac ]
-)
-
-dnl #
-dnl #  extra argument: --with-rlm-FOO-include-dir
-dnl #
-AC_ARG_WITH(rlm-FOO-include-dir,
-[  --with-rlm-FOO-include-dir=DIR   Directory to look for include files used by module FOO],
-[ case "$withval" in
-  *)
-    ;;
-  esac ]
-)
-
-dnl #
-dnl #  extra argument: --with-udpfromto
-dnl #
-WITH_UDPFROMTO=no
-AC_ARG_WITH(udpfromto,
-[  --with-udpfromto        Compile in UDPFROMTO support. (default=no)],
-[ case "$withval" in
-  yes)
-    WITH_UDPFROMTO=yes
-    ;;
-  *)
-    WITH_UDPFROMTO=no
-  esac ]
-)
-
-if test "x$WITH_UDPFROMTO" = "xyes"; then
-  AC_DEFINE(WITH_UDPFROMTO, [], [define if you want udpfromto])
-fi
 
 dnl #############################################################
 dnl #
@@ -574,45 +638,26 @@ AC_PATH_PROG(GREP,grep)
 
 dnl #############################################################
 dnl #
-dnl #  2. Checks for libraries
+dnl #  2a. Checks for system libraries
 dnl #
 dnl #############################################################
-
-dnl Check for talloc
-dnl extra argument: --with-talloc-lib-dir=DIR
-talloc_lib_dir=
-AC_ARG_WITH(talloc-lib-dir,
-  [AS_HELP_STRING([--with-talloc-lib-dir=DIR],
-  [Directory where the talloc libs may be found])],
-  [case "$withval" in
-    no)
-      AC_MSG_ERROR([Need talloc-lib-dir])
-      ;;
-    yes)
-      ;;
-    *)
-      talloc_lib_dir="$withval"
-      ;;
-  esac])
-
-smart_try_dir="$talloc_lib_dir"
-FR_SMART_CHECK_LIB(talloc, _talloc)
-if test "x$ac_cv_lib_talloc__talloc" != "xyes"; then
-  AC_MSG_WARN([talloc library not found. Use --with-talloc-lib-dir=<path>.])
-  AC_MSG_ERROR([FreeRADIUS requires libtalloc])
-fi
 
 dnl #
 dnl #  If using pthreads, check for -lpthread (posix) or -lc_r (*BSD)
 dnl #
 old_CFLAGS=$CFLAGS
-if test "x$WITH_THREADS" = "xyes"; then
-  if test $ac_cv_prog_suncc = "yes"; then
-    CFLAGS="$CFLAGS -mt"
-  fi
+if test $ac_cv_prog_suncc = "yes"; then
+  CFLAGS="$CFLAGS -mt"
+fi
 
-  AC_CHECK_HEADERS(pthread.h, [], [ WITH_THREADS="no" ])
+HAVE_THREADS=
+AC_CHECK_HEADERS(pthread.h, [],
+[
+  HAVE_THREADS="no"
+  fail=[pthread.h]
+])
 
+if test "x$HAVE_THREADS" != "xno"; then
   dnl #
   dnl #  pthread stuff is usually in -lpthread
   dnl #  or in -lc_r, on *BSD
@@ -622,48 +667,70 @@ if test "x$WITH_THREADS" = "xyes"; then
   dnl #
   AC_CHECK_LIB(pthread, pthread_create,
     [
+      HAVE_THREADS="yes"
       CFLAGS="$CFLAGS -D_REENTRANT -D_POSIX_PTHREAD_SEMANTICS"
       LIBS="-lpthread $LIBS"
-    ],
-    [
-      AC_CHECK_LIB(c_r, pthread_create,
-        [ CFLAGS="$CFLAGS -pthread -D_THREAD_SAFE" ],
-        [ WITH_THREADS="no" ]
-      )
+
+      dnl #
+      dnl #  -pthread should add all required CPP definitions and linker
+      dnl #  arguments. But not all compilers support it, or some compilers
+      dnl #  only support it on certain platforms.
+      dnl #
+      AX_CC_PTHREAD_FLAG
+      if test "x$ax_cv_cc_pthread_flag" = 'xyes'; then
+        CFLAGS="$CFLAGS -pthread"
+      fi
     ]
   )
 fi
 
 dnl #
-dnl #  If we have NO pthread libraries, remove any knowledge of threads.
+dnl #  Check for libc_r which used to be the threading library used
+dnl #  for FreeBSD. Internet says it may be deprecated, but if we
+dnl #  can't find lpthread it's probably worth checking.
 dnl #
-if test "x$WITH_THREADS" != "xyes"; then
-  CFLAGS=$old_CFLAGS
-  ac_cv_header_pthread_h="no"
-  WITH_THREADS=no
-else
-  dnl #
-  dnl #  We need sem_init() and friends, as they're the friendliest
-  dnl #  semaphore functions for threading.
-  dnl #
-  dnl #  HP/UX requires linking with librt, too, to get the sem_* symbols.
-  dnl #  Some systems have them in -lsem
-  dnl #  Solaris has them in -lposix4
-  dnl #  NetBSD has them in -lsemaphore
-  dnl #
+if test "x$HAVE_THREADS" != "xyes"; then
+  AC_CHECK_LIB(c_r, pthread_create,
+    [
+      HAVE_THREADS="yes"
+      CFLAGS="$CFLAGS -D_THREAD_SAFE"
 
-  AC_SEARCH_LIBS(sem_init, pthread sem posix4 rt semaphore,
-    [],
-    [AC_MSG_ERROR([[-lsem not found.  You may want to download it from ftp://ftp.to.gd-es.com/pub/BSDI/libsem.tar.bz2 or ftp://ftp.freeradius.org/pub/radius/contrib/libsem.tar.gz]])]
+      dnl #
+      dnl #  -pthread should add all required CPP definitions and linker
+      dnl #  arguments. But not all compilers support it, or some compilers
+      dnl #  only support it on certain platforms.
+      dnl #
+      AX_CC_PTHREAD_FLAG
+      if test "x$ax_cv_cc_pthread_flag" != 'xyes'; then
+        LIBS="-lc_r $LIBS"
+      else
+        CFLAGS="$CFLAGS -pthread"
+      fi
+    ],
+    [ fail=[-lc_r or -lpthread] ]
   )
 fi
 
-if test "x$WITH_THREADS" = "xyes"; then
-  AC_DEFINE(WITH_THREADS, [1], [define if you want thread support])
+if test "x$HAVE_THREADS" != "xyes"; then
+  AC_MSG_ERROR([FreeRADIUS requires thread support, missing: $fail])
 fi
 
 dnl #
-dnl #  Check if we need -lsocket
+dnl #  We need sem_init() and friends, as they're the friendliest
+dnl #  semaphore functions for threading.
+dnl #
+dnl #  HP/UX requires linking with librt, too, to get the sem_* symbols.
+dnl #  Some systems have them in -lsem
+dnl #  Solaris has them in -lposix4
+dnl #  NetBSD has them in -lsemaphore
+dnl #
+AC_SEARCH_LIBS(sem_init, pthread sem posix4 rt semaphore,
+  [],
+  [AC_MSG_ERROR([[-lsem not found.  You may want to download it from ftp://ftp.to.gd-es.com/pub/BSDI/libsem.tar.bz2 or ftp://ftp.freeradius.org/pub/radius/contrib/libsem.tar.gz]])]
+)
+
+dnl #
+dnl #  Check if we have -ldl
 dnl #
 AC_CHECK_LIB(dl, dlopen)
 
@@ -686,122 +753,16 @@ AC_CHECK_LIB(nsl, inet_ntoa)
 AC_CHECK_LIB(ws2_32, htonl)
 
 dnl #
-dnl #  Check the pcap library for the RADIUS sniffer.
+dnl #  Check if we need -lrt, this is required on
+dnl #  older Linuxes for clock_gettime.
 dnl #
-dnl extra argument: --with-pcap-lib-dir=DIR
-pcap_lib_dir=
-AC_ARG_WITH(pcap-lib-dir,
-  [AS_HELP_STRING([--with-pcap-lib-dir=DIR],
-  [Directory where the pcap libs may be found])],
-  [case "$withval" in
-    no)
-      AC_MSG_ERROR([Need pcap-lib-dir])
-      ;;
-    yes)
-      ;;
-    *)
-      pcap_lib_dir="$withval"
-      ;;
-  esac])
-
-LIBS_OLD="${LIBS}"
-smart_try_dir="$pcap_lib_dir"
-FR_SMART_CHECK_LIB(pcap, pcap_open_live)
-if test "x$ac_cv_lib_pcap_pcap_open_live" != "xyes"; then
-  AC_MSG_WARN([pcap library not found, silently disabling the RADIUS sniffer.  Use --with-pcap-lib-dir=<path>.])
-else
-  AC_DEFINE(HAVE_LIBPCAP, 1,
-    [Define to 1 if you have the `pcap' library (-lpcap).]
-  )
-
-  AC_CHECK_LIB(pcap, pcap_fopen_offline,
-    [ AC_DEFINE(HAVE_PCAP_FOPEN_OFFLINE, 1, [Define to 1 if you have the function pcap_fopen_offline.]) ]
-  )
-
-  AC_CHECK_LIB(pcap, pcap_dump_fopen,
-    [ AC_DEFINE(HAVE_PCAP_DUMP_FOPEN, 1, [Define to 1 if you have the function pcap_dump_fopen.]) ]
-  )
-
-  PCAP_LIBS="${smart_lib}"
-fi
-LIBS="${LIBS_OLD}"
-
-dnl Check for collectdclient
-dnl extra argument: --with-collectdclient-lib-dir=DIR
-collectdclient_lib_dir=
-AC_ARG_WITH(collectdclient-lib-dir,
-  [AS_HELP_STRING([--with-collectdclient-lib-dir=DIR],
-  [Directory where the collectdclient libs may be found])],
-  [case "$withval" in
-    no)
-      AC_MSG_ERROR([Need collectdclient-lib-dir])
-      ;;
-    yes)
-      ;;
-    *)
-      collectdclient_lib_dir="$withval"
-      ;;
-  esac])
-
-LIBS_OLD="${LIBS}"
-smart_try_dir="$collectdclient_lib_dir"
-FR_SMART_CHECK_LIB(collectdclient, lcc_connect)
-if test "x$ac_cv_lib_collectdclient_lcc_connect" != "xyes"; then
-  AC_MSG_WARN([collectdclient library not found. Use --with-collectdclient-lib-dir=<path>.])
-else
-  COLLECTDC_LIBS="${smart_lib}"
-fi
-LIBS="${LIBS_OLD}"
-
-VL_LIB_READLINE
+AC_CHECK_LIB(rt, clock_gettime)
 
 dnl #############################################################
 dnl #
-dnl #  3. Checks for header files
+dnl #  2b. Checks for system header files
 dnl #
 dnl #############################################################
-
-dnl Check for talloc
-dnl extra argument: --with-talloc-include-dir=DIR
-talloc_include_dir=
-AC_ARG_WITH(talloc-include-dir,
-  [AS_HELP_STRING([--with-talloc-include-dir=DIR],
-  [Directory where the talloc includes may be found])],
-  [case "$withval" in
-    no)
-      AC_MSG_ERROR([Need talloc-include-dir])
-      ;;
-    yes)
-      ;;
-    *)
-      talloc_include_dir="$withval"
-      ;;
-  esac])
-
-dnl #
-dnl # Check for talloc header files
-dnl #
-smart_try_dir="$talloc_include_dir"
-FR_SMART_CHECK_INCLUDE([talloc.h])
-if test "x$ac_cv_header_talloc_h" != "xyes"; then
-  AC_MSG_WARN([talloc headers not found. Use --with-talloc-include-dir=<path>.])
-  AC_MSG_ERROR([FreeRADIUS requires libtalloc])
-fi
-
-dnl #
-dnl #  Interix requires us to set -D_ALL_SOURCE, otherwise
-dnl #  getopt will be #included, but won't link.  <sigh>
-dnl #
-dnl #
-case "$host" in
-  *-interix*)
-    CFLAGS="$CFLAGS -D_ALL_SOURCE"
-    ;;
-  *-darwin*)
-    CFLAGS="$CFLAGS -DDARWIN"
-    LIBS="-framework DirectoryService $LIBS"
-    ;;
-esac
 
 AC_HEADER_DIRENT
 AC_HEADER_STDC
@@ -809,56 +770,66 @@ AC_HEADER_TIME
 AC_HEADER_SYS_WAIT
 
 AC_CHECK_HEADERS( \
-  dlfcn.h \
-  unistd.h \
-  crypt.h \
-  errno.h \
-  resource.h \
-  sys/resource.h \
-  getopt.h \
-  malloc.h \
-  utmp.h \
-  utmpx.h \
-  signal.h \
-  sys/select.h \
-  syslog.h \
-  inttypes.h \
-  stdint.h \
-  stdio.h \
-  netdb.h \
-  semaphore.h \
   arpa/inet.h \
-  netinet/in.h \
-  sys/types.h \
-  sys/socket.h \
-  winsock.h \
-  utime.h \
-  sys/time.h \
-  sys/wait.h \
-  sys/security.h \
+  crypt.h \
+  dlfcn.h \
+  errno.h \
   fcntl.h \
-  sys/fcntl.h \
-  sys/prctl.h \
-  sys/un.h \
+  features.h \
+  fnmatch.h \
+  getopt.h \
   glob.h \
+  grp.h \
+  inttypes.h \
+  limits.h \
+  linux/if_packet.h \
+  malloc.h \
+  netdb.h \
+  netinet/in.h \
   prot.h \
   pwd.h \
-  grp.h \
-  stddef.h \
-  fnmatch.h \
+  resource.h \
+  semaphore.h \
   sia.h \
   siad.h \
-  features.h
+  signal.h \
+  stdatomic.h \
+  stdbool.h \
+  stddef.h \
+  stdint.h \
+  stdio.h \
+  sys/event.h \
+  sys/fcntl.h \
+  sys/event.h \
+  sys/prctl.h \
+  sys/ptrace.h \
+  sys/resource.h \
+  sys/security.h \
+  sys/select.h \
+  sys/socket.h \
+  sys/time.h \
+  sys/types.h \
+  sys/un.h \
+  sys/wait.h \
+  syslog.h \
+  unistd.h \
+  utime.h \
+  utmp.h \
+  utmpx.h \
+  valgrind.h \
+  winsock.h
 )
 
 dnl #
 dnl #  FreeBSD requires sys/socket.h before net/if.h
 dnl #
 AC_CHECK_HEADERS(net/if.h, [], [],
-[#ifdef HAVE_SYS_SOCKET_H
-#  include <sys/socket.h>
-#  endif
-])
+  [
+    #ifdef HAVE_SYS_SOCKET_H
+    #  include <sys/socket.h>
+    #endif
+  ]
+)
 
 dnl #
 dnl #  other checks which require headers
@@ -873,150 +844,329 @@ then
   AC_DEFINE(OSFSIA, [], [define if you have OSFSIA authentication])
 fi
 
+dnl #############################################################
+dnl #
+dnl #  3a. Checks for user libraries
+dnl #
+dnl #############################################################
+
+dnl #
+dnl #  Check for libtalloc
+dnl #
+smart_try_dir="$talloc_lib_dir"
+FR_SMART_CHECK_LIB(talloc, _talloc)
+if test "x$ac_cv_lib_talloc__talloc" != "xyes"; then
+  AC_MSG_WARN([talloc library not found. Use --with-talloc-lib-dir=<path>.])
+  AC_MSG_ERROR([FreeRADIUS requires libtalloc.  Please read doc/developer/dependencies.rst for further instructions.])
+fi
+
+TALLOC_LIBS="${smart_lib}"
+TALLOC_LDFLAGS="${smart_ldflags}"
+AC_SUBST(TALLOC_LIBS)
+AC_SUBST(TALLOC_LDFLAGS)
+LIBS="$old_LIBS"
+
+dnl #
+dnl #  Check for libkqueue (or system kqueue present on OSX and the BSDs)
+dnl #
+AC_CHECK_FUNC([kqueue])
+if test "x$ac_cv_func_kqueue" != "xyes"; then
+  smart_try_dir="$kqueue_lib_dir"
+  FR_SMART_CHECK_LIB(kqueue, kqueue)
+  if test "x$ac_cv_lib_kqueue_kqueue" != "xyes"; then
+    AC_MSG_WARN([kqueue library not found. Use --with-kqueue-lib-dir=<path>.])
+    AC_MSG_ERROR([FreeRADIUS requires libkqueue (or system kqueue).  Please read doc/developer/dependencies.rst for further instructions.])
+  fi
+fi
+
+KQUEUE_LIBS="${smart_lib}"
+KQUEUE_LDFLAGS="${smart_ldflags}"
+AC_SUBST(KQUEUE_LIBS)
+AC_SUBST(KQUEUE_LDFLAGS)
+LIBS="$old_LIBS"
+
+dnl #
+dnl #  Check for libpcap
+dnl #
+smart_try_dir="$pcap_lib_dir"
+FR_SMART_CHECK_LIB(pcap, pcap_open_live)
+if test "x$ac_cv_lib_pcap_pcap_open_live" != "xyes"; then
+  AC_MSG_WARN([pcap library not found, silently disabling the RADIUS sniffer, and ARP listener.  Use --with-pcap-lib-dir=<path>.])
+else
+  AC_CHECK_FUNCS(\
+    pcap_fopen_offline \
+    pcap_dump_fopen \
+    pcap_create \
+    pcap_activate
+  )
+
+  PCAP_LIBS="${smart_lib}"
+  PCAP_LDFLAGS="${smart_ldflags}"
+fi
+dnl Set by FR_SMART_CHECK_LIB
+LIBS="${old_LIBS}"
+
+dnl #
+dnl #  Check for collectdclient
+dnl #
+smart_try_dir="$collectdclient_lib_dir"
+FR_SMART_CHECK_LIB(collectdclient, lcc_connect)
+if test "x$ac_cv_lib_collectdclient_lcc_connect" != "xyes"; then
+  AC_MSG_WARN([collectdclient library not found. Use --with-collectdclient-lib-dir=<path>.])
+else
+  COLLECTDC_LIBS="${smart_lib}"
+  COLLECTDC_LDFLAGS="${smart_ldflags}"
+fi
+dnl Set by FR_SMART_CHECKLIB
+LIBS="${old_LIBS}"
+
+dnl #
+dnl #  Check for cap (Linux capabilities)
+dnl #
+smart_try_dir="$cap_lib_dir"
+FR_SMART_CHECK_LIB(cap, cap_get_proc)
+if test "x$ac_cv_lib_cap_cap_get_proc" != "xyes"; then
+  AC_MSG_WARN([cap library not found, debugger checks will not be enabled. Use --with-cap-lib-dir=<path>.])
+else
+  AC_DEFINE(HAVE_LIBCAP, 1,
+    [Define to 1 if you have the `cap' library (-lcap).]
+  )
+  HAVE_LIBCAP=1
+fi
+
+dnl #
+dnl #  Look for gperftools, we could just ldpreload it, but google recommends linking
+dnl #  it in properly.
+dnl #
+if test "x$WITH_GPERFTOOLS" = xyes; then
+  smart_try_dir="$gperftools_lib_dir"
+  FR_SMART_CHECK_LIB(profiler, ProfilerStart)
+  if test "x$ac_cv_lib_profiler_ProfilerStart" != "xyes"; then
+    AC_MSG_WARN([libprofiler (gperftools) library not found. Use --with-gperftools-lib-dir=<path>.])
+  else
+    GPERFTOOLS_LIBS="${smart_lib}"
+    GPERFTOOLS_LDFLAGS="${smart_ldflags}"
+  fi
+  dnl Set by FR_SMART_CHECKLIB
+  LIBS="${old_LIBS}"
+fi
+
+dnl #
+dnl #  Check for systemd
+dnl #
+if test "x$WITH_SYSTEMD" = xyes; then
+  smart_try_dir="$systemd_lib_dir"
+  FR_SMART_CHECK_LIB(systemd, sd_notify)
+  if test "x$ac_cv_lib_systemd_sd_notify" != "xyes"; then
+    AC_MSG_WARN([systemd library not found. Use --with-systemd-lib-dir=<path>.])
+  else
+    AC_DEFINE(HAVE_SYSTEMD, 1,
+      [Define to 1 if you have the `systemd' library (-lsystemd).]
+    )
+    HAVE_SYSTEMD=1
+    SYSTEMD_LIBS="${smart_lib}"
+    SYSTEMD_LDFLAGS="${smart_ldflags}"
+  fi
+  dnl Set by FR_SMART_CHECKLIB
+  LIBS="${old_LIBS}"
+fi
+
+if test "x$HAVE_SYSTEMD" = x; then
+  AC_MSG_NOTICE([skipping test for systemd watchdog])
+else
+  smart_try_dir="$systemd_lib_dir"
+  FR_SMART_CHECK_LIB(systemd, sd_watchdog_enabled)
+  if test "x$ac_cv_lib_systemd_sd_watchdog_enabled" != "xyes"; then
+    AC_MSG_WARN([systemd watchdog is only available from systemd 209.])
+  else
+    AC_DEFINE(HAVE_SYSTEMD_WATCHDOG, 1,
+      [Define to 1 if you have watchdog support in the `systemd' library (-lsystemd).]
+    )
+  fi
+  dnl Set by FR_SMART_CHECKLIB
+  LIBS="${old_LIBS}"
+fi
+
+dnl #
+dnl #  Check for libreadline
+dnl #
+VL_LIB_READLINE
+
+dnl #############################################################
+dnl #
+dnl #  3b. Checks for header files
+dnl #
+dnl #############################################################
+
+dnl #
+dnl # Check for talloc header files
+dnl #
+smart_try_dir="$talloc_include_dir"
+FR_SMART_CHECK_INCLUDE([talloc.h])
+if test "x$ac_cv_header_talloc_h" != "xyes"; then
+  AC_MSG_WARN([talloc headers not found. Use --with-talloc-include-dir=<path>.])
+  AC_MSG_ERROR([FreeRADIUS requires libtalloc])
+fi
+
+dnl #
+dnl # Check for kqueue header files
+dnl #
+if test "x$ac_cv_header_sys_event_h" != "xyes"; then
+  smart_try_dir="${kqueue_include_dir:-/usr/include/kqueue}"
+  FR_SMART_CHECK_INCLUDE([sys/event.h])
+  if test "x$ac_cv_header_sys_event_h" != "xyes"; then
+    AC_MSG_WARN([kqueue headers not found. Use --with-kqueue-include-dir=<path>.])
+    AC_MSG_ERROR([FreeRADIUS requires libkqueue (or system kqueue)])
+  fi
+fi
+
+dnl #
+dnl #  Interix requires us to set -D_ALL_SOURCE, otherwise
+dnl #  getopt will be #included, but won't link.  <sigh>
+dnl #
+case "$target" in
+  *-interix*)
+    CFLAGS="$CFLAGS -D_ALL_SOURCE"
+    ;;
+  *-darwin*)
+    CFLAGS="$CFLAGS -DDARWIN"
+    LIBS="-framework DirectoryService $LIBS"
+    AC_DEFINE([__APPLE_USE_RFC_3542], 1, [Force OSX >= 10.7 Lion to use RFC2292 IPv6 socket options])
+    ;;
+esac
+
 dnl #
 dnl #  Were we told to use OpenSSL, if we were and we find an error, call AC_MSG_FAILURE and exit
 dnl #
 if test "x$WITH_OPENSSL" = xyes; then
-  old_LIBS=$LIBS
-  old_LDFLAGS="$LDFLAGS"
-
-  OPENSSL_INCLUDE="-DNO_OPENSSL"
-  OPENSSL_LIBS=
-  if test "x$OPENSSL_LIB_DIR" != "x"; then
-    LDFLAGS="$LDFLAGS -L$OPENSSL_LIB_DIR"
-  fi
+  OLD_LIBS="$LIBS"
 
   dnl #
-  dnl #  Check we can link to libssl
+  dnl #  Apparently OpenSSL will attempt to build with kerberos if we don't pass this?!
   dnl #
-  AC_CHECK_LIB(crypto, DH_new,
-    [
-      LIBS="-lcrypto $LIBS"
-      AC_DEFINE(HAVE_LIBCRYPTO, 1, [Define to 1 if you have the `crypto' library (-lcrypto).])
-      AC_CHECK_LIB(ssl, SSL_new,
-        [
-          AC_DEFINE(HAVE_LIBSSL, 1, [Define to 1 if you have the `ssl' library (-lssl).])
-          if test "x$OPENSSL_LIB_DIR" != "x"; then
-            OPENSSL_LIBS="-L$OPENSSL_LIB_DIR"
-          fi
-          OPENSSL_LIBS="$OPENSSL_LIBS -lcrypto -lssl -lcrypto"
-        ],
-        [
-          AC_MSG_FAILURE([failed linking to libssl])
-        ]
-      )
-    ],
-    []
-  )
+  CFLAGS="$CFLAGS -DOPENSSL_NO_KRB5"
 
   dnl #
-  dnl #  Check we can find required headers
+  dnl #  Check we can link to libcrypto and libssl
   dnl #
-  old_CPPFLAGS=$CPPFLAGS
-  if test "x$OPENSSL_INCLUDE_DIR" != "x"; then
-    CPPFLAGS="$CPPFLAGS -I$OPENSSL_INCLUDE_DIR"
-  fi
+  smart_try_dir="$openssl_lib_dir"
+  FR_SMART_CHECK_LIB(crypto, DH_new)
+  if test "x$ac_cv_lib_crypto_DH_new" = "xyes"; then
+    AC_DEFINE(HAVE_LIBCRYPTO, 1, [Define to 1 if you have the `crypto' library (-lcrypto).])
+    OPENSSL_LIBS="$smart_lib"
+    OPENSSL_LDFLAGS="$smart_ldflags"
 
-  dnl #
-  dnl #  Stupid RedHat shit
-  dnl #
-  CPPFLAGS="$CPPFLAGS -DOPENSSL_NO_KRB5"
-  AC_CHECK_HEADERS( \
-    openssl/ssl.h \
-    openssl/crypto.h \
-    openssl/err.h \
-    openssl/evp.h \
-    openssl/md5.h \
-    openssl/md4.h \
-    openssl/sha.h \
-    openssl/ocsp.h \
-    openssl/engine.h,
-    [],
-    [
-      AC_MSG_FAILURE([failed locating OpenSSL headers])
-    ]
-  )
+    FR_SMART_CHECK_LIB(ssl, SSL_new)
+    if test "x$ac_cv_lib_ssl_SSL_new" != "xyes"; then
+      AC_MSG_FAILURE([failed linking to libssl. Use --with-openssl-lib-dir=<path>, or --with-openssl=no (builds without OpenSSL)])
+    else
+      AC_DEFINE(HAVE_LIBSSL, 1, [Define to 1 if you have the `ssl' library (-lssl).])
+      OPENSSL_LIBS="$OPENSSL_LIBS $smart_lib"
 
-  AC_MSG_CHECKING([for OpenSSL version >= 0.9.7])
-  AC_EGREP_CPP(yes,
-    [#include <openssl/crypto.h>
-     #if (OPENSSL_VERSION_NUMBER >= 0x00907000L)
-     yes
-     #endif
-    ],
-    [
-      AC_MSG_RESULT(yes)
-    ],
-    [
-      AC_MSG_RESULT(no)
-      AC_MSG_FAILURE([OpenSSL version too old])
-    ]
-  )
-
-  if test "x$OPENSSL_INCLUDE_DIR" != "x"; then
-    OPENSSL_INCLUDE="-I$OPENSSL_INCLUDE_DIR -DOPENSSL_NO_KRB5"
+      if test "$OPENSSL_LDFLAGS" != "$smart_ldflags"; then
+        AC_MSG_FAILURE(["inconsistent LDFLAGS between -lssl '$smart_ldflags' and -lcrypto '$OPENSSL_LDFLAGS'"])
+      fi
+    fi
   else
-    OPENSSL_INCLUDE="-DOPENSSL_NO_KRB5"
+    AC_MSG_FAILURE([failed linking to libcrypto. Use --with-openssl-lib-dir=<path>, or --with-openssl=no (builds without OpenSSL)])
   fi
 
-  dnl #
-  dnl #  Now check that the header versions match the library
-  dnl #
-  AC_MSG_CHECKING([OpenSSL library and header version consistency])
-  AC_RUN_IFELSE(
-    [AC_LANG_PROGRAM(
-      [[
-        #include <stdio.h>
-        #include <openssl/opensslv.h>
-        #include <openssl/crypto.h>
-      ]],
-      [[
-        if (SSLeay() == OPENSSL_VERSION_NUMBER) {
-          return 0;
-        } else {
+  smart_try_dir="$openssl_include_dir"
+  FR_SMART_CHECK_INCLUDE(openssl/ssl.h)
+  if test "x$ac_cv_header_openssl_ssl_h" = "xyes"; then
+    AC_DEFINE(HAVE_OPENSSL_SSL_H, 1, [Define to 1 if you have the <openssl/ssl.h> header file.])
+
+    AC_CHECK_HEADERS( \
+      openssl/crypto.h \
+      openssl/err.h \
+      openssl/evp.h \
+      openssl/md5.h \
+      openssl/md4.h \
+      openssl/sha.h \
+      openssl/ssl.h \
+      openssl/ocsp.h \
+      openssl/engine.h,
+      [ OPENSSL_CPPFLAGS="$smart_include" ],
+      [
+        AC_MSG_FAILURE([failed locating OpenSSL headers. Use --with-openssl-include-dir=<path>, or --with-openssl=no (builds without OpenSSL)])
+      ]
+    )
+
+    AC_MSG_CHECKING([for OpenSSL version >= 0.9.7])
+    AC_EGREP_CPP(yes,
+      [#include <openssl/crypto.h>
+       #if (OPENSSL_VERSION_NUMBER >= 0x00907000L)
+       yes
+       #endif
+      ],
+      [
+        AC_MSG_RESULT(yes)
+      ],
+      [
+        AC_MSG_RESULT(no)
+        AC_MSG_FAILURE([OpenSSL version too old])
+      ]
+    )
+
+    dnl #
+    dnl #  CPPFLAGS are passed to the compiler first, so we use
+    dnl #  them to ensure things like --sysroot don't override the
+    dnl #  library location we discovered previously.
+    dnl #
+    old_CPPFLAGS="$CPPFLAGS"
+    CPPFLAGS="$OPENSSL_CPPFLAGS $CPPFLAGS"
+
+    dnl #
+    dnl #  Now check that the header versions match the library
+    dnl #
+    AC_MSG_CHECKING([OpenSSL library and header version consistency])
+    AC_RUN_IFELSE(
+      [AC_LANG_PROGRAM(
+        [[
+          #include <stdio.h>
+          #include <openssl/opensslv.h>
+          #include <openssl/crypto.h>
+        ]],
+        [[
           printf("library: %lx header: %lx... ", (unsigned long) SSLeay(), (unsigned long) OPENSSL_VERSION_NUMBER);
-          return 1;
-        }
-      ]]
-    )],
-    [
-      AC_MSG_RESULT(yes)
-    ],
-    [
-      AC_MSG_RESULT(no)
-      AC_MSG_FAILURE([OpenSSL library version does not match header version])
-    ]
-  )
+          if (SSLeay() == OPENSSL_VERSION_NUMBER) {
+            return 0;
+          } else {
+            return 1;
+          }
+        ]]
+      )],
+      [
+        AC_MSG_RESULT(yes)
+      ],
+      [
+        AC_MSG_RESULT(no)
+        AC_MSG_FAILURE([OpenSSL library version does not match header version])
+      ],
+      [
+        AC_MSG_RESULT([cross-compiling (assuming yes)])
+      ]
+    )
 
-  CPPFLAGS=$old_CPPFLAGS
-  LIBS=$old_LIBS
-  LDFLAGS="$old_LDFLAGS"
+    AC_CHECK_FUNCS( \
+      SSL_get_client_random \
+      SSL_get_server_random \
+      EVP_sha3_512 \
+    )
+
+    CPPFLAGS="$old_CPPFLAGS"
+  fi
+
+  LIBS="$OLD_LIBS"
+  AC_SUBST(OPENSSL_LIBS)
+  AC_SUBST(OPENSSL_LDFLAGS)
+  AC_SUBST(OPENSSL_CPPFLAGS)
+  export OPENSSL_LIBS OPENSSL_LDFLAGS OPENSSL_CPPFLAGS
 fi
-
-AC_SUBST(OPENSSL_INCLUDE)
-AC_SUBST(OPENSSL_LIBS)
-export OPENSSL_LIBS
 
 dnl #
 dnl #  Check the pcap includes for the RADIUS sniffer.
 dnl #
-dnl Check for collectd-client
-dnl extra argument: --with-pcap-include-dir=DIR
-pcap_include_dir=
-AC_ARG_WITH(pcap-include-dir,
-  [AS_HELP_STRING([--with-pcap-include-dir=DIR],
-  [Directory where the pcap includes may be found])],
-  [case "$withval" in
-    no)
-      AC_MSG_ERROR([Need pcap-include-dir])
-      ;;
-    yes)
-      ;;
-    *)
-      pcap_include_dir="$withval"
-      ;;
-  esac])
-
 if test "x$PCAP_LIBS" = x; then
   AC_MSG_NOTICE([skipping test for pcap.h.])
 else
@@ -1025,31 +1175,18 @@ else
   dnl #
   smart_try_dir="$pcap_include_dir"
   FR_SMART_CHECK_INCLUDE([pcap.h])
-  if test "x$ac_cv_header_pcap_h" == "xyes"; then
-    AC_DEFINE(HAVE_PCAP_H, 1, [Define to 1 if you have the `pcap' library (-lpcap).])
+  if test "x$ac_cv_header_pcap_h" = "xyes"; then
+    AC_DEFINE(HAVE_LIBPCAP, 1, [Define to 1 if you have the `pcap' library (-lpcap) and header file <pcap.h>.])
     AC_SUBST(PCAP_LIBS)
+    AC_SUBST(PCAP_LDFLAGS)
   else
-    AC_MSG_WARN([pcap headers not found, silently disabling the RADIUS sniffer. Use --with-pcap-include-dir=<path>.])
+    AC_MSG_WARN([pcap headers not found, silently disabling the RADIUS sniffer, and ARP listener. Use --with-pcap-include-dir=<path>.])
   fi
 fi
 
-dnl Check for collectd-client
-dnl extra argument: --with-collectdclient-include-dir=DIR
-collectdclient_include_dir=
-AC_ARG_WITH(collectdclient-include-dir,
-  [AS_HELP_STRING([--with-collectdclient-include-dir=DIR],
-  [Directory where the collectdclient includes may be found])],
-  [case "$withval" in
-    no)
-      AC_MSG_ERROR([Need collectdclient-include-dir])
-      ;;
-    yes)
-      ;;
-    *)
-      collectdclient_include_dir="$withval"
-      ;;
-  esac])
-
+dnl #
+dnl # Check for collectd-client
+dnl #
 if test "x$COLLECTDC_LIBS" = x; then
   AC_MSG_NOTICE([skipping test for collectd/client.h.])
 else
@@ -1058,11 +1195,64 @@ else
   dnl #
   smart_try_dir="$collectdclient_include_dir"
   FR_SMART_CHECK_INCLUDE([collectd/client.h])
-  if test "x$ac_cv_header_collectd_client_h" == "xyes"; then
+  if test "x$ac_cv_header_collectd_client_h" = "xyes"; then
     AC_DEFINE(HAVE_COLLECTDC_H, 1, [Define to 1 if you have the `collectdclient' library (-lcollectdclient).])
     AC_SUBST(COLLECTDC_LIBS)
+    AC_SUBST(COLLECTDC_LDFLAGS)
   else
     AC_MSG_WARN([collectdclient headers not found. Use --with-collectdclient-include-dir=<path>.])
+  fi
+fi
+
+dnl #
+dnl #  Check the CAP includes for debugger checks
+dnl #
+if test "x$HAVE_LIBCAP" = x; then
+  AC_MSG_NOTICE([skipping test for cap.h.])
+else
+  dnl #
+  dnl # Check for CAP header files
+  dnl #
+  smart_try_dir="$cap_include_dir"
+  FR_SMART_CHECK_INCLUDE([sys/capability.h])
+  if test "x$ac_cv_header_sys_capability_h" = "xyes"; then
+    AC_DEFINE(HAVE_CAPABILITY_H, 1, [Define to 1 if you have the <sys/capability.h> header file.])
+  else
+    AC_MSG_WARN([cap headers not found, will not perform debugger checks. Use --with-cap-include-dir=<path>.])
+  fi
+fi
+
+dnl #
+dnl #  Check for the gperftools headers
+dnl #
+if test "x$WITH_GPERFTOOLS" != xyes || test "x$GPERFTOOLS_LIBS" = x; then
+  AC_MSG_NOTICE([skipping test for google/profiler.h.])
+else
+  smart_try_dir="$gperftools_include_dir"
+  FR_SMART_CHECK_INCLUDE([gperftools/profiler.h])
+  if test "x$ac_cv_header_gperftools_profiler_h" = "xyes"; then
+    AC_DEFINE(HAVE_GPERFTOOLS_PROFILER_H, 1, [Define to 1 if you have the <gperftools/profiler.h> header file.])
+    AC_SUBST(GPERFTOOLS_LIBS)
+    AC_SUBST(GPERFTOOLS_LDFLAGS)
+  else
+    AC_MSG_WARN([gperftools headers not found.  Use --with-gperftools-include-dir=<path>.])
+  fi
+fi
+
+dnl #
+dnl #  Check for the systemd headers
+dnl #
+if test "x$WITH_SYSTEMD" != xyes || test "x$SYSTEMD_LIBS" = x; then
+  AC_MSG_NOTICE([skipping test for systemd/sd-daemon.h.])
+else
+  smart_try_dir="$systemd_include_dir"
+  FR_SMART_CHECK_INCLUDE([systemd/sd-daemon.h])
+  if test "x$ac_cv_header_systemd_sdmdaemon_h" = "xyes"; then
+    AC_DEFINE(HAVE_SYSTEMD_SD_DAEMON_H, 1, [Define to 1 if you have the <systemd/sd-daemon.h> header file.])
+    AC_SUBST(SYSTEMD_LIBS)
+    AC_SUBST(SYSTEMD_LDFLAGS)
+  else
+    AC_MSG_WARN([systemd headers not found.  Use --with-systemd-include-dir=<path>.])
   fi
 fi
 
@@ -1144,6 +1334,42 @@ FR_CHECK_TYPE_INCLUDE(
   uint32_t, unsigned int, [uint32_t should be the canonical 'network integer']
 )
 
+dnl #
+dnl #  Check for uint64_t
+dnl #
+FR_CHECK_TYPE_INCLUDE(
+  [
+    #ifdef HAVE_INTTYPES_H
+    #  include <inttypes.h>
+    #endif
+
+    #ifdef HAVE_STDINT_H
+    #  include <stdint.h>
+    #endif
+  ],
+  uint64_t, unsigned long long, [uint64_t is required for larger counters]
+)
+
+dnl #
+dnl #  Check for __uint128_t (compiler builtin)
+dnl #
+AC_CHECK_TYPE(__uint128_t, AC_DEFINE(HAVE___UINT128_T, 1, [compiler specific 128 bit unsigned integer]), [], [])
+
+dnl #
+dnl #  Check for uint128_t (fictitious future data type)
+dnl #
+AC_CHECK_TYPE(uint128_t, AC_DEFINE(HAVE_UINT128_T, 1, [128 bit unsigned integer]), [],
+  [
+    #ifdef HAVE_INTTYPES_H
+    #  include <inttypes.h>
+    #endif
+
+    #ifdef HAVE_STDINT_H
+    #  include <stdint.h>
+    #endif
+  ]
+)
+
 AC_CHECK_TYPE(struct in6_addr, AC_DEFINE(HAVE_STRUCT_IN6_ADDR, 1, [IPv6 address structure]), [],
   [
     #ifdef HAVE_NETINET_IN_H
@@ -1186,44 +1412,84 @@ AC_CHECK_TYPE(struct addrinfo, AC_DEFINE(HAVE_STRUCT_ADDRINFO, 1, [Generic DNS l
   ]
 )
 
+dnl #
+dnl #  Check for sig_t
+dnl #
+dnl #  FR_CHECK_TYPE_INCLUDE doesn't work for callbacks as it doesn't produce typedefs
+dnl #
+AC_MSG_CHECKING([if sig_t is defined])
+AC_LINK_IFELSE(
+  [AC_LANG_PROGRAM(
+    [[
+      #ifdef HAVE_SIGNAL_H
+      #  include <signal.h>
+      #endif
+    ]],
+    [[
+      sig_t func;
+      return 0;
+    ]]
+  )],
+  [
+      AC_MSG_RESULT(yes)
+      AC_DEFINE(HAVE_SIG_T, 1, [Define if the type sig_t is defined by signal.h])
+  ],
+  [
+      AC_MSG_RESULT(no)
+  ]
+)
+
 dnl #############################################################
 dnl #
 dnl #  5. Checks for structures and functions
 dnl #
 dnl #############################################################
 AC_CHECK_FUNCS( \
-  getopt_long \
-  fcntl \
-  strsignal \
-  sigaction \
-  sigprocmask \
-  pthread_sigmask \
-  snprintf \
-  vsnprintf \
-  setsid \
-  strncasecmp \
-  strcasecmp \
-  localtime_r \
+  bindat \
+  clock_gettime \
+  closefrom \
   ctime_r \
-  gmtime_r \
-  strsep \
-  inet_aton \
-  inet_pton \
-  inet_ntop \
-  setlinebuf \
-  setvbuf \
-  getusershell \
-  initgroups \
+  dladdr \
+  fchmodat \
+  fchownat \
+  fcntl \
+  fopencookie \
+  funopen \
   getaddrinfo \
   getnameinfo \
-  closefrom \
-  gettimeofday \
+  getopt_long \
   getpeereid \
-  setuid \
-  setresuid \
   getresuid \
+  gettimeofday \
+  getusershell \
+  gmtime_r \
+  if_indextoname \
+  inet_aton \
+  inet_ntop \
+  inet_pton \
+  initgroups \
+  localtime_r \
+  mallopt \
+  mkdirat \
+  openat \
+  pthread_sigmask \
+  setlinebuf \
+  setresuid \
+  setsid \
+  setuid \
+  setvbuf \
+  sigaction \
+  sigprocmask \
+  snprintf \
+  strcasecmp \
   strlcat \
-  strlcpy
+  strlcpy \
+  strncasecmp \
+  strsep \
+  strsignal \
+  unlinkat \
+  vdprintf \
+  vsnprintf
 )
 
 AC_TYPE_SIGNAL
@@ -1231,7 +1497,7 @@ AC_TYPE_SIGNAL
 dnl #
 dnl #  Check if we have utmpx.h
 dnl #  if so, check if struct utmpx has entry ut_xtime
-dnl #  if not, set it to define ut_xtime == ut_tv.tv_sec
+dnl #  if not, set it to define ut_xtime = ut_tv.tv_sec
 dnl #
 if test "x$ac_cv_header_utmpx_h" = "xyes"; then
  FR_CHECK_STRUCT_HAS_MEMBER([#include <utmpx.h>], [struct utmpx], ut_xtime)
@@ -1255,6 +1521,49 @@ FR_CHECK_STRUCT_HAS_MEMBER([#include <netinet/in.h>], [struct in6_pktinfo], ipi6
 if test "x$ac_cv_type_struct_in6_pktinfo_has_ipi6_addr" = "xyes"; then
   AC_DEFINE(HAVE_IN6_PKTINFO, [], [define if you have IN6_PKTINFO (Linux)])
 fi
+
+dnl #
+dnl #  Check for htonll and htonlll
+dnl #
+AC_MSG_CHECKING([if htonll is defined])
+AC_LINK_IFELSE(
+  [AC_LANG_PROGRAM(
+    [[
+      #include <sys/types.h>
+      #include <netinet/in.h>
+    ]],
+    [[
+      return htonll(0);
+    ]]
+  )],
+  [
+      AC_MSG_RESULT(yes)
+      AC_DEFINE(HAVE_HTONLL, 1, [Define if the function (or macro) htonll exists.])
+  ],
+  [
+      AC_MSG_RESULT(no)
+  ]
+)
+
+AC_MSG_CHECKING([if htonlll is defined])
+AC_LINK_IFELSE(
+  [AC_LANG_PROGRAM(
+    [[
+      #include <sys/types.h>
+      #include <netinet/in.h>
+    ]],
+    [[
+      return htonlll(0);
+    ]]
+  )],
+  [
+      AC_MSG_RESULT(yes)
+      AC_DEFINE(HAVE_HTONLLL, 1, [Define if the function (or macro) htonlll exists.])
+  ],
+  [
+      AC_MSG_RESULT(no)
+  ]
+)
 
 dnl #############################################################
 dnl #
@@ -1288,17 +1597,106 @@ if test "x$developer" = "xyes"; then
   dnl #
   AX_CC_WDOCUMENTATION_FLAG
   if test "x$ax_cv_cc_wdocumentation_flag" = "xyes"; then
-    devflags="-Wdocumentation"
+    devcflags="-Wdocumentation"
   fi
 
-  if test "x$GCC" = "xyes"; then
-    devflags="$devflags -Wshadow -Wpointer-arith -Wcast-qual -Wcast-align -Wwrite-strings -Wstrict-prototypes -Wmissing-prototypes -Wmissing-declarations -Wnested-externs -W -Wredundant-decls -Wundef -Wformat-y2k -Wno-format-extra-args -Wno-format-zero-length -Wno-cast-align -Wformat-nonliteral -Wformat-security -Wformat=2 -DWITH_VERIFY_PTR=1"
-    INSTALLSTRIP=""
+  dnl #
+  dnl #  If we have -Weverything, it really means *everything* unlike -Wall
+  dnl #  It's so verbose we need to turn off warnings which aren't useful.
+  dnl #
+  AX_CC_WEVERYTHING_FLAG
+  if test "x$ax_cv_cc_weverything_flag" = "xyes"; then
+    devcflags="$devflags \
+	-W \
+	-Weverything \
+	-Wformat=2 \
+	-DWITH_VERIFY_PTR=1 \
+	-Wno-disabled-macro-expansion \
+	-Wno-missing-field-initializers \
+	-Wno-date-time \
+    	-Wno-padded \
+    	-Wno-gnu-zero-variadic-macro-arguments \
+    	-Wno-shorten-64-to-32 \
+    	-Wno-sign-conversion \
+    	-Wno-conversion \
+    	-Wno-switch-enum \
+    	-Wno-gnu-statement-expression \
+    	-Wno-extended-offsetof \
+    	-Wno-cast-align \
+    	-Wno-documentation-unknown-command \
+    	-Wno-covered-switch-default \
+    	-Wno-packed \
+    	-Wno-reserved-id-macro \
+    	-Wno-format-pedantic"
+  else
+    if test "x$GCC" = "xyes"; then
+      devcflags="$devflags \
+      	-Wshadow \
+      	-Wpointer-arith \
+      	-Wcast-qual \
+      	-Wcast-align \
+      	-Wwrite-strings \
+      	-Wstrict-prototypes \
+      	-Wmissing-prototypes \
+      	-Wmissing-declarations \
+      	-Wnested-externs \
+      	-W \
+      	-Wredundant-decls \
+      	-Wundef \
+      	-Wformat-y2k \
+      	-Wno-missing-field-initializers \
+      	-Wno-format-extra-args \
+      	-Wno-format-zero-length \
+      	-Wno-cast-align \
+      	-Wformat-nonliteral \
+      	-Wformat-security \
+      	-Wformat=2 \
+      	-DWITH_VERIFY_PTR=1"
+      INSTALLSTRIP=""
+    fi
   fi
 
-  AC_MSG_NOTICE([Developer CFLAGS are "$devflags"])
+  dnl #
+  dnl #  Older versions of GCC don't support this, but 7 seems to
+  dnl #
+  AX_CC_IMPLICIT_FALLTHROUGH_FLAG
+  if test "x$ax_cv_cc_wimplicit_fallthrough_flag" = "xyes"; then
+    devcflags="$devcflags -Wimplicit-fallthrough"
+  fi
 
-  CFLAGS="$CFLAGS $devflags"
+  dnl #
+  dnl #  If running with clang, add in ASAN
+  dnl #
+  if test "x$llvm_address_sanitizer" = "xyes" && test "x$ax_cv_cc_clang" = "xyes"; then
+    dnl #
+    dnl #  -fsanitize=address		- Build with address sanitizer support
+    dnl #  -fno-omit-frame-pointer	- Always keep the frame pointer in a register
+    dnl #  -fno-optimize-sibling-calls	- Don't optimize away tail recursion.
+    dnl #
+    devcflags="$devcflags -fsanitize=address -fno-omit-frame-pointer -fno-optimize-sibling-calls"
+
+    AX_CC_SANITZE_ADDRESS_USE_AFTER_SCOPE_FLAG
+    if test "x$ax_cv_cc_sanitize_address_use_after_scope" = "xyes"; then
+      devcflags="$devcflags -fsanitize-address-use-after-scope"
+    fi
+
+    AC_CHECK_HEADERS(sanitizer/lsan_interface.h)
+
+    devldflags="$devldflags -fsanitize=address"
+  fi
+
+  dnl #
+  dnl # Clean the flags up
+  dnl #
+  devcflags="$(echo $devcflags | sed -e 's/\\t//g;s/  //g')"
+  devldflags="$(echo $devldflags | sed -e 's/\\t//g;s/  //g')"
+
+  AC_MSG_NOTICE([Developer CFLAGS are "$devcflags"])
+  AC_MSG_NOTICE([Developer LDFLAGS are "$devldflags"])
+
+  CFLAGS="$CFLAGS $devcflags"
+  LDFLAGS="$LDFLAGS $devldflags"
+
   dnl #
   dnl #  Enable experimental modules (we want to know if code changes breaks one of them)
   dnl #
@@ -1307,7 +1705,8 @@ if test "x$developer" = "xyes"; then
     EXPERIMENTAL=yes
   fi
 else
-  devflags=""
+  devcflags=""
+  devldflags=""
   CFLAGS="$CFLAGS -DNDEBUG"
   INSTALLSTRIP=""
 fi
@@ -1319,6 +1718,7 @@ AC_MSG_CHECKING([if building with -DNDEBUG])
 if echo "$CFLAGS" | grep '\-DNDEBUG' > /dev/null; then
   AC_MSG_RESULT([yes])
   AC_DEFINE([WITH_NDEBUG], [1], [define if the server was built with -DNDEBUG])
+  CFLAGS="$CFLAGS -DTALLOC_GET_TYPE_ABORT_NOOP"
 else
   AC_MSG_RESULT([no])
 fi
@@ -1326,14 +1726,18 @@ fi
 export EXPERIMENTAL
 
 dnl #
-dnl #  append the current git hash onto the version string
+dnl #  check for some compiler features
 dnl #
-if test -d $srcdir/.git -a "x$GIT" = "xyes"; then
-  RADIUSD_VERSION_COMMIT=`git log --pretty=format:'%h' -n 1`
-  AC_DEFINE_UNQUOTED([RADIUSD_VERSION_COMMIT],["${RADIUSD_VERSION_COMMIT}"],[Commit HEAD at time of configuring])
-fi
-
 FR_TLS
+AX_CC_BUILTIN_CHOOSE_EXPR
+AX_CC_BUILTIN_TYPES_COMPATIBLE_P
+AX_CC_HAVE_BUILTIN_BSWAP64
+AX_CC_HAVE_BOUNDED_ATTRIBUTE
+
+AX_CC_HAVE_C11_GENERIC
+if test "x$ax_cv_cc_c11_generic" != "xyes"; then
+  AC_MSG_ERROR([FreeRADIUS requires support for the C11 _Generic keyword])
+fi
 
 dnl #############################################################
 dnl #
@@ -1345,10 +1749,9 @@ dnl #
 dnl # Check for talloc_set_memlimit
 dnl # This was only included in version 2.0.8
 dnl #
-AC_CHECK_LIB(talloc, talloc_set_memlimit,
-  [
-    AC_DEFINE(HAVE_TALLOC_SET_MEMLIMIT, 1, [Define to 1 if you have the function talloc_set_memlimit.])
-  ]
+AC_CHECK_FUNCS(
+  talloc_set_memlimit \
+  talloc_pooled_object
 )
 
 dnl #
@@ -1365,97 +1768,195 @@ else
   AC_CHECK_FUNC(crypt, AC_DEFINE(HAVE_CRYPT, [], [Do we have the crypt function]))
 fi
 
+dnl #
+dnl # Check for libcrypt
+dnl # We use crypt_r(3) which may be in libc, or in libcrypt (eg FreeBSD)
+dnl #
+AC_CHECK_LIB(crypt, crypt_r,
+  CRYPTLIB_R="-lcrypt"
+)
+
+if test "$CRYPTLIB_R" != ""; then
+  CRYPTLIB="${CRYPTLIB} ${CRYPTLIB_R}"
+  AC_DEFINE(HAVE_CRYPT_R, [], [Do we have the crypt_r function])
+else
+  AC_CHECK_FUNC(crypt_r, AC_DEFINE(HAVE_CRYPT_R, [], [Do we have the crypt_r function]))
+fi
+
 dnl Check for libcipher
 AC_CHECK_LIB(cipher, setkey,
    CRYPTLIB="${CRYPTLIB} -lcipher"
 )
 AC_SUBST(CRYPTLIB)
 
+dnl #
+dnl #  Check for libexecinfo support, on some systems this is built into libc
+dnl #  on others it's a separate library.
+dnl #
 
 dnl #
-dnl #  Check for regular expression support, if were using PCRE it MUST be included
-dnl #  before all others, else we seem to still pickup the posix symbols for regcomp
-dnl #  and regexec, which results in crashes as soon as we call any posix regex
-dnl #  functions.
+dnl #  Look for execinfo.h and symbols
 dnl #
-dnl extra argument: --with-pcre-lib-dir
-pcre_lib_dir=
-AC_ARG_WITH(rlm-pcre-lib-dir,
-[  --with-pcre-lib-dir=DIR       directory for PCRE library files []],
-[ case "$withval" in
-    no)
-	AC_MSG_ERROR(Need rlm-pcre-lib-dir)
-	;;
-    yes)
-	;;
-    *)
-	pcre_lib_dir="$withval"
-	;;
-  esac ]
-)
+smart_try_dir=$execinfo_include_dir
+FR_SMART_CHECK_INCLUDE(execinfo.h)
+if test "x$ac_cv_header_execinfo_h" = "xyes"; then
+  smart_try_dir=$execinfo_lib_dir
+  FR_SMART_CHECK_LIB(execinfo, backtrace_symbols)
+  if test "x$ac_cv_lib_execinfo_backtrace_symbols" != "xyes"; then
+    dnl # Might be provided as part of libc
+    AC_MSG_CHECKING([if execinfo provided as part of libc])
+    AC_TRY_LINK(
+      [
+        #include <execinfo.h>
+      ],
+      [
+        void *sym[1];
+        backtrace_symbols(&sym, sizeof(sym)) ],
+      [
+        AC_MSG_RESULT(yes)
+        ac_cv_lib_execinfo_backtrace_symbols="yes"
+      ],
+      [
+        AC_MSG_RESULT(no)
+      ]
+    )
+  fi
 
-dnl extra argument: --with-pcre-include--dir
-pcre_include_dir=
-AC_ARG_WITH(rlm-pcre-include-dir,
-[  --with-pcre-include-dir=DIR   directory for PCRE include files []],
-[ case "$withval" in
-    no)
-	AC_MSG_ERROR(Need rlm-pcre-include-dir)
-	;;
-    yes)
-	;;
-    *)
-	pcre_include_dir="$withval"
-	;;
-  esac ]
-)
+  if test "x$ac_cv_lib_execinfo_backtrace_symbols" = "xyes"; then
+    AC_DEFINE(HAVE_EXECINFO, [1], [define this if we have <execinfo.h> and symbols])
+  fi
+fi
 
-REGEX=no
-REGEX_EXTENDED=no
-REGEX_PCRE=no
+dnl #
+dnl #  Check for regular expression support.
+dnl #
 
 dnl #
 dnl #  First look for PCRE
 dnl #
-smart_try_dir=$pcre_include_dir
-FR_SMART_CHECK_INCLUDE(pcreposix.h)
-if test "x$ac_cv_header_pcreposix_h" = "xyes"; then
-  AC_DEFINE(HAVE_REGEX_H, [1], [define if we have any regex])
-  AC_DEFINE(HAVE_PCREPOSIX_H, [1], [define this if we have the <pcreposix.h> header file])
-  REGEX=yes
-  REGEX_EXTENDED=yes
-  REGEX_PCRE=yes
-  LIBS="-lpcre -lpcreposix $LIBS"
+if test "x$WITH_REGEX" != "xno" && test "x$WITH_PCRE" != "xno"; then
+  smart_try_dir=$pcre_include_dir
+
+  dnl #
+  dnl #  Prefer libpcre2 over libpcre
+  dnl #
+  FR_SMART_CHECK_INCLUDE(pcre2.h,[#define PCRE2_CODE_UNIT_WIDTH (8)])
+  if test "x$ac_cv_header_pcre2_h" = "xyes"; then
+    smart_try_dir=$pcre_lib_dir
+     FR_SMART_CHECK_LIB(pcre2-8, pcre2_compile_8)
+     if test "x$ac_cv_lib_pcre2_8_pcre2_compile_8" = "xyes"; then
+       REGEX=yes
+       AC_DEFINE(HAVE_REGEX_PCRE2, [1], [define this if we have libpcre2])
+       AC_DEFINE(HAVE_BINSAFE_REGEX, 1, [Define if we have a binary safe regular expression library])
+     fi
+  fi
+
+  dnl #
+  dnl #  Fallback to libpcre
+  dnl #
+  if test "x$REGEX" != "xyes"; then
+    FR_SMART_CHECK_INCLUDE(pcre.h)
+    if test "x$ac_cv_header_pcre_h" = "xyes"; then
+      smart_try_dir=$pcre_lib_dir
+      FR_SMART_CHECK_LIB(pcre, pcre_compile)
+      if test "x$ac_cv_lib_pcre_pcre_compile" = "xyes"; then
+        AC_MSG_CHECKING([libpcre library and header version consistency])
+          AC_RUN_IFELSE(
+            [AC_LANG_PROGRAM(
+              [[
+                #include <stdio.h>
+                #include <pcre.h>
+                #include <stdlib.h>
+                #define XSTRINGIFY(x) #x
+                #define STRINGIFY(x) XSTRINGIFY(x)
+              ]],
+              [[
+                char const *p = pcre_version();
+                char *q;
+                unsigned long ver;
+
+                printf("library: %s header: %u.%u %s... ", p, PCRE_MAJOR, PCRE_MINOR, STRINGIFY(PCRE_DATE));
+
+                ver = strtoul(p, &q, 10);
+                if (*q != '.') return 1;
+                if (ver != PCRE_MAJOR) return 65;
+                p = ++q;
+
+                ver = strtoul(p, &q, 10);
+                if (ver != PCRE_MINOR) return 1;
+              ]]
+            )],
+            [
+               AC_MSG_RESULT(yes)
+               REGEX=yes
+               AC_DEFINE(HAVE_REGEX_PCRE, [1], [define this if we have libpcre])
+               AC_DEFINE(HAVE_BINSAFE_REGEX, 1, [Define if we have a binary safe regular expression library])
+            ],
+            [
+               AC_MSG_RESULT(no)
+               AC_MSG_FAILURE([libpcre library version does not match header version])
+            ],
+            [
+               AC_MSG_RESULT([cross-compiling (assuming yes)])
+            ]
+          )
+      fi
+    fi
+  fi
+fi
 
 dnl #
-dnl #  Then fallback to POSIX regular expressions
+dnl #  If no PCRE, fallback to POSIX regular expressions
 dnl #
-else
+if test "x$REGEX" = "x"; then
   smart_try_dir=
   FR_SMART_CHECK_INCLUDE(regex.h)
   if test "x$ac_cv_header_regex_h" = "xyes"; then
-    AC_DEFINE(HAVE_REGEX_H, [1], [define if we have any regex])
     REGEX=yes
+    AC_MSG_CHECKING([for extended regular expressions])
     AC_EGREP_CPP(yes,
       [
         #include <regex.h>
         #ifdef REG_EXTENDED
         yes
         #endif
-       ],
-    [AC_DEFINE(HAVE_REG_EXTENDED, [1], [define this if we have REG_EXTENDED (from <regex.h>)]) REGEX_EXTENDED=yes]
+      ],
+      [
+        AC_MSG_RESULT(yes)
+        AC_DEFINE(HAVE_REG_EXTENDED, [1], [define this if we have REG_EXTENDED (from <regex.h>)])
+      ],
+      [
+        AC_MSG_RESULT(no)
+      ]
     )
-dnl #
-dnl # Fixme, this is needed for mingw builds, but not available on some Linux systems
-dnl # despite the presence of regex.h
-dnl #
-dnl # LIBS="$LIBS -lregex"
+
+    dnl #
+    dnl #  Some platforms require the regex library to be linked explicitly
+    dnl #
+    AC_CHECK_LIB(regex, regcomp,
+      [
+        LIBS="-lregex $LIBS"
+      ]
+    )
+
+    dnl #
+    dnl #  Check for some BSD extensions which allow normal regexes to be
+    dnl #  binary safe.
+    dnl #
+    AC_CHECK_FUNCS(\
+      regncomp \
+      regnexec
+    )
+    if test x"$ac_cv_func_regncomp" = x"yes" && test  x"$ac_cv_func_regnexec" = x"yes"; then
+      AC_DEFINE(HAVE_BINSAFE_REGEX, 1, [Define if we have a binary safe regular expression library])
+    fi
+    AC_DEFINE(HAVE_REGEX_POSIX, [1], [define this if we have POSIX regular expressions])
   fi
 fi
 
-AC_SUBST(REGEX)
-AC_SUBST(REGEX_PCRE)
-AC_SUBST(REGEX_EXTENDED)
+if test "x$REGEX" = "xyes"; then
+  AC_DEFINE(HAVE_REGEX, 1, [Define if we have any regular expression library])
+fi
 
 dnl #
 dnl #  Check the style of gethostbyaddr, in order of preference
@@ -1480,7 +1981,7 @@ dnl #  We need #stdio.h to define NULL on FreeBSD (at least)
 dnl #
 gethostbyaddrrstyle=""
 AC_MSG_CHECKING([gethostbyaddr_r() syntax])
-case "$host" in
+case "$target" in
   *-freebsd*)
     dnl #
     dnl #  With FreeBSD, check if there's a prototype for gethostbyaddr_r.
@@ -1618,6 +2119,52 @@ if test "x$gethostbynamerstyle" = "xBSD"; then
 fi
 
 dnl #
+dnl #  Check for thread-safe getpwnam_r and getgrnam_r
+dnl #
+if test "x$ac_cv_header_pwd_h" = "xyes"; then
+  AC_MSG_CHECKING([getpwnam_r])
+  AC_TRY_LINK(
+    [
+      #include <stdlib.h>
+      #include <sys/types.h>
+      #include <pwd.h>
+    ],
+    [ getpwnam_r(NULL, NULL, NULL, 0, NULL) ],
+    [
+      AC_MSG_RESULT([yes])
+      AC_DEFINE(HAVE_GETPWNAM_R, 1,
+                [Define to 1 if you have the getpwnam_r.]
+                )
+    ],
+    [
+        AC_MSG_RESULT(no)
+    ]
+  )
+fi
+
+if test "x$ac_cv_header_grp_h" = "xyes"; then
+  AC_MSG_CHECKING([getgrnam_r])
+  AC_TRY_LINK(
+    [
+      #include <stdlib.h>
+      #include <sys/types.h>
+      #include <grp.h>
+    ],
+    [ getgrnam_r(NULL, NULL, NULL, 0, NULL) ],
+    [
+      AC_MSG_RESULT([yes])
+      AC_DEFINE(HAVE_GETGRNAM_R, 1,
+                [Define to 1 if you have the getgrnam_r.]
+                )
+    ],
+    [
+        AC_MSG_RESULT(no)
+    ]
+  )
+fi
+
+
+dnl #
 dnl #  Check for non-posix solaris ctime_r (extra buflen int arg)
 dnl #
 AC_DEFINE(POSIXSTYLE, [1], [Posix-Style ctime_r])
@@ -1654,7 +2201,7 @@ else
     AC_MSG_RESULT([${ctimerstyle}-style])
 fi
 
-AC_SUBST(HOSTINFO, $host)
+AC_DEFINE_UNQUOTED(HOSTINFO, ["${host}"], [Architecture information for the target platform])
 
 dnl #############################################################
 dnl #
@@ -1692,6 +2239,9 @@ if test "x$EXPERIMENTAL" = "xyes"; then
   for foo in `ls -1 "${srcdir}"/src/modules | grep rlm_`; do
     MODULES="$MODULES $foo"
   done
+  for foo in `ls -1 "${srcdir}"/src/modules/rlm_eap/types/ | grep rlm_`; do
+    MODULES="$MODULES $foo"
+  done
 else
    dnl #
    dnl #  make ONLY the stable modules
@@ -1712,6 +2262,13 @@ for bar in $MODULES; do
   fi
 done
 
+dnl ############################################################
+dnl #  Find any support libraries we need to build
+dnl #############################################################
+for foo in `find "${srcdir}"/src/lib/ -type f -name configure`; do
+  mysubdirs="$mysubdirs $(dirname $foo)"
+done
+
 dnl #
 dnl #  Don't change the variable name here.  Autoconf goes bonkers
 dnl #  if you do.
@@ -1719,13 +2276,21 @@ dnl #
 AC_CONFIG_SUBDIRS($mysubdirs)
 AC_SUBST(MODULES)
 
+dnl #
+dnl #  If reproducible builds are not enabled, disable
+dnl #  -Wdate-time so the compiler doesn't croak.
+dnl #
+if test "x$ax_cv_cc_no_date_time_flag" = "xyes" && test "x$reproducible_builds" != "xyes"; then
+  CFLAGS="-Wno-date-time $CFLAGS"
+fi
+
 dnl #############################################################
 dnl #
 dnl #  Add -Werror last, so it doesn't interfere with autoconf's
 dnl #  test programs.
 dnl #
 dnl #############################################################
-if test "x$werror" == "xyes"; then
+if test "x$werror" = "xyes"; then
   CFLAGS="-Werror $CFLAGS"
 fi
 
@@ -1736,8 +2301,8 @@ dnl #
 dnl #############################################################
 AC_CONFIG_COMMANDS([stamp-h], [echo timestamp > src/include/stamp-h])
 AC_CONFIG_COMMANDS([build-radpaths-h], [(cd ./src/include && /bin/sh ./build-radpaths-h)])
-AC_CONFIG_COMMANDS([main-chmod], [(cd ./src/main && chmod +x checkrad radlast radtest)])
-AC_CONFIG_COMMANDS([scripts-chmod], [(cd ./scripts && chmod +x rc.radiusd radiusd.cron.daily radiusd.cron.monthly cryptpasswd)])
+AC_CONFIG_COMMANDS([main-chmod], [(cd ./src/bin && chmod +x checkrad radlast radtest)])
+AC_CONFIG_COMMANDS([scripts-chmod], [(cd ./scripts && chmod +x rc.radiusd cron/radiusd.cron.daily cron/radiusd.cron.monthly cryptpasswd)])
 
 dnl #
 dnl #  Substitute whatever libraries we found to be necessary
@@ -1745,23 +2310,17 @@ dnl #
 AC_SUBST(LIBS)
 AC_SUBST(INSTALLSTRIP)
 
-AC_SUBST(USE_SHARED_LIBS)
-USE_STATIC_LIBS="yes"
-AC_SUBST(USE_STATIC_LIBS)
-AC_SUBST(STATIC_MODULES)
-
 AC_OUTPUT(\
   ./Make.inc \
   ./src/include/build-radpaths-h \
-  ./src/main/radsniff.mk \
-  ./src/main/checkrad \
-  ./src/main/radlast \
-  ./src/main/radtest \
+  ./src/bin/radsniff.mk \
+  ./src/bin/checkrad \
+  ./src/bin/radlast \
+  ./src/bin/radtest \
   ./scripts/rc.radiusd \
-  ./scripts/radiusd.cron.daily \
-  ./scripts/radiusd.cron.monthly \
+  ./scripts/cron/radiusd.cron.daily \
+  ./scripts/cron/radiusd.cron.monthly \
   ./scripts/cryptpasswd \
-  ./raddb/dictionary \
   ./raddb/radrelay.conf \
   ./raddb/radiusd.conf
 )

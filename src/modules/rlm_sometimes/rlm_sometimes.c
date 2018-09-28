@@ -1,7 +1,8 @@
 /*
  *   This program is is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License, version 2 if the
- *   License as published by the Free Software Foundation.
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation; either version 2 of the License, or (at
+ *   your option) any later version.
  *
  *   This program is distributed in the hope that it will be useful,
  *   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -22,59 +23,42 @@
  */
 RCSID("$Id$")
 
-#include <freeradius-devel/radiusd.h>
-#include <freeradius-devel/modules.h>
-#include <freeradius-devel/rad_assert.h>
+#include <freeradius-devel/server/base.h>
+#include <freeradius-devel/server/modules.h>
+#include <freeradius-devel/server/rad_assert.h>
 
 /*
  *	The instance data for rlm_sometimes is the list of fake values we are
  *	going to return.
  */
 typedef struct rlm_sometimes_t {
-	char			*rcode_str;
-	int			rcode;
-	int			start;
-	int			end;
-	char			*key;
-	DICT_ATTR const		*da;
+	char const	*rcode_str;
+	rlm_rcode_t	rcode;
+	uint32_t	start;
+	uint32_t	end;
+	vp_tmpl_t	*key;
 } rlm_sometimes_t;
 
-/*
- *	A mapping of configuration file names to internal variables.
- *
- *	Note that the string is dynamically allocated, so it MUST
- *	be freed.  When the configuration file parse re-reads the string,
- *	it free's the old one, and strdup's the new one, placing the pointer
- *	to the strdup'd string into 'config.string'.  This gets around
- *	buffer over-flows.
- */
 static const CONF_PARSER module_config[] = {
-	{ "rcode",      PW_TYPE_STRING_PTR, offsetof(rlm_sometimes_t,rcode_str), NULL, "fail" },
-	{ "key", PW_TYPE_STRING_PTR | PW_TYPE_ATTRIBUTE,    offsetof(rlm_sometimes_t,key), NULL, "User-Name" },
-	{ "start", PW_TYPE_INTEGER,    offsetof(rlm_sometimes_t,start), NULL, "0" },
-	{ "end", PW_TYPE_INTEGER,    offsetof(rlm_sometimes_t,end), NULL, "127" },
-
-	{ NULL, -1, 0, NULL, NULL }		/* end the list */
+	{ FR_CONF_OFFSET("rcode", FR_TYPE_STRING, rlm_sometimes_t, rcode_str), .dflt = "fail" },
+	{ FR_CONF_OFFSET("key", FR_TYPE_TMPL | FR_TYPE_ATTRIBUTE, rlm_sometimes_t, key), .dflt = "&User-Name", .quote = T_BARE_WORD },
+	{ FR_CONF_OFFSET("start", FR_TYPE_UINT32, rlm_sometimes_t, start), .dflt = "0" },
+	{ FR_CONF_OFFSET("end", FR_TYPE_UINT32, rlm_sometimes_t, end), .dflt = "127" },
+	CONF_PARSER_TERMINATOR
 };
 
-
-extern const FR_NAME_NUMBER mod_rcode_table[];
-
-static int mod_instantiate(CONF_SECTION *conf, void *instance)
+static int mod_instantiate(void *instance, CONF_SECTION *conf)
 {
 	rlm_sometimes_t *inst = instance;
 
 	/*
 	 *	Convert the rcode string to an int, and get rid of it
 	 */
-	inst->rcode = fr_str2int(mod_rcode_table, inst->rcode_str, -1);
-	if (inst->rcode == -1) {
-		cf_log_err_cs(conf, "Unknown module return code '%s'", inst->rcode_str);
+	inst->rcode = fr_str2int(mod_rcode_table, inst->rcode_str, RLM_MODULE_UNKNOWN);
+	if (inst->rcode == RLM_MODULE_UNKNOWN) {
+		cf_log_err(conf, "Unknown module return code '%s'", inst->rcode_str);
 		return -1;
 	}
-
-	inst->da = dict_attrbyname(inst->key);
-	rad_assert(inst->da);
 
 	return 0;
 }
@@ -82,13 +66,12 @@ static int mod_instantiate(CONF_SECTION *conf, void *instance)
 /*
  *	A lie!  It always returns!
  */
-static rlm_rcode_t sometimes_return(void *instance, RADIUS_PACKET *packet,
-				    RADIUS_PACKET *reply)
+static rlm_rcode_t sometimes_return(void const *instance, REQUEST *request, RADIUS_PACKET *packet, RADIUS_PACKET *reply)
 {
-	uint32_t hash;
-	int value;
-	rlm_sometimes_t *inst = instance;
-	VALUE_PAIR *vp;
+	uint32_t		hash;
+	uint32_t		value;
+	rlm_sometimes_t const	*inst = instance;
+	VALUE_PAIR		*vp;
 
 	/*
 	 *	Set it to NOOP and the module will always do nothing
@@ -98,10 +81,26 @@ static rlm_rcode_t sometimes_return(void *instance, RADIUS_PACKET *packet,
 	/*
 	 *	Hash based on the given key.  Usually User-Name.
 	 */
-	vp = pairfind(packet->vps, inst->da->attr, inst->da->vendor, TAG_ANY);
+	tmpl_find_vp(&vp, request, inst->key);
 	if (!vp) return RLM_MODULE_NOOP;
 
-	hash = fr_hash(&vp->data, vp->length);
+	switch (vp->vp_type) {
+	case FR_TYPE_OCTETS:
+	case FR_TYPE_STRING:
+		hash = fr_hash(vp->data.datum.ptr, vp->vp_length);
+		break;
+
+	case FR_TYPE_ABINARY:
+		hash = fr_hash(vp->vp_filter, vp->vp_length);
+		break;
+
+	case FR_TYPE_STRUCTURAL:
+		return RLM_MODULE_FAIL;
+
+	default:
+		hash = fr_hash(&vp->data.datum, fr_value_box_field_sizes[vp->vp_type]);
+		break;
+	}
 	hash &= 0xff;		/* ensure it's 0..255 */
 	value = hash;
 
@@ -119,20 +118,20 @@ static rlm_rcode_t sometimes_return(void *instance, RADIUS_PACKET *packet,
 	 */
 	if ((inst->rcode == RLM_MODULE_HANDLED) && reply) {
 		switch (packet->code) {
-		case PW_CODE_AUTHENTICATION_REQUEST:
-			reply->code = PW_CODE_AUTHENTICATION_ACK;
+		case FR_CODE_ACCESS_REQUEST:
+			reply->code = FR_CODE_ACCESS_ACCEPT;
 			break;
 
-		case PW_CODE_ACCOUNTING_REQUEST:
-			reply->code = PW_CODE_ACCOUNTING_RESPONSE;
+		case FR_CODE_ACCOUNTING_REQUEST:
+			reply->code = FR_CODE_ACCOUNTING_RESPONSE;
 			break;
 
-		case PW_CODE_COA_REQUEST:
-			reply->code = PW_CODE_COA_ACK;
+		case FR_CODE_COA_REQUEST:
+			reply->code = FR_CODE_COA_ACK;
 			break;
 
-		case PW_CODE_DISCONNECT_REQUEST:
-			reply->code = PW_CODE_DISCONNECT_ACK;
+		case FR_CODE_DISCONNECT_REQUEST:
+			reply->code = FR_CODE_DISCONNECT_ACK;
 			break;
 
 		default:
@@ -143,51 +142,52 @@ static rlm_rcode_t sometimes_return(void *instance, RADIUS_PACKET *packet,
 	return inst->rcode;
 }
 
-static rlm_rcode_t sometimes_packet(void *instance, REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_sometimes_packet(void *instance, UNUSED void *thread, REQUEST *request)
 {
-	return sometimes_return(instance, request->packet, request->reply);
+	return sometimes_return(instance, request, request->packet, request->reply);
 }
 
-static rlm_rcode_t sometimes_reply(void *instance, REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_sometimes_reply(void *instance, UNUSED void *thread, REQUEST *request)
 {
-	return sometimes_return(instance, request->reply, NULL);
+	return sometimes_return(instance, request, request->reply, NULL);
 }
 
-static rlm_rcode_t mod_pre_proxy(void *instance, REQUEST *request)
+#ifdef WITH_PROXY
+static rlm_rcode_t CC_HINT(nonnull) mod_pre_proxy(void *instance, UNUSED void *thread, REQUEST *request)
 {
 	if (!request->proxy) return RLM_MODULE_NOOP;
 
-	return sometimes_return(instance, request->proxy, request->proxy_reply);
+	return sometimes_return(instance, request, request->proxy->packet, request->proxy->reply);
 }
 
-static rlm_rcode_t mod_post_proxy(void *instance, REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_post_proxy(void *instance, UNUSED void *thread, REQUEST *request)
 {
-	if (!request->proxy_reply) return RLM_MODULE_NOOP;
+	if (!request->proxy || !request->proxy->reply) return RLM_MODULE_NOOP;
 
-	return sometimes_return(instance, request->proxy_reply, NULL);
+	return sometimes_return(instance, request, request->proxy->reply, NULL);
 }
+#endif
 
-module_t rlm_sometimes = {
-	RLM_MODULE_INIT,
-	"sometimes",
-	RLM_TYPE_CHECK_CONFIG_SAFE | RLM_TYPE_HUP_SAFE,   	/* type */
-	sizeof(rlm_sometimes_t),
-	module_config,
-	mod_instantiate,		/* instantiation */
-	NULL,				/* detach */
-	{
-		sometimes_packet,	/* authentication */
-		sometimes_packet,	/* authorization */
-		sometimes_packet,	/* preaccounting */
-		sometimes_packet,	/* accounting */
-		NULL,
-		mod_pre_proxy,	/* pre-proxy */
-		mod_post_proxy,	/* post-proxy */
-		sometimes_reply		/* post-auth */
+extern rad_module_t rlm_sometimes;
+rad_module_t rlm_sometimes = {
+	.magic		= RLM_MODULE_INIT,
+	.name		= "sometimes",
+	.inst_size	= sizeof(rlm_sometimes_t),
+	.config		= module_config,
+	.instantiate	= mod_instantiate,
+	.methods = {
+		[MOD_AUTHENTICATE]	= mod_sometimes_packet,
+		[MOD_AUTHORIZE]		= mod_sometimes_packet,
+		[MOD_PREACCT]		= mod_sometimes_packet,
+		[MOD_ACCOUNTING]	= mod_sometimes_packet,
+#ifdef WITH_PROXY
+		[MOD_PRE_PROXY]		= mod_pre_proxy,
+		[MOD_POST_PROXY]	= mod_post_proxy,
+#endif
+		[MOD_POST_AUTH]		= mod_sometimes_reply,
 #ifdef WITH_COA
-		,
-		sometimes_packet,	/* recv-coa */
-		sometimes_reply		/* send-coa */
+		[MOD_RECV_COA]		= mod_sometimes_packet,
+		[MOD_SEND_COA]		= mod_sometimes_reply,
 #endif
 	},
 };

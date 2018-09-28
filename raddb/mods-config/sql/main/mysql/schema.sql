@@ -22,13 +22,13 @@ CREATE TABLE radacct (
   groupname varchar(64) NOT NULL default '',
   realm varchar(64) default '',
   nasipaddress varchar(15) NOT NULL default '',
-  nasportid varchar(15) default NULL,
+  nasportid varchar(50) default NULL,
   nasporttype varchar(32) default NULL,
   acctstarttime datetime NULL default NULL,
   acctupdatetime datetime NULL default NULL,
   acctstoptime datetime NULL default NULL,
   acctinterval int(12) default NULL,
-  acctsessiontime int(12) default NULL,
+  acctsessiontime int(12) unsigned default NULL,
   acctauthentic varchar(32) default NULL,
   connectinfo_start varchar(50) default NULL,
   connectinfo_stop varchar(50) default NULL,
@@ -40,16 +40,25 @@ CREATE TABLE radacct (
   servicetype varchar(32) default NULL,
   framedprotocol varchar(32) default NULL,
   framedipaddress varchar(15) NOT NULL default '',
+  framedipv6address varchar(44) NOT NULL default '',
+  framedipv6prefix varchar(44) NOT NULL default '',
+  framedinterfaceid varchar(44) NOT NULL default '',
+  delegatedipv6prefix varchar(44) NOT NULL default '',
   PRIMARY KEY (radacctid),
   UNIQUE KEY acctuniqueid (acctuniqueid),
   KEY username (username),
   KEY framedipaddress (framedipaddress),
+  KEY framedipv6address (framedipv6address),
+  KEY framedipv6prefix (framedipv6prefix),
+  KEY framedinterfaceid (framedinterfaceid),
+  KEY delegatedipv6prefix (delegatedipv6prefix),
   KEY acctsessionid (acctsessionid),
   KEY acctsessiontime (acctsessiontime),
   KEY acctstarttime (acctstarttime),
   KEY acctinterval (acctinterval),
   KEY acctstoptime (acctstoptime),
-  KEY nasipaddress (nasipaddress)
+  KEY nasipaddress (nasipaddress),
+  INDEX bulk_close (acctstoptime, nasipaddress, acctstarttime)
 ) ENGINE = INNODB;
 
 #
@@ -114,9 +123,11 @@ CREATE TABLE radreply (
 #
 
 CREATE TABLE radusergroup (
+  id int(11) unsigned NOT NULL auto_increment,
   username varchar(64) NOT NULL default '',
   groupname varchar(64) NOT NULL default '',
   priority int(11) NOT NULL default '1',
+  PRIMARY KEY  (id),
   KEY username (username(32))
 );
 
@@ -128,7 +139,7 @@ CREATE TABLE radpostauth (
   username varchar(64) NOT NULL default '',
   pass varchar(64) NOT NULL default '',
   reply varchar(32) NOT NULL default '',
-  authdate timestamp NOT NULL,
+  authdate timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY  (id)
 ) ENGINE = INNODB;
 

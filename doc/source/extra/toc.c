@@ -23,24 +23,57 @@ of modules in each stage.
 - @subpage module_doc "2. Server modules"
 - @subpage client_doc "3. Client APIs"
 
-@section main_trees GIT Trees
+@section main_branches GIT Branch
 
-@subsection tree_dev Development Tree
+@subsection branch_40x 4.0.x feature branch
+
+@note Submit pull requests for new features or modules against this branch.
 
 @code
-git://git.freeradius.org/freeradius-server.git
+git clone git@github.com:FreeRADIUS/freeradius-server.git
+cd freeradius-server
+git fetch origin v4.0.x:v4.0.x
+git checkout v4.0.x
 @endcode
-- Web: http://github.com/FreeRADIUS/freeradius-server/tree/master
+- Web: http://github.com/FreeRADIUS/freeradius-server/tree/v4.0.x
 
-@subsection tree_2xx 2.x.x stable tree
+@subsection branch_30x 3.0.x stable branch
 
 @code
-git clone git://git.freeradius.org/freeradius-server.git
+git clone git@github.com:FreeRADIUS/freeradius-server.git
+cd freeradius-server
+git fetch origin v3.0.x:v3.0.x
+git checkout v3.0.x
+@endcode
+- Web: http://github.com/FreeRADIUS/freeradius-server/tree/v3.0.x
+
+@subsection branch_2xx 2.x.x EOL branch
+
+@note This branch is now permanently feature frozen. Only security
+      fixes will be applied to it.  New features or modules should be
+      submitted against the v4.0.x branch.
+
+@code
+git clone git@github.com:FreeRADIUS/freeradius-server.git
 cd freeradius-server
 git fetch origin v2.x.x:v2.x.x
 git checkout v2.x.x
 @endcode
 - Web: http://github.com/FreeRADIUS/freeradius-server/tree/v2.x.x
+
+@subsection branch_1xx 1.1.x EOL branch
+
+@note This branch is now permanently end of life. No bug fixes or
+      security fixes will be performed for this branch.  New features
+      or modules should be submitted against the v4.0.x branch.
+
+@code
+git clone git@github.com:FreeRADIUS/freeradius-server.git
+cd freeradius-server
+git fetch origin v2.x.x:v2.x.x
+git checkout v2.x.x
+@endcode
+- Web: http://github.com/FreeRADIUS/freeradius-server/tree/v1.1.x
 
 @section main_website Website
 

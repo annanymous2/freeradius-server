@@ -17,8 +17,8 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * Copyright 2000,2001,2006  The FreeRADIUS server project
- * Copyright 2001  hereUare Communications, Inc. <raghud@hereuare.com>
+ * @copyright 2000,2001,2006  The FreeRADIUS server project
+ * @copyright 2001  hereUare Communications, Inc. <raghud@hereuare.com>
  */
 
 RCSID("$Id$")
@@ -28,101 +28,108 @@ RCSID("$Id$")
 
 #include "eap_md5.h"
 
-#include <freeradius-devel/rad_assert.h>
+#include <freeradius-devel/server/rad_assert.h>
+#include <freeradius-devel/util/md5.h>
+
+static fr_dict_t *dict_freeradius;
+
+extern fr_dict_autoload_t rlm_eap_md5_dict[];
+fr_dict_autoload_t rlm_eap_md5_dict[] = {
+	{ .out = &dict_freeradius, .proto = "freeradius" },
+	{ NULL }
+};
+
+static fr_dict_attr_t const *attr_cleartext_password;
+
+extern fr_dict_attr_autoload_t rlm_eap_md5_dict_attr[];
+fr_dict_attr_autoload_t rlm_eap_md5_dict_attr[] = {
+	{ .out = &attr_cleartext_password, .name = "Cleartext-Password", .type = FR_TYPE_STRING, .dict = &dict_freeradius },
+	{ NULL }
+};
+
+static rlm_rcode_t mod_process(UNUSED void *instance, eap_session_t *eap_session);
 
 /*
  *	Initiate the EAP-MD5 session by sending a challenge to the peer.
  */
-static int md5_initiate(UNUSED void *instance, eap_handler_t *handler)
+static rlm_rcode_t mod_session_init(UNUSED void *instance, eap_session_t *eap_session)
 {
 	int		i;
 	MD5_PACKET	*reply;
+	REQUEST		*request = eap_session->request;
 
 	/*
 	 *	Allocate an EAP-MD5 packet.
 	 */
-	reply = talloc(handler, MD5_PACKET);
-	if (!reply)  {
-		return 0;
-	}
+	MEM(reply = talloc(eap_session, MD5_PACKET));
 
 	/*
 	 *	Fill it with data.
 	 */
-	reply->code = PW_MD5_CHALLENGE;
+	reply->code = FR_MD5_CHALLENGE;
 	reply->length = 1 + MD5_CHALLENGE_LEN; /* one byte of value size */
 	reply->value_size = MD5_CHALLENGE_LEN;
 
 	/*
 	 *	Allocate user data.
 	 */
-	reply->value = talloc_array(reply, uint8_t, reply->value_size);
-	if (!reply->value) {
-		talloc_free(reply);
-		return 0;
-	}
-
+	MEM(reply->value = talloc_array(reply, uint8_t, reply->value_size));
 	/*
 	 *	Get a random challenge.
 	 */
-	for (i = 0; i < reply->value_size; i++) {
-		reply->value[i] = fr_rand();
-	}
-	DEBUG2("rlm_eap_md5: Issuing Challenge");
+	for (i = 0; i < reply->value_size; i++) reply->value[i] = fr_rand();
+	RDEBUG2("Issuing MD5 Challenge");
 
 	/*
 	 *	Keep track of the challenge.
 	 */
-	handler->opaque = talloc_array(handler, uint8_t, reply->value_size);
-	rad_assert(handler->opaque != NULL);
-	memcpy(handler->opaque, reply->value, reply->value_size);
-	handler->free_opaque = NULL;
+	MEM(eap_session->opaque = talloc_array(eap_session, uint8_t, reply->value_size));
+	memcpy(eap_session->opaque, reply->value, reply->value_size);
 
 	/*
 	 *	Compose the EAP-MD5 packet out of the data structure,
 	 *	and free it.
 	 */
-	eapmd5_compose(handler->eap_ds, reply);
+	eap_md5_compose(eap_session->this_round, reply);
 
 	/*
 	 *	We don't need to authorize the user at this point.
 	 *
 	 *	We also don't need to keep the challenge, as it's
-	 *	stored in 'handler->eap_ds', which will be given back
+	 *	stored in 'eap_session->this_round', which will be given back
 	 *	to us...
 	 */
-	handler->stage = AUTHENTICATE;
+	eap_session->process = mod_process;
 
-	return 1;
+	return RLM_MODULE_HANDLED;
 }
-
 
 /*
  *	Authenticate a previously sent challenge.
  */
-static int md5_authenticate(UNUSED void *arg, eap_handler_t *handler)
+static rlm_rcode_t mod_process(UNUSED void *instance, eap_session_t *eap_session)
 {
 	MD5_PACKET	*packet;
 	MD5_PACKET	*reply;
 	VALUE_PAIR	*password;
+	REQUEST		*request = eap_session->request;
 
 	/*
 	 *	Get the Cleartext-Password for this user.
 	 */
-	rad_assert(handler->request != NULL);
-	rad_assert(handler->stage == AUTHENTICATE);
+	rad_assert(eap_session->request != NULL);
 
-	password = pairfind(handler->request->config_items, PW_CLEARTEXT_PASSWORD, 0, TAG_ANY);
+	password = fr_pair_find_by_da(eap_session->request->control, attr_cleartext_password, TAG_ANY);
 	if (!password) {
-		DEBUG2("rlm_eap_md5: Cleartext-Password is required for EAP-MD5 authentication");
-		return 0;
+		REDEBUG2("Cleartext-Password is required for EAP-MD5 authentication");
+		return RLM_MODULE_REJECT;
 	}
 
 	/*
 	 *	Extract the EAP-MD5 packet.
 	 */
-	if (!(packet = eapmd5_extract(handler->eap_ds)))
-		return 0;
+	packet = eap_md5_extract(eap_session->this_round);
+	if (!packet) return RLM_MODULE_INVALID;
 
 	/*
 	 *	Create a reply, and initialize it.
@@ -130,39 +137,41 @@ static int md5_authenticate(UNUSED void *arg, eap_handler_t *handler)
 	reply = talloc(packet, MD5_PACKET);
 	if (!reply) {
 		talloc_free(packet);
-		return 0;
+		return RLM_MODULE_FAIL;
 	}
-	reply->id = handler->eap_ds->request->id;
+	reply->id = eap_session->this_round->request->id;
 	reply->length = 0;
 
 	/*
 	 *	Verify the received packet against the previous packet
 	 *	(i.e. challenge) which we sent out.
 	 */
-	if (eapmd5_verify(packet, password, handler->opaque)) {
-		reply->code = PW_MD5_SUCCESS;
+	if (eap_md5_verify(packet, password, eap_session->opaque)) {
+		reply->code = FR_MD5_SUCCESS;
 	} else {
-		reply->code = PW_MD5_FAILURE;
+		reply->code = FR_MD5_FAILURE;
 	}
 
 	/*
 	 *	Compose the EAP-MD5 packet out of the data structure,
 	 *	and free it.
 	 */
-	eapmd5_compose(handler->eap_ds, reply);
+	eap_md5_compose(eap_session->this_round, reply);
 	talloc_free(packet);
-	return 1;
+
+	return RLM_MODULE_OK;
 }
 
 /*
  *	The module name should be the only globally exported symbol.
  *	That is, everything else should be 'static'.
  */
-rlm_eap_module_t rlm_eap_md5 = {
-	"eap_md5",
-	NULL,				/* attach */
-	md5_initiate,			/* Start the initial request */
-	NULL,				/* authorization */
-	md5_authenticate,		/* authentication */
-	NULL				/* detach */
+extern rlm_eap_submodule_t rlm_eap_md5;
+rlm_eap_submodule_t rlm_eap_md5 = {
+	.name		= "eap_md5",
+
+	.provides	= { FR_EAP_MD5 },
+	.magic		= RLM_MODULE_INIT,
+	.session_init	= mod_session_init,	/* Initialise a new EAP session */
+	.entry_point	= mod_process		/* Process next round of EAP method */
 };

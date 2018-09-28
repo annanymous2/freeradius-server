@@ -1,7 +1,8 @@
 /*
  *   This program is is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License, version 2 if the
- *   License as published by the Free Software Foundation.
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation; either version 2 of the License, or (at
+ *   your option) any later version.
  *
  *   This program is distributed in the hope that it will be useful,
  *   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,9 +24,11 @@
  */
 RCSID("$Id$")
 
-#include <freeradius-devel/radiusd.h>
-#include <freeradius-devel/modules.h>
-#include <freeradius-devel/rad_assert.h>
+#define LOG_PREFIX "rlm_sqlcounter - "
+
+#include <freeradius-devel/server/base.h>
+#include <freeradius-devel/server/modules.h>
+#include <freeradius-devel/server/rad_assert.h>
 
 #include <ctype.h>
 
@@ -57,71 +60,67 @@ RCSID("$Id$")
  *	be used as the instance handle.
  */
 typedef struct rlm_sqlcounter_t {
-	char		*counter_name;  //!< Daily-Session-Time.
-	char		*check_name;  	//!< Max-Daily-Session.
-	char		*reply_name;  	//!< Session-Timeout.
-	char		*key_name;  	//!< User-Name.
-	char		*sqlmod_inst;	//!< Instance of SQL module to use,
-					//!< usually just 'sql'.
-	char		*query;		//!< SQL query to retrieve current
-					//!< session time.
-	char		*reset;  	//!< Daily, weekly, monthly,
-					//!< never or user defined.
+	vp_tmpl_t	*paircmp_attr;	//!< Daily-Session-Time.
+	vp_tmpl_t	*limit_attr;  	//!< Max-Daily-Session.
+	vp_tmpl_t	*reply_attr;  	//!< Session-Timeout.
+	vp_tmpl_t	*key_attr;  	//!< User-Name
+
+	char const	*sqlmod_inst;	//!< Instance of SQL module to use, usually just 'sql'.
+	char const	*query;		//!< SQL query to retrieve current session time.
+	char const	*reset;  	//!< Daily, weekly, monthly, never or user defined.
+
 	time_t		reset_time;
 	time_t		last_reset;
-	DICT_ATTR const	*key_attr;	//!< Attribute number for key field.
-	DICT_ATTR const	*dict_attr;	//!< Attribute number for the counter.
-	DICT_ATTR const	*reply_attr;	//!< Attribute number for the reply.
 } rlm_sqlcounter_t;
 
-/*
- *	A mapping of configuration file names to internal variables.
- *
- *	Note that the string is dynamically allocated, so it MUST
- *	be freed.  When the configuration file parse re-reads the string,
- *	it free's the old one, and strdup's the new one, placing the pointer
- *	to the strdup'd string into 'config.string'.  This gets around
- *	buffer over-flows.
- */
 static const CONF_PARSER module_config[] = {
-	{ "sql-module-instance", PW_TYPE_STRING_PTR | PW_TYPE_DEPRECATED,
-	  offsetof(rlm_sqlcounter_t,sqlmod_inst), NULL, NULL },
-	{ "sql_module_instance", PW_TYPE_STRING_PTR | PW_TYPE_REQUIRED,
-	  offsetof(rlm_sqlcounter_t,sqlmod_inst), NULL, NULL },
+	{ FR_CONF_OFFSET("sql_module_instance", FR_TYPE_STRING | FR_TYPE_REQUIRED, rlm_sqlcounter_t, sqlmod_inst) },
 
-	{ "key", PW_TYPE_STRING_PTR | PW_TYPE_ATTRIBUTE,
-	  offsetof(rlm_sqlcounter_t,key_name), NULL, NULL },
-	{ "query", PW_TYPE_STRING_PTR | PW_TYPE_REQUIRED,
-	  offsetof(rlm_sqlcounter_t,query), NULL, NULL },
-	{ "reset", PW_TYPE_STRING_PTR | PW_TYPE_REQUIRED,
-	  offsetof(rlm_sqlcounter_t,reset), NULL,  NULL },
 
-	{ "counter-name", PW_TYPE_STRING_PTR | PW_TYPE_DEPRECATED,
-	  offsetof(rlm_sqlcounter_t,counter_name), NULL,  NULL },
-	{ "counter_name", PW_TYPE_STRING_PTR | PW_TYPE_REQUIRED,
-	  offsetof(rlm_sqlcounter_t,counter_name), NULL,  NULL },
+	{ FR_CONF_OFFSET("query", FR_TYPE_STRING | FR_TYPE_XLAT | FR_TYPE_REQUIRED, rlm_sqlcounter_t, query) },
+	{ FR_CONF_OFFSET("reset", FR_TYPE_STRING | FR_TYPE_REQUIRED, rlm_sqlcounter_t, reset) },
 
-	{ "check-name", PW_TYPE_STRING_PTR | PW_TYPE_DEPRECATED,
-	  offsetof(rlm_sqlcounter_t,check_name), NULL, NULL },
-	{ "check_name", PW_TYPE_STRING_PTR | PW_TYPE_REQUIRED,
-	  offsetof(rlm_sqlcounter_t,check_name), NULL, NULL },
+	{ FR_CONF_OFFSET("key", FR_TYPE_TMPL | FR_TYPE_ATTRIBUTE, rlm_sqlcounter_t, key_attr), .dflt = "&request:User-Name", .quote = T_BARE_WORD },
 
-	{ "reply-name", PW_TYPE_STRING_PTR | PW_TYPE_DEPRECATED,
-	  offsetof(rlm_sqlcounter_t,reply_name), NULL, NULL },
-	{ "reply_name", PW_TYPE_STRING_PTR | PW_TYPE_ATTRIBUTE,
-	  offsetof(rlm_sqlcounter_t,reply_name), NULL, "Session-Timeout" },
+	/* Just used to register a paircmp against */
+	{ FR_CONF_OFFSET("counter_name", FR_TYPE_TMPL | FR_TYPE_ATTRIBUTE | FR_TYPE_REQUIRED, rlm_sqlcounter_t, paircmp_attr) },
+	{ FR_CONF_OFFSET("check_name", FR_TYPE_TMPL | FR_TYPE_ATTRIBUTE | FR_TYPE_REQUIRED, rlm_sqlcounter_t, limit_attr) },
 
-	{ NULL, -1, 0, NULL, NULL }
+	/* Attribute to write remaining session to */
+	{ FR_CONF_OFFSET("reply_name", FR_TYPE_TMPL | FR_TYPE_ATTRIBUTE, rlm_sqlcounter_t, reply_attr) },
+	CONF_PARSER_TERMINATOR
+};
+
+static fr_dict_t *dict_freeradius;
+static fr_dict_t *dict_radius;
+
+extern fr_dict_autoload_t rlm_sqlcounter_dict[];
+fr_dict_autoload_t rlm_sqlcounter_dict[] = {
+	{ .out = &dict_freeradius, .proto = "freeradius" },
+	{ .out = &dict_radius, .proto = "radius" },
+	{ NULL }
+};
+
+static fr_dict_attr_t const *attr_user_name;
+static fr_dict_attr_t const *attr_reply_message;
+static fr_dict_attr_t const *attr_session_timeout;
+
+extern fr_dict_attr_autoload_t rlm_sqlcounter_dict_attr[];
+fr_dict_attr_autoload_t rlm_sqlcounter_dict_attr[] = {
+	{ .out = &attr_user_name, .name = "User-Name", .type = FR_TYPE_STRING, .dict = &dict_radius },
+	{ .out = &attr_reply_message, .name = "Reply-Message", .type = FR_TYPE_STRING, .dict = &dict_radius },
+	{ .out = &attr_session_timeout, .name = "Session-Timeout", .type = FR_TYPE_UINT32, .dict = &dict_radius },
+	{ NULL }
 };
 
 static int find_next_reset(rlm_sqlcounter_t *inst, time_t timeval)
 {
-	int ret = 0;
-	size_t len;
-	unsigned int num = 1;
-	char last = '\0';
-	struct tm *tm, s_tm;
-	char sCurrentTime[40], sNextTime[40];
+	int		ret = 0;
+	size_t		len;
+	unsigned int	num = 1;
+	char		last = '\0';
+	struct tm	*tm, s_tm;
+	char		sCurrentTime[40], sNextTime[40];
 
 	tm = localtime_r(&timeval, &s_tm);
 	len = strftime(sCurrentTime, sizeof(sCurrentTime), "%Y-%m-%d %H:%M:%S", tm);
@@ -138,7 +137,7 @@ static int find_next_reset(rlm_sqlcounter_t *inst, time_t timeval)
 		if (!isalpha((int) last))
 			last = 'd';
 		num = atoi(inst->reset);
-		DEBUG("rlm_sqlcounter: num=%d, last=%c",num,last);
+		DEBUG("num=%d, last=%c",num,last);
 	}
 	if (strcmp(inst->reset, "hourly") == 0 || last == 'h') {
 		/*
@@ -173,7 +172,7 @@ static int find_next_reset(rlm_sqlcounter_t *inst, time_t timeval)
 
 	len = strftime(sNextTime, sizeof(sNextTime),"%Y-%m-%d %H:%M:%S",tm);
 	if (len == 0) *sNextTime = '\0';
-	DEBUG2("rlm_sqlcounter: Current Time: %" PRId64 " [%s], Next reset %" PRId64 " [%s]",
+	DEBUG2("Current Time: %" PRId64 " [%s], Next reset %" PRId64 " [%s]",
 	       (int64_t) timeval, sCurrentTime, (int64_t) inst->reset_time, sNextTime);
 
 	return ret;
@@ -183,15 +182,14 @@ static int find_next_reset(rlm_sqlcounter_t *inst, time_t timeval)
 /*  I don't believe that this routine handles Daylight Saving Time adjustments
     properly.  Any suggestions?
 */
-
 static int find_prev_reset(rlm_sqlcounter_t *inst, time_t timeval)
 {
-	int ret = 0;
-	size_t len;
-	unsigned int num = 1;
-	char last = '\0';
-	struct tm *tm, s_tm;
-	char sCurrentTime[40], sPrevTime[40];
+	int		ret = 0;
+	size_t		len;
+	unsigned	int num = 1;
+	char		last = '\0';
+	struct		tm *tm, s_tm;
+	char		sCurrentTime[40], sPrevTime[40];
 
 	tm = localtime_r(&timeval, &s_tm);
 	len = strftime(sCurrentTime, sizeof(sCurrentTime), "%Y-%m-%d %H:%M:%S", tm);
@@ -208,7 +206,7 @@ static int find_prev_reset(rlm_sqlcounter_t *inst, time_t timeval)
 		if (!isalpha((int) last))
 			last = 'd';
 		num = atoi(inst->reset);
-		DEBUG("rlm_sqlcounter: num=%d, last=%c",num,last);
+		DEBUG("num=%d, last=%c",num,last);
 	}
 	if (strcmp(inst->reset, "hourly") == 0 || last == 'h') {
 		/*
@@ -228,7 +226,7 @@ static int find_prev_reset(rlm_sqlcounter_t *inst, time_t timeval)
 		 *  Round down to the prev nearest week.
 		 */
 		tm->tm_hour = 0;
-		tm->tm_mday -= (7 - tm->tm_wday) +(7*(num-1));
+		tm->tm_mday -= tm->tm_wday +(7*(num-1));
 		inst->last_reset = mktime(tm);
 	} else if (strcmp(inst->reset, "monthly") == 0 || last == 'm') {
 		tm->tm_hour = 0;
@@ -242,7 +240,7 @@ static int find_prev_reset(rlm_sqlcounter_t *inst, time_t timeval)
 	}
 	len = strftime(sPrevTime, sizeof(sPrevTime), "%Y-%m-%d %H:%M:%S", tm);
 	if (len == 0) *sPrevTime = '\0';
-	DEBUG2("rlm_sqlcounter: Current Time: %" PRId64 " [%s], Prev reset %" PRId64 " [%s]",
+	DEBUG2("Current Time: %" PRId64 " [%s], Prev reset %" PRId64 " [%s]",
 	       (int64_t) timeval, sCurrentTime, (int64_t) inst->last_reset, sPrevTime);
 
 	return ret;
@@ -258,70 +256,96 @@ static int find_prev_reset(rlm_sqlcounter_t *inst, time_t timeval)
  *	%S	sqlmod_inst
  *
  */
-
-static size_t sqlcounter_expand(char *out, int outlen, char const *fmt, rlm_sqlcounter_t *inst)
+static size_t sqlcounter_expand(char *out, int outlen, rlm_sqlcounter_t const *inst, REQUEST *request, char const *fmt)
 {
-	int c,freespace;
+	int freespace;
 	char const *p;
 	char *q;
 	char tmpdt[40]; /* For temporary storing of dates */
 
 	q = out;
-	for (p = fmt; *p ; p++) {
-	/* Calculate freespace in output */
-	freespace = outlen - (q - out);
-		if (freespace <= 1)
+	p = fmt;
+	while (*p) {
+		/* Calculate freespace in output */
+		freespace = outlen - (q - out);
+		if (freespace <= 1) {
 			return -1;
-		c = *p;
-		if ((c != '%') && (c != '\\')) {
-			*q++ = *p;
+		}
+
+		/*
+		 *	Non-% get copied as-is.
+		 */
+		if (*p != '%') {
+			*q++ = *p++;
 			continue;
 		}
-		if (*++p == '\0') break;
-		if (c == '\\') switch(*p) {
-			case '\\':
-				*q++ = *p;
-				break;
-			case 't':
-				*q++ = '\t';
-				break;
-			case 'n':
-				*q++ = '\n';
-				break;
-			default:
-				*q++ = c;
-				*q++ = *p;
-				break;
+		p++;
+		if (!*p) {	/* % and then EOS --> % */
+			*q++ = '%';
+			break;
+		}
 
-		} else if (c == '%') switch(*p) {
+		if (freespace <= 2) return -1;
 
-			case '%':
-				*q++ = *p;
-				break;
+		/*
+		 *	We need TWO %% in a row before we do our expansions.
+		 *	If we only get one, just copy the %s as-is.
+		 */
+		if (*p != '%') {
+			*q++ = '%';
+			*q++ = *p++;
+			continue;
+		}
+		p++;
+		if (!*p) {
+			*q++ = '%';
+			*q++ = '%';
+			break;
+		}
+
+		if (freespace <= 3) return -1;
+
+		switch (*p) {
 			case 'b': /* last_reset */
 				snprintf(tmpdt, sizeof(tmpdt), "%" PRId64, (int64_t) inst->last_reset);
 				strlcpy(q, tmpdt, freespace);
 				q += strlen(q);
+				p++;
 				break;
 			case 'e': /* reset_time */
 				snprintf(tmpdt, sizeof(tmpdt), "%" PRId64, (int64_t) inst->reset_time);
 				strlcpy(q, tmpdt, freespace);
 				q += strlen(q);
+				p++;
 				break;
+
 			case 'k': /* Key Name */
-				WDEBUG2("Please replace '%%k' with '${key}'");
-				strlcpy(q, inst->key_name, freespace);
-				q += strlen(q);
+			{
+				VALUE_PAIR *vp;
+
+				WARN("Please replace '%%k' with '%%{${key}}'");
+				tmpl_find_vp(&vp, request, inst->key_attr);
+				if (vp) {
+					fr_pair_value_snprint(q, freespace, vp, '"');
+					q += strlen(q);
+				}
+				p++;
+			}
 				break;
+
+				/*
+				 *	%%s gets copied over as-is.
+				 */
 			default:
 				*q++ = '%';
-				*q++ = *p;
+				*q++ = '%';
+				*q++ = *p++;
 				break;
 		}
 	}
 	*q = '\0';
 
-	DEBUG2("sqlcounter_expand:  '%s'", out);
+	DEBUG2("sqlcounter_expand: '%s'", out);
 
 	return strlen(out);
 }
@@ -330,57 +354,201 @@ static size_t sqlcounter_expand(char *out, int outlen, char const *fmt, rlm_sqlc
 /*
  *	See if the counter matches.
  */
-static int sqlcounter_cmp(void *instance, REQUEST *request, UNUSED VALUE_PAIR *req , VALUE_PAIR *check,
-			  UNUSED VALUE_PAIR *check_pairs, UNUSED VALUE_PAIR **reply_pairs)
+static int counter_cmp(void *instance, REQUEST *request, UNUSED VALUE_PAIR *req , VALUE_PAIR *check,
+		       UNUSED VALUE_PAIR *check_pairs, UNUSED VALUE_PAIR **reply_pairs)
 {
-	rlm_sqlcounter_t *inst = instance;
-	int counter;
+	rlm_sqlcounter_t const *inst = instance;
+	uint64_t counter;
 
-	char *p;
-	char query[MAX_QUERY_LEN];
+	char query[MAX_QUERY_LEN], subst[MAX_QUERY_LEN];
 	char *expanded = NULL;
-
 	size_t len;
 
-	len = snprintf(query, sizeof(query), "%%{%s:%s}", inst->sqlmod_inst, query);
+	/* First, expand %k, %b and %e in query */
+	if (sqlcounter_expand(subst, sizeof(subst), inst, request, inst->query) <= 0) {
+		REDEBUG("Insufficient query buffer space");
+
+		return RLM_MODULE_FAIL;
+	}
+
+	/* Then combine that with the name of the module were using to do the query */
+	len = snprintf(query, sizeof(query), "%%{%s:%s}", inst->sqlmod_inst, subst);
 	if (len >= sizeof(query) - 1) {
 		REDEBUG("Insufficient query buffer space");
 
 		return RLM_MODULE_FAIL;
 	}
 
-	p = query + len;
-
-	/* first, expand %k, %b and %e in query */
-	len = sqlcounter_expand(p, p - query, inst->query, inst);
-	if (len <= 0) {
-		REDEBUG("Insufficient query buffer space");
-
-		return RLM_MODULE_FAIL;
-	}
-
-	p += len;
-
-	if ((p - query) < 2) {
-		REDEBUG("Insufficient query buffer space");
-
-		return RLM_MODULE_FAIL;
-	}
-
-	p[0] = '}';
-	p[1] = '\0';
-
 	/* Finally, xlat resulting SQL query */
-	if (radius_axlat(&expanded, request, query, NULL, NULL) < 0) {
+	if (xlat_aeval(request, &expanded, request, query, NULL, NULL) < 0) {
 		return RLM_MODULE_FAIL;
 	}
 
-	counter = atoi(expanded);
+	if (sscanf(expanded, "%" PRIu64, &counter) != 1) {
+		RDEBUG2("No integer found in string \"%s\"", expanded);
+	}
 	talloc_free(expanded);
 
-	return counter - check->vp_integer;
+	if (counter < check->vp_uint64) return -1;
+	if (counter > check->vp_uint64) return 1;
+	return 0;
 }
 
+/*
+ *	Find the named user in this modules database.  Create the set
+ *	of attribute-value pairs to check and reply with for this user
+ *	from the database. The authentication code only needs to check
+ *	the password, the rest is done here.
+ */
+static rlm_rcode_t CC_HINT(nonnull) mod_authorize(void *instance, UNUSED void *thread, REQUEST *request)
+{
+	rlm_sqlcounter_t	*inst = instance;
+	uint64_t		counter, res;
+	VALUE_PAIR		*key_vp, *limit;
+	VALUE_PAIR		*reply_item;
+	char			msg[128];
+	int			ret;
+
+	char query[MAX_QUERY_LEN], subst[MAX_QUERY_LEN];
+	char *expanded = NULL;
+
+	size_t len;
+
+	/*
+	 *	Before doing anything else, see if we have to reset
+	 *	the counters.
+	 */
+	if (inst->reset_time && (inst->reset_time <= request->packet->timestamp.tv_sec)) {
+		/*
+		 *	Re-set the next time and prev_time for this counters range
+		 */
+		inst->last_reset = inst->reset_time;
+		find_next_reset(inst,request->packet->timestamp.tv_sec);
+	}
+
+	/*
+	 *      Look for the key.  User-Name is special.  It means
+	 *      The REAL username, after stripping.
+	 */
+	if ((inst->key_attr->tmpl_list == PAIR_LIST_REQUEST) &&
+	    (inst->key_attr->tmpl_da == attr_user_name)) {
+		key_vp = request->username;
+	} else {
+		tmpl_find_vp(&key_vp, request, inst->key_attr);
+	}
+	if (!key_vp) {
+		RWDEBUG2("Couldn't find key attribute, %s, doing nothing...", inst->key_attr->tmpl_da->name);
+		return RLM_MODULE_NOOP;
+	}
+
+	if (tmpl_find_vp(&limit, request, inst->limit_attr) < 0) {
+		RWDEBUG2("Couldn't find limit attribute, %s, doing nothing...", inst->limit_attr->name);
+		return RLM_MODULE_NOOP;
+	}
+
+	/* First, expand %k, %b and %e in query */
+	if (sqlcounter_expand(subst, sizeof(subst), inst, request, inst->query) <= 0) {
+		REDEBUG("Insufficient query buffer space");
+
+		return RLM_MODULE_FAIL;
+	}
+
+	/* Then combine that with the name of the module were using to do the query */
+	len = snprintf(query, sizeof(query), "%%{%s:%s}", inst->sqlmod_inst, subst);
+	if (len >= (sizeof(query) - 1)) {
+		REDEBUG("Insufficient query buffer space");
+
+		return RLM_MODULE_FAIL;
+	}
+
+	/* Finally, xlat resulting SQL query */
+	if (xlat_aeval(request, &expanded, request, query, NULL, NULL) < 0) {
+		return RLM_MODULE_FAIL;
+	}
+	talloc_free(expanded);
+
+	if (sscanf(expanded, "%" PRIu64, &counter) != 1) {
+		RDEBUG2("No integer found in result string \"%s\".  May be first session, setting counter to 0",
+			expanded);
+		counter = 0;
+	}
+
+	/*
+	 *	Check if check item > counter
+	 */
+	if (limit->vp_uint64 <= counter) {
+		VALUE_PAIR *vp;
+
+		/* User is denied access, send back a reply message */
+		snprintf(msg, sizeof(msg), "Your maximum %s usage time has been reached", inst->reset);
+
+		MEM(pair_update_reply(&vp, attr_reply_message) >= 0);
+		fr_pair_value_strcpy(vp, msg);
+
+		REDEBUG2("Maximum %s usage time reached", inst->reset);
+		REDEBUG2("Rejecting user, %s value (%" PRIu64 ") is less than counter value (%" PRIu64 ")",
+			 inst->limit_attr->name, limit->vp_uint64, counter);
+
+		return RLM_MODULE_REJECT;
+	}
+
+	res = limit->vp_uint64 - counter;
+	RDEBUG2("Allowing user, %s value (%" PRIu64 ") is greater than counter value (%" PRIu64 ")",
+		inst->limit_attr->name, limit->vp_uint64, counter);
+
+	/*
+	 *	We are assuming that simultaneous-use=1. But
+	 *	even if that does not happen then our user
+	 *	could login at max for 2*max-usage-time Is
+	 *	that acceptable?
+	 */
+	if (inst->reply_attr) {
+		/*
+		 *	If we are near a reset then add the next
+		 *	limit, so that the user will not need to login
+		 *	again.  Do this only for Session-Timeout.
+		 */
+		if ((inst->reply_attr->tmpl_da == attr_session_timeout) &&
+		    inst->reset_time && (res >= (uint64_t)(inst->reset_time - request->packet->timestamp.tv_sec))) {
+			uint64_t to_reset = inst->reset_time - request->packet->timestamp.tv_sec;
+
+			RDEBUG2("Time remaining (%" PRIu64 "s) is greater than time to reset (%" PRIu64 "s).  "
+				"Adding %" PRIu64 "s to reply value", to_reset, res, to_reset);
+			res = to_reset + limit->vp_uint32;
+		}
+
+		/*
+		 *	Limit the reply attribute to the minimum of the existing value, or this new one.
+		 */
+		ret = tmpl_find_or_add_vp(&reply_item, request, inst->reply_attr);
+		switch (ret) {
+		case 1:		/* new */
+			break;
+
+		case 0:		/* found */
+			if (reply_item->vp_uint64 <= res) {
+				RDEBUG2("Leaving existing %s value of %" PRIu64, inst->reply_attr->name,
+					reply_item->vp_uint64);
+				return RLM_MODULE_OK;
+			}
+			break;
+
+		case -1:	/* alloc failed */
+			REDEBUG("Error allocating attribute %s", inst->reply_attr->name);
+			return RLM_MODULE_FAIL;
+
+		default:	/* request or list unavailable */
+			RDEBUG2("List or request context not available for %s, skipping...", inst->reply_attr->name);
+			return RLM_MODULE_OK;
+		}
+		reply_item->vp_uint64 = res;
+		RDEBUG2("&%pP", reply_item);
+
+		return RLM_MODULE_UPDATED;
+	}
+
+	return RLM_MODULE_OK;
+}
 
 /*
  *	Do any per-module initialization that is separate to each
@@ -392,71 +560,18 @@ static int sqlcounter_cmp(void *instance, REQUEST *request, UNUSED VALUE_PAIR *r
  *	that must be referenced in later calls, store a handle to it
  *	in *instance otherwise put a null pointer there.
  */
-static int mod_instantiate(CONF_SECTION *conf, void *instance)
+static int mod_instantiate(void *instance, CONF_SECTION *conf)
 {
-	rlm_sqlcounter_t *inst = instance;
-	DICT_ATTR const *dattr;
-	ATTR_FLAGS flags;
-	time_t now;
+	rlm_sqlcounter_t	*inst = instance;
+	time_t			now;
 
 	rad_assert(inst->query && *inst->query);
-
-	dattr = dict_attrbyname(inst->key_name);
-	rad_assert(dattr != NULL);
-	if (dattr->vendor != 0) {
-		cf_log_err_cs(conf, "Configuration item 'key' cannot be a VSA");
-		return -1;
-	}
-	inst->key_attr = dattr;
-
-	dattr = dict_attrbyname(inst->reply_name);
-	rad_assert(dattr != NULL);
-	if (dattr->vendor != 0) {
-		cf_log_err_cs(conf, "Configuration item 'reply_name' cannot be a VSA");
-		return -1;
-	}
-	inst->reply_attr = dattr;
-
-	DEBUG2("rlm_sqlcounter: Reply attribute %s is number %d",
-		       inst->reply_name, dattr->attr);
-
-	/*
-	 *  Create a new attribute for the counter.
-	 */
-	rad_assert(inst->counter_name && *inst->counter_name);
-	memset(&flags, 0, sizeof(flags));
-	dict_addattr(inst->counter_name, -1, 0, PW_TYPE_INTEGER, flags);
-	dattr = dict_attrbyname(inst->counter_name);
-	if (!dattr) {
-		cf_log_err_cs(conf, "Failed to create counter attribute %s",
-				inst->counter_name);
-		return -1;
-	}
-	if (dattr->vendor != 0) {
-		cf_log_err_cs(conf, "Counter attribute must not be a VSA");
-		return -1;
-	}
-	inst->dict_attr = dattr;
-
-	/*
-	 * Create a new attribute for the check item.
-	 */
-	rad_assert(inst->check_name && *inst->check_name);
-	dict_addattr(inst->check_name, 0, PW_TYPE_INTEGER, -1, flags);
-	dattr = dict_attrbyname(inst->check_name);
-	if (!dattr) {
-		cf_log_err_cs(conf, "Failed to create check attribute %s",
-				inst->check_name);
-		return -1;
-	}
-	DEBUG2("rlm_sqlcounter: Check attribute %s is number %d",
-			inst->check_name, dattr->attr);
 
 	now = time(NULL);
 	inst->reset_time = 0;
 
-	if (find_next_reset(inst,now) == -1) {
-		cf_log_err_cs(conf, "Invalid reset '%s'", inst->reset);
+	if (find_next_reset(inst, now) == -1) {
+		cf_log_err(conf, "Invalid reset '%s'", inst->reset);
 		return -1;
 	}
 
@@ -466,182 +581,54 @@ static int mod_instantiate(CONF_SECTION *conf, void *instance)
 	inst->last_reset = 0;
 
 	if (find_prev_reset(inst, now) < 0) {
-		cf_log_err_cs(conf, "Invalid reset '%s'", inst->reset);
+		cf_log_err(conf, "Invalid reset '%s'", inst->reset);
 		return -1;
 	}
-
-	/*
-	 *	Register the counter comparison operation.
-	 */
-	paircompare_register(inst->dict_attr, NULL, true, sqlcounter_cmp, inst);
 
 	return 0;
 }
 
-/*
- *	Find the named user in this modules database.  Create the set
- *	of attribute-value pairs to check and reply with for this user
- *	from the database. The authentication code only needs to check
- *	the password, the rest is done here.
- */
-static rlm_rcode_t mod_authorize(UNUSED void *instance, UNUSED REQUEST *request)
+static int mod_bootstrap(void *instance, CONF_SECTION *conf)
 {
-	rlm_sqlcounter_t *inst = instance;
-	int rcode = RLM_MODULE_NOOP;
-	unsigned int counter;
-	DICT_ATTR const *dattr;
-	VALUE_PAIR *key_vp, *check_vp;
-	VALUE_PAIR *reply_item;
-	char msg[128];
-
-	char *p;
-	char query[MAX_QUERY_LEN];
-	char *expanded = NULL;
-
-	size_t len;
+	rlm_sqlcounter_t		*inst = instance;
+	fr_dict_attr_flags_t		flags;
 
 	/*
-	 *	Before doing anything else, see if we have to reset
-	 *	the counters.
+	 *	Create a new attribute for the counter.
 	 */
-	if (inst->reset_time && (inst->reset_time <= request->timestamp)) {
-		/*
-		 *	Re-set the next time and prev_time for this counters range
-		 */
-		inst->last_reset = inst->reset_time;
-		find_next_reset(inst,request->timestamp);
+	rad_assert(inst->paircmp_attr);
+	rad_assert(inst->limit_attr);
+
+	memset(&flags, 0, sizeof(flags));
+	flags.compare = 1;	/* ugly hack */
+	if (tmpl_define_undefined_attr(dict_freeradius, inst->paircmp_attr, FR_TYPE_UINT64, &flags) < 0) {
+		cf_log_perr(conf, "Failed defining counter attribute");
+		return -1;
 	}
 
-	/*
-	 *      Look for the key.  User-Name is special.  It means
-	 *      The REAL username, after stripping.
-	 */
-	RDEBUG2("Entering module authorize code");
-	key_vp = ((inst->key_attr->vendor == 0) && (inst->key_attr->attr == PW_USER_NAME)) ?
-			request->username :
-			pairfind(request->packet->vps, inst->key_attr->attr, inst->key_attr->vendor, TAG_ANY);
-	if (!key_vp) {
-		RDEBUG2("Could not find Key value pair");
-		return rcode;
+	flags.compare = 0;
+	if (tmpl_define_undefined_attr(dict_freeradius, inst->limit_attr, FR_TYPE_UINT64, &flags) < 0) {
+		cf_log_perr(conf, "Failed defining check attribute");
+		return -1;
 	}
 
-	/*
-	 *      Look for the check item
-	 */
-	if ((dattr = dict_attrbyname(inst->check_name)) == NULL) {
-		return rcode;
+	if (inst->paircmp_attr->tmpl_da->type != FR_TYPE_UINT64) {
+		cf_log_err(conf, "Counter attribute %s MUST be uint64", inst->paircmp_attr->tmpl_da->name);
+		return -1;
 	}
-	/* DEBUG2("rlm_sqlcounter: Found Check item attribute %d", dattr->attr); */
-	if ((check_vp = pairfind(request->config_items, dattr->attr, dattr->vendor, TAG_ANY)) == NULL) {
-		RDEBUG2("Could not find Check item value pair");
-		return rcode;
-	}
-
-	len = snprintf(query, sizeof(query), "%%{%s:%s}", inst->sqlmod_inst, query);
-	if (len >= sizeof(query) - 1) {
-		REDEBUG("Insufficient query buffer space");
-
-		return RLM_MODULE_FAIL;
+	if (paircmp_register_by_name(inst->paircmp_attr->tmpl_da->name, NULL, true,
+					counter_cmp, inst) < 0) {
+		cf_log_perr(conf, "Failed registering comparison function for counter attribute %s",
+			    inst->paircmp_attr->tmpl_da->name);
+		return -1;
 	}
 
-	p = query + len;
-
-	/* first, expand %k, %b and %e in query */
-	len = sqlcounter_expand(p, p - query, inst->query, inst);
-	if (len <= 0) {
-		REDEBUG("Insufficient query buffer space");
-
-		return RLM_MODULE_FAIL;
+	if (inst->limit_attr->tmpl_da->type != FR_TYPE_UINT64) {
+		cf_log_err(conf, "Check attribute %s MUST be uint64", inst->limit_attr->tmpl_da->name);
+		return -1;
 	}
 
-	p += len;
-
-	if ((p - query) < 2) {
-		REDEBUG("Insufficient query buffer space");
-
-		return RLM_MODULE_FAIL;
-	}
-
-	p[0] = '}';
-	p[1] = '\0';
-
-	/* Finally, xlat resulting SQL query */
-	if (radius_axlat(&expanded, request, query, NULL, NULL) < 0) {
-		return RLM_MODULE_FAIL;
-	}
-
-	if (sscanf(expanded, "%u", &counter) != 1) {
-		RDEBUG2("No integer found in string \"%s\"", expanded);
-		return RLM_MODULE_NOOP;
-	}
-
-	talloc_free(expanded);
-
-	/*
-	 * Check if check item > counter
-	 */
-	if (check_vp->vp_integer > counter) {
-		unsigned int res = check_vp->vp_integer - counter;
-
-		RDEBUG2("Check item is greater than query result");
-		/*
-		 *	We are assuming that simultaneous-use=1. But
-		 *	even if that does not happen then our user
-		 *	could login at max for 2*max-usage-time Is
-		 *	that acceptable?
-		 */
-
-		/*
-		 *	If we are near a reset then add the next
-		 *	limit, so that the user will not need to login
-		 *	again.  Do this only for Session-Timeout.
-		 */
-		if ((inst->reply_attr->attr == PW_SESSION_TIMEOUT) && inst->reset_time &&
-		    (res >= (inst->reset_time - request->timestamp))) {
-			res = inst->reset_time - request->timestamp;
-			res += check_vp->vp_integer;
-		}
-
-		/*
-		 *	Limit the reply attribute to the minimum of
-		 *	the existing value, or this new one.
-		 */
-		reply_item = pairfind(request->reply->vps, inst->reply_attr->attr, inst->reply_attr->vendor, TAG_ANY);
-		if (reply_item) {
-			if (reply_item->vp_integer > res) {
-				reply_item->vp_integer = res;
-			}
-		} else {
-			reply_item = radius_paircreate(request, &request->reply->vps, inst->reply_attr->attr,
-						       inst->reply_attr->vendor);
-			reply_item->vp_integer = res;
-		}
-
-		rcode = RLM_MODULE_OK;
-
-		RDEBUG2("Authorized user %s, check_item=%u, counter=%u", key_vp->vp_strvalue, check_vp->vp_integer,
-			counter);
-		RDEBUG2("Sent Reply-Item for user %s, Type=%s, value=%u", key_vp->vp_strvalue, inst->reply_name,
-			reply_item->vp_integer);
-	}
-	else{
-		RDEBUG2("(Check item - counter) is less than zero");
-
-		/*
-		 * User is denied access, send back a reply message
-		 */
-		snprintf(msg, sizeof(msg), "Your maximum %s usage time has been reached", inst->reset);
-		pairmake_reply("Reply-Message", msg, T_OP_EQ);
-
-		REDEBUG("Maximum %s usage time reached",
-				   inst->reset);
-		rcode = RLM_MODULE_REJECT;
-
-		RDEBUG2("Rejected user %s, check_item=%u, counter=%u", key_vp->vp_strvalue,
-		        check_vp->vp_integer,counter);
-	}
-
-	return rcode;
+	return 0;
 }
 
 /*
@@ -653,23 +640,17 @@ static rlm_rcode_t mod_authorize(UNUSED void *instance, UNUSED REQUEST *request)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-module_t rlm_sqlcounter = {
-	RLM_MODULE_INIT,
-	"SQL Counter",
-	RLM_TYPE_THREAD_SAFE,		/* type */
-	sizeof(rlm_sqlcounter_t),
-	module_config,
-	mod_instantiate,		/* instantiation */
-	NULL,				/* detach */
-	{
-		NULL,			/* authentication */
-		mod_authorize, 	/* authorization */
-		NULL,			/* preaccounting */
-		NULL,			/* accounting */
-		NULL,			/* checksimul */
-		NULL,			/* pre-proxy */
-		NULL,			/* post-proxy */
-		NULL			/* post-auth */
+extern rad_module_t rlm_sqlcounter;
+rad_module_t rlm_sqlcounter = {
+	.magic		= RLM_MODULE_INIT,
+	.name		= "sqlcounter",
+	.type		= RLM_TYPE_THREAD_SAFE,
+	.inst_size	= sizeof(rlm_sqlcounter_t),
+	.config		= module_config,
+	.bootstrap	= mod_bootstrap,
+	.instantiate	= mod_instantiate,
+	.methods = {
+		[MOD_AUTHORIZE]		= mod_authorize
 	},
 };
 

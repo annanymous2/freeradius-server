@@ -1,7 +1,8 @@
 /*
  *   This program is is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License, version 2 if the
- *   License as published by the Free Software Foundation.
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation; either version 2 of the License, or (at
+ *   your option) any later version.
  *
  *   This program is distributed in the hope that it will be useful,
  *   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,61 +24,94 @@
  */
 RCSID("$Id$")
 
-#include	<freeradius-devel/radiusd.h>
-#include	<freeradius-devel/modules.h>
-#include	<freeradius-devel/rad_assert.h>
+#include	<freeradius-devel/server/base.h>
+#include	<freeradius-devel/server/modules.h>
+#include	<freeradius-devel/server/rad_assert.h>
 
 #include	<sys/stat.h>
 
 #include	<ctype.h>
 #include	<fcntl.h>
-#include	<limits.h>
-
 
 /*
  *	Define a structure with the module configuration, so it can
  *	be used as the instance handle.
  */
 typedef struct rlm_attr_filter {
-	char		*filename;
-	char		*key;
-	int		relaxed;
+	char const	*filename;
+	vp_tmpl_t	*key;
+	bool		relaxed;
 	PAIR_LIST	*attrs;
 } rlm_attr_filter_t;
 
 static const CONF_PARSER module_config[] = {
-	{ "attrsfile",     PW_TYPE_FILE_INPUT | PW_TYPE_DEPRECATED,
-	  offsetof(rlm_attr_filter_t, filename), NULL, NULL},
-	{ "filename",     PW_TYPE_FILE_INPUT | PW_TYPE_REQUIRED,
-	  offsetof(rlm_attr_filter_t, filename), NULL, NULL},
-	{ "key",     PW_TYPE_STRING_PTR,
-	  offsetof(rlm_attr_filter_t, key), NULL, "%{Realm}" },
-	{ "relaxed",    PW_TYPE_BOOLEAN,
-	  offsetof(rlm_attr_filter_t, relaxed), NULL, "no" },
-	{ NULL, -1, 0, NULL, NULL }
+	{ FR_CONF_OFFSET("filename", FR_TYPE_FILE_INPUT | FR_TYPE_REQUIRED, rlm_attr_filter_t, filename) },
+	{ FR_CONF_OFFSET("key", FR_TYPE_TMPL, rlm_attr_filter_t, key), .dflt = "&Realm", .quote = T_BARE_WORD },
+	{ FR_CONF_OFFSET("relaxed", FR_TYPE_BOOL, rlm_attr_filter_t, relaxed), .dflt = "no" },
+	CONF_PARSER_TERMINATOR
 };
 
-static void check_pair(VALUE_PAIR *check_item, VALUE_PAIR *reply_item,
-		      int *pass, int *fail)
+static fr_dict_t *dict_freeradius;
+static fr_dict_t *dict_radius;
+
+extern fr_dict_autoload_t rlm_attr_filter_dict[];
+fr_dict_autoload_t rlm_attr_filter_dict[] = {
+	{ .out = &dict_freeradius, .proto = "freeradius" },
+	{ .out = &dict_radius, .proto = "radius" },
+	{ NULL }
+};
+
+static fr_dict_attr_t const *attr_stripped_user_name;
+static fr_dict_attr_t const *attr_fall_through;
+static fr_dict_attr_t const *attr_relax_filter;
+
+static fr_dict_attr_t const *attr_user_name;
+static fr_dict_attr_t const *attr_user_password;
+static fr_dict_attr_t const *attr_vendor_specific;
+
+extern fr_dict_attr_autoload_t rlm_attr_filter_dict_attr[];
+fr_dict_attr_autoload_t rlm_attr_filter_dict_attr[] = {
+	{ .out = &attr_stripped_user_name, .name = "Stripped-User-Name", .type = FR_TYPE_STRING, .dict = &dict_freeradius },
+	{ .out = &attr_fall_through, .name = "Fall-Through", .type = FR_TYPE_BOOL, .dict = &dict_freeradius },
+	{ .out = &attr_relax_filter, .name = "Relax-Filter", .type = FR_TYPE_BOOL, .dict = &dict_freeradius },
+
+	{ .out = &attr_user_name, .name = "User-Name", .type = FR_TYPE_STRING, .dict = &dict_radius },
+	{ .out = &attr_user_password, .name = "User-Password", .type = FR_TYPE_STRING, .dict = &dict_radius },
+	{ .out = &attr_vendor_specific, .name = "Vendor-Specific", .type = FR_TYPE_VSA, .dict = &dict_radius },
+	{ NULL }
+};
+
+static void check_pair(REQUEST *request, VALUE_PAIR *check_item, VALUE_PAIR *reply_item, int *pass, int *fail)
 {
 	int compare;
 
 	if (check_item->op == T_OP_SET) return;
 
-	compare = paircmp(check_item, reply_item);
+	compare = fr_pair_cmp(check_item, reply_item);
+	if (compare < 0) {
+		RPEDEBUG("Comparison failed");
+	}
+
 	if (compare == 1) {
 		++*(pass);
 	} else {
 		++*(fail);
 	}
 
+	if (RDEBUG_ENABLED3) {
+		char rule[1024], pair[1024];
+
+		fr_pair_snprint(rule, sizeof(rule), check_item);
+		fr_pair_snprint(pair, sizeof(pair), reply_item);
+		RDEBUG3("%s %s %s", pair, compare == 1 ? "allowed by" : "disallowed by", rule);
+	}
+
 	return;
 }
 
-
 static int attr_filter_getfile(TALLOC_CTX *ctx, char const *filename, PAIR_LIST **pair_list)
 {
-	vp_cursor_t cursor;
+	fr_cursor_t cursor;
 	int rcode;
 	PAIR_LIST *attrs = NULL;
 	PAIR_LIST *entry;
@@ -97,19 +131,17 @@ static int attr_filter_getfile(TALLOC_CTX *ctx, char const *filename, PAIR_LIST 
 		entry->check = entry->reply;
 		entry->reply = NULL;
 
-		for (vp = paircursor(&cursor, &entry->check);
+		for (vp = fr_cursor_init(&cursor, &entry->check);
 		     vp;
-		     vp = pairnext(&cursor)) {
+		     vp = fr_cursor_next(&cursor)) {
 		    /*
 		     * If it's NOT a vendor attribute,
 		     * and it's NOT a wire protocol
 		     * and we ignore Fall-Through,
 		     * then bitch about it, giving a good warning message.
 		     */
-		     if ((vp->da->vendor == 0) &&
-			 (vp->da->attr > 0xff) &&
-			 (vp->da->attr > 1000)) {
-			WDEBUG("[%s]:%d Check item \"%s\"\n\tfound in filter list for realm \"%s\".\n",
+		     if (fr_dict_attr_is_top_level(vp->da) && (vp->da->attr > 1000)) {
+			WARN("[%s]:%d Check item \"%s\"\n\tfound in filter list for realm \"%s\".\n",
 			       filename, entry->lineno, vp->da->name, entry->name);
 		    }
 		}
@@ -125,7 +157,7 @@ static int attr_filter_getfile(TALLOC_CTX *ctx, char const *filename, PAIR_LIST 
 /*
  *	(Re-)read the "attrs" file into memory.
  */
-static int mod_instantiate(UNUSED CONF_SECTION *conf, void *instance)
+static int mod_instantiate(void *instance, UNUSED CONF_SECTION *conf)
 {
 	rlm_attr_filter_t *inst = instance;
 	int rcode;
@@ -144,46 +176,34 @@ static int mod_instantiate(UNUSED CONF_SECTION *conf, void *instance)
 /*
  *	Common attr_filter checks
  */
-static rlm_rcode_t attr_filter_common(void *instance, REQUEST *request, RADIUS_PACKET *packet)
+static rlm_rcode_t CC_HINT(nonnull(1,2)) attr_filter_common(void const *instance, REQUEST *request,
+							    RADIUS_PACKET *packet)
 {
-	rlm_attr_filter_t *inst = instance;
+	rlm_attr_filter_t const *inst = instance;
 	VALUE_PAIR	*vp;
-	vp_cursor_t	input, check, out;
+	fr_cursor_t	input, check, out;
 	VALUE_PAIR	*input_item, *check_item, *output;
 	PAIR_LIST	*pl;
 	int		found = 0;
 	int		pass, fail = 0;
 	char const	*keyname = NULL;
 	char		buffer[256];
+	ssize_t		slen;
 
 	if (!packet) return RLM_MODULE_NOOP;
 
-	if (!inst->key) {
-		VALUE_PAIR	*namepair;
-
-		namepair = pairfind(request->packet->vps, PW_REALM, 0, TAG_ANY);
-		if (!namepair) {
-			return (RLM_MODULE_NOOP);
-		}
-		keyname = namepair->vp_strvalue;
-	} else {
-		int len;
-
-		len = radius_xlat(buffer, sizeof(buffer), request, inst->key, NULL, NULL);
-		if (len < 0) {
-			return RLM_MODULE_FAIL;
-		}
-		if (len == 0) {
-			return RLM_MODULE_NOOP;
-		}
-		keyname = buffer;
+	slen = tmpl_expand(&keyname, buffer, sizeof(buffer), request, inst->key, NULL, NULL);
+	if (slen < 0) return RLM_MODULE_FAIL;
+	if ((keyname == buffer) && is_truncated((size_t)slen, sizeof(buffer))) {
+		REDEBUG("Key too long, expected < " STRINGIFY(sizeof(buffer)) " bytes, got %zi bytes", slen);
+		return RLM_MODULE_FAIL;
 	}
 
 	/*
 	 *	Head of the output list
 	 */
 	output = NULL;
-	paircursor(&out, &output);
+	fr_cursor_init(&out, &output);
 
 	/*
 	 *      Find the attr_filter profile entry for the entry.
@@ -205,32 +225,28 @@ static rlm_rcode_t attr_filter_common(void *instance, REQUEST *request, RADIUS_P
 		RDEBUG2("Matched entry %s at line %d", pl->name, pl->lineno);
 		found = 1;
 
-		for (check_item = paircursor(&check, &pl->check);
+		for (check_item = fr_cursor_init(&check, &pl->check);
 		     check_item;
-		     check_item = pairnext(&check)) {
-			if (!check_item->da->vendor &&
-			    (check_item->da->attr == PW_FALL_THROUGH) &&
-				(check_item->vp_integer == 1)) {
-				fall_through = 1;
-				continue;
-			}
-			else if (!check_item->da->vendor &&
-				 check_item->da->attr == PW_RELAX_FILTER) {
-				relax_filter = check_item->vp_integer;
-				continue;
-			}
+		     check_item = fr_cursor_next(&check)) {
+		     	if (check_item->da == attr_fall_through) {
+				if (check_item->vp_uint32 == 1) {
+					fall_through = 1;
+					continue;
+				}
+		     	} else if (check_item->da == attr_relax_filter) {
+				relax_filter = check_item->vp_uint32;
+		     	}
 
 			/*
 			 *    If it is a SET operator, add the attribute to
 			 *    the output list without checking it.
 			 */
 			if (check_item->op == T_OP_SET ) {
-				vp = paircopyvp(packet, check_item);
-				if (!vp) {
-					goto error;
-				}
-				radius_xlat_do(request, vp);
-				pairinsert(&out, vp);
+				vp = fr_pair_copy(packet, check_item);
+				if (!vp) goto error;
+
+				xlat_eval_pair(request, vp);
+				fr_cursor_append(&out, vp);
 			}
 		}
 
@@ -242,49 +258,48 @@ static rlm_rcode_t attr_filter_common(void *instance, REQUEST *request, RADIUS_P
 		 *	only if it matches all rules that describe an
 		 *	Idle-Timeout.
 		 */
-		for (input_item = paircursor(&input, &packet->vps);
+		for (input_item = fr_cursor_init(&input, &packet->vps);
 		     input_item;
-		     input_item = pairnext(&input)) {
-			/* reset the pass,fail vars for each reply item */
-			pass = fail = 0;
+		     input_item = fr_cursor_next(&input)) {
+			pass = fail = 0; /* reset the pass,fail vars for each reply item */
 
 			/*
-			 *	reset the check_item pointer to
-			 *	beginning of the list
+			 *  Reset the check_item pointer to beginning of the list
 			 */
-			for (check_item = pairfirst(&check);
+			for (check_item = fr_cursor_head(&check);
 			     check_item;
-			     check_item = pairnext(&check)) {
+			     check_item = fr_cursor_next(&check)) {
 				/*
-				 *	Vendor-Specific is special, and
-				 *	matches any VSA if the comparison
-				 *	is always true.
+				 *  Vendor-Specific is special, and matches any VSA if the
+				 *  comparison is always true.
 				 */
-				if ((check_item->da->attr == PW_VENDOR_SPECIFIC) && (input_item->da->vendor != 0) &&
+				if ((check_item->da == attr_vendor_specific) &&
+				    (fr_dict_vendor_num_by_da(input_item->da) != 0) &&
 				    (check_item->op == T_OP_CMP_TRUE)) {
 					pass++;
 					continue;
 				}
 
-				if (input_item->da->attr == check_item->da->attr) {
-					check_pair(check_item, input_item, &pass, &fail);
+				if (input_item->da == check_item->da) {
+					check_pair(request, check_item, input_item, &pass, &fail);
 				}
 			}
 
+			RDEBUG3("Attribute \"%s\" allowed by %i rules, disallowed by %i rules",
+				input_item->da->name, pass, fail);
 			/*
-			 *  Only move attribute if it passed all rules,
-			 *  or if the config says we should copy unmatched
-			 *  attributes ('relaxed' mode).
+			 *  Only move attribute if it passed all rules, or if the config says we
+			 *  should copy unmatched attributes ('relaxed' mode).
 			 */
 			if (fail == 0 && (pass > 0 || relax_filter)) {
 				if (!pass) {
-					RDEBUG3("Attribute (%s) allowed by relaxed mode", input_item->da->name);
+					RDEBUG3("Attribute \"%s\" allowed by relaxed mode", input_item->da->name);
 				}
-				vp = paircopyvp(packet, input_item);
+				vp = fr_pair_copy(packet, input_item);
 				if (!vp) {
 					goto error;
 				}
-				pairinsert(&out, vp);
+				fr_cursor_append(&out, vp);
 			}
 		}
 
@@ -305,27 +320,27 @@ static rlm_rcode_t attr_filter_common(void *instance, REQUEST *request, RADIUS_P
 	/*
 	 *	Replace the existing request list with our filtered one
 	 */
-	pairfree(&packet->vps);
+	fr_pair_list_free(&packet->vps);
 	packet->vps = output;
 
-	if (request->packet->code == PW_CODE_AUTHENTICATION_REQUEST) {
-		request->username = pairfind(request->packet->vps, PW_STRIPPED_USER_NAME, 0, TAG_ANY);
-		if (!request->username)
-			request->username = pairfind(request->packet->vps, PW_USER_NAME, 0, TAG_ANY);
-		request->password = pairfind(request->packet->vps, PW_USER_PASSWORD, 0, TAG_ANY);
+	if (request->packet->code == FR_CODE_ACCESS_REQUEST) {
+		request->username = fr_pair_find_by_da(request->packet->vps, attr_stripped_user_name, TAG_ANY);
+		if (!request->username) request->username = fr_pair_find_by_da(request->packet->vps,
+									       attr_user_name, TAG_ANY);
+		request->password = fr_pair_find_by_da(request->packet->vps, attr_user_password, TAG_ANY);
 	}
 
 	return RLM_MODULE_UPDATED;
 
-	error:
-	pairfree(&output);
+error:
+	fr_pair_list_free(&output);
 	return RLM_MODULE_FAIL;
 }
 
-#define RLM_AF_FUNC(_x, _y) static rlm_rcode_t mod_##_x(void *instance, REQUEST *request) \
-			{ \
-				return attr_filter_common(instance, request, request->_y); \
-			}
+#define RLM_AF_FUNC(_x, _y) static rlm_rcode_t CC_HINT(nonnull) mod_##_x(void *instance, UNUSED void *thread, REQUEST *request) \
+	{ \
+		return attr_filter_common(instance, request, request->_y); \
+	}
 
 RLM_AF_FUNC(authorize, packet)
 RLM_AF_FUNC(post_auth, reply)
@@ -334,8 +349,8 @@ RLM_AF_FUNC(preacct, packet)
 RLM_AF_FUNC(accounting, reply)
 
 #ifdef WITH_PROXY
-RLM_AF_FUNC(pre_proxy, proxy)
-RLM_AF_FUNC(post_proxy, proxy_reply)
+RLM_AF_FUNC(pre_proxy, proxy->packet)
+RLM_AF_FUNC(post_proxy, proxy->reply)
 #endif
 
 #ifdef WITH_COA
@@ -344,31 +359,25 @@ RLM_AF_FUNC(send_coa, reply)
 #endif
 
 /* globally exported name */
-module_t rlm_attr_filter = {
-	RLM_MODULE_INIT,
-	"attr_filter",
-	RLM_TYPE_CHECK_CONFIG_SAFE | RLM_TYPE_HUP_SAFE,   	/* type */
-	sizeof(rlm_attr_filter_t),
-	module_config,
-	mod_instantiate,	/* instantiation */
-	NULL,			/* detach */
-	{
-		NULL,			/* authentication */
-		mod_authorize,	/* authorization */
-		mod_preacct,	/* pre-acct */
-		mod_accounting,	/* accounting */
-		NULL,			/* checksimul */
+extern rad_module_t rlm_attr_filter;
+rad_module_t rlm_attr_filter = {
+	.magic		= RLM_MODULE_INIT,
+	.name		= "attr_filter",
+	.inst_size	= sizeof(rlm_attr_filter_t),
+	.config		= module_config,
+	.instantiate	= mod_instantiate,
+	.methods = {
+		[MOD_AUTHORIZE]		= mod_authorize,
+		[MOD_PREACCT]		= mod_preacct,
+		[MOD_ACCOUNTING]	= mod_accounting,
 #ifdef WITH_PROXY
-		mod_pre_proxy,	/* pre-proxy */
-		mod_post_proxy,	/* post-proxy */
-#else
-		NULL, NULL,
+		[MOD_PRE_PROXY]		= mod_pre_proxy,
+		[MOD_POST_PROXY]	= mod_post_proxy,
 #endif
-		mod_post_auth	/* post-auth */
+		[MOD_POST_AUTH]		= mod_post_auth,
 #ifdef WITH_COA
-		,
-		mod_recv_coa,
-		mod_send_coa
+		[MOD_RECV_COA]		= mod_recv_coa,
+		[MOD_SEND_COA]		= mod_send_coa
 #endif
 	},
 };

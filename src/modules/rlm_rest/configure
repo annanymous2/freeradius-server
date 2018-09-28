@@ -642,9 +642,6 @@ ac_subst_files=''
 ac_user_opts='
 enable_option_checking
 with_libcurl
-with_jsonc_include_dir
-with_jsonc_lib_dir
-with_jsonc_dir
 '
       ac_precious_vars='build_alias
 host_alias
@@ -1263,11 +1260,6 @@ Optional Packages:
   --without-PACKAGE       do not use PACKAGE (same as --with-PACKAGE=no)
   --with-libcurl=PREFIX   look for the curl library in PREFIX/lib and headers
                           in PREFIX/include
-  --with-jsonc-include-dir=DIR
-                          Directory where the json-c includes may be found
-  --with-jsonc-lib-dir=DIR
-                          Directory where the json-c libraries may be found
-  --with-jsonc-dir=DIR    Base directory where json-c is installed
 
 Some influential environment variables:
   CC          C compiler command
@@ -2956,9 +2948,9 @@ done
      _libcurl_try_link=yes
 
      if test -d "$_libcurl_with" ; then
-        LIBCURL_CPPFLAGS="-I$withval/include"
-        _libcurl_ldflags="-L$withval/lib"
-        # Extract the first word of "curl-config", so it can be a program name with args.
+	LIBCURL_CPPFLAGS="-I$withval/include"
+	_libcurl_ldflags="-L$withval/lib"
+	# Extract the first word of "curl-config", so it can be a program name with args.
 set dummy curl-config; ac_word=$2
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
 $as_echo_n "checking for $ac_word... " >&6; }
@@ -2999,7 +2991,7 @@ fi
 
 
      else
-        # Extract the first word of "curl-config", so it can be a program name with args.
+	# Extract the first word of "curl-config", so it can be a program name with args.
 set dummy curl-config; ac_word=$2
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
 $as_echo_n "checking for $ac_word... " >&6; }
@@ -3042,7 +3034,7 @@ fi
      fi
 
      if test x$_libcurl_config != "x" ; then
-        { $as_echo "$as_me:${as_lineno-$LINENO}: checking for the version of libcurl" >&5
+	{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for the version of libcurl" >&5
 $as_echo_n "checking for the version of libcurl... " >&6; }
 if ${libcurl_cv_lib_curl_version+:} false; then :
   $as_echo_n "(cached) " >&6
@@ -3052,76 +3044,76 @@ fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $libcurl_cv_lib_curl_version" >&5
 $as_echo "$libcurl_cv_lib_curl_version" >&6; }
 
-        _libcurl_version=`echo $libcurl_cv_lib_curl_version | $_libcurl_version_parse`
-        _libcurl_wanted=`echo 7.19.1 | $_libcurl_version_parse`
+	_libcurl_version=`echo $libcurl_cv_lib_curl_version | $_libcurl_version_parse`
+	_libcurl_wanted=`echo 7.19.1 | $_libcurl_version_parse`
 
-        if test $_libcurl_wanted -gt 0 ; then
-           { $as_echo "$as_me:${as_lineno-$LINENO}: checking for libcurl >= version 7.19.1" >&5
+	if test $_libcurl_wanted -gt 0 ; then
+	   { $as_echo "$as_me:${as_lineno-$LINENO}: checking for libcurl >= version 7.19.1" >&5
 $as_echo_n "checking for libcurl >= version 7.19.1... " >&6; }
 if ${libcurl_cv_lib_version_ok+:} false; then :
   $as_echo_n "(cached) " >&6
 else
 
-              if test $_libcurl_version -ge $_libcurl_wanted ; then
-                 libcurl_cv_lib_version_ok=yes
-              else
-                 libcurl_cv_lib_version_ok=no
-              fi
+	      if test $_libcurl_version -ge $_libcurl_wanted ; then
+		 libcurl_cv_lib_version_ok=yes
+	      else
+		 libcurl_cv_lib_version_ok=no
+	      fi
 
 fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $libcurl_cv_lib_version_ok" >&5
 $as_echo "$libcurl_cv_lib_version_ok" >&6; }
-        fi
+	fi
 
-        if test $_libcurl_wanted -eq 0 || test x$libcurl_cv_lib_version_ok = xyes ; then
-           if test x"$LIBCURL_CPPFLAGS" = "x" ; then
-              LIBCURL_CPPFLAGS=`$_libcurl_config --cflags`
-           fi
-           if test x"$LIBCURL" = "x" ; then
-              LIBCURL=`$_libcurl_config --libs`
+	if test $_libcurl_wanted -eq 0 || test x$libcurl_cv_lib_version_ok = xyes ; then
+	   if test x"$LIBCURL_CPPFLAGS" = "x" ; then
+	      LIBCURL_CPPFLAGS=`$_libcurl_config --cflags`
+	   fi
+	   if test x"$LIBCURL" = "x" ; then
+	      LIBCURL=`$_libcurl_config --libs`
 
-              # This is so silly, but Apple actually has a bug in their
-              # curl-config script.  Fixed in Tiger, but there are still
-              # lots of Panther installs around.
-              case "${host}" in
-                 powerpc-apple-darwin7*)
-                    LIBCURL=`echo $LIBCURL | sed -e 's|-arch i386||g'`
-                 ;;
-              esac
-           fi
+	      # This is so silly, but Apple actually has a bug in their
+	      # curl-config script.  Fixed in Tiger, but there are still
+	      # lots of Panther installs around.
+	      case "${host}" in
+		 powerpc-apple-darwin7*)
+		    LIBCURL=`echo $LIBCURL | sed -e 's|-arch i386||g'`
+		 ;;
+	      esac
+	   fi
 
-           # All curl-config scripts support --feature
-           _libcurl_features=`$_libcurl_config --feature`
+	   # All curl-config scripts support --feature
+	   _libcurl_features=`$_libcurl_config --feature`
 
-           # Is it modern enough to have --protocols? (7.12.4)
-           if test $_libcurl_version -ge 461828 ; then
-              _libcurl_protocols=`$_libcurl_config --protocols`
-           fi
-        else
-           _libcurl_try_link=no
-        fi
+	   # Is it modern enough to have --protocols? (7.12.4)
+	   if test $_libcurl_version -ge 461828 ; then
+	      _libcurl_protocols=`$_libcurl_config --protocols`
+	   fi
+	else
+	   _libcurl_try_link=no
+	fi
 
-        unset _libcurl_wanted
+	unset _libcurl_wanted
      fi
 
      if test $_libcurl_try_link = yes ; then
 
-        # we didn't find curl-config, so let's see if the user-supplied
-        # link line (or failing that, "-lcurl") is enough.
-        LIBCURL=${LIBCURL-"$_libcurl_ldflags -lcurl"}
+	# we didn't find curl-config, so let's see if the user-supplied
+	# link line (or failing that, "-lcurl") is enough.
+	LIBCURL=${LIBCURL-"$_libcurl_ldflags -lcurl"}
 
-        { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether libcurl is usable" >&5
+	{ $as_echo "$as_me:${as_lineno-$LINENO}: checking whether libcurl is usable" >&5
 $as_echo_n "checking whether libcurl is usable... " >&6; }
 if ${libcurl_cv_lib_curl_usable+:} false; then :
   $as_echo_n "(cached) " >&6
 else
 
-           _libcurl_save_cppflags=$CPPFLAGS
-           CPPFLAGS="$LIBCURL_CPPFLAGS $CPPFLAGS"
-           _libcurl_save_libs=$LIBS
-           LIBS="$LIBCURL $LIBS"
+	   _libcurl_save_cppflags=$CPPFLAGS
+	   CPPFLAGS="$LIBCURL_CPPFLAGS $CPPFLAGS"
+	   _libcurl_save_libs=$LIBS
+	   LIBS="$LIBCURL $LIBS"
 
-           cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+	   cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
 #include <curl/curl.h>
 int
@@ -3152,26 +3144,26 @@ fi
 rm -f core conftest.err conftest.$ac_objext \
     conftest$ac_exeext conftest.$ac_ext
 
-           CPPFLAGS=$_libcurl_save_cppflags
-           LIBS=$_libcurl_save_libs
-           unset _libcurl_save_cppflags
-           unset _libcurl_save_libs
+	   CPPFLAGS=$_libcurl_save_cppflags
+	   LIBS=$_libcurl_save_libs
+	   unset _libcurl_save_cppflags
+	   unset _libcurl_save_libs
 
 fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $libcurl_cv_lib_curl_usable" >&5
 $as_echo "$libcurl_cv_lib_curl_usable" >&6; }
 
-        if test $libcurl_cv_lib_curl_usable = yes ; then
+	if test $libcurl_cv_lib_curl_usable = yes ; then
 
-           # Does curl_free() exist in this version of libcurl?
-           # If not, fake it with free()
+	   # Does curl_free() exist in this version of libcurl?
+	   # If not, fake it with free()
 
-           _libcurl_save_cppflags=$CPPFLAGS
-           CPPFLAGS="$CPPFLAGS $LIBCURL_CPPFLAGS"
-           _libcurl_save_libs=$LIBS
-           LIBS="$LIBS $LIBCURL"
+	   _libcurl_save_cppflags=$CPPFLAGS
+	   CPPFLAGS="$CPPFLAGS $LIBCURL_CPPFLAGS"
+	   _libcurl_save_libs=$LIBS
+	   LIBS="$LIBS $LIBCURL"
 
-           ac_fn_c_check_func "$LINENO" "curl_free" "ac_cv_func_curl_free"
+	   ac_fn_c_check_func "$LINENO" "curl_free" "ac_cv_func_curl_free"
 if test "x$ac_cv_func_curl_free" = xyes; then :
 
 else
@@ -3181,10 +3173,10 @@ $as_echo "#define curl_free free" >>confdefs.h
 fi
 
 
-           CPPFLAGS=$_libcurl_save_cppflags
-           LIBS=$_libcurl_save_libs
-           unset _libcurl_save_cppflags
-           unset _libcurl_save_libs
+	   CPPFLAGS=$_libcurl_save_cppflags
+	   LIBS=$_libcurl_save_libs
+	   unset _libcurl_save_cppflags
+	   unset _libcurl_save_libs
 
 
 $as_echo "#define HAVE_LIBCURL 1" >>confdefs.h
@@ -3192,48 +3184,48 @@ $as_echo "#define HAVE_LIBCURL 1" >>confdefs.h
 
 
 
-           for _libcurl_feature in $_libcurl_features ; do
-              cat >>confdefs.h <<_ACEOF
+	   for _libcurl_feature in $_libcurl_features ; do
+	      cat >>confdefs.h <<_ACEOF
 #define `$as_echo "libcurl_feature_$_libcurl_feature" | $as_tr_cpp` 1
 _ACEOF
 
-              eval `$as_echo "libcurl_feature_$_libcurl_feature" | $as_tr_sh`=yes
-           done
+	      eval `$as_echo "libcurl_feature_$_libcurl_feature" | $as_tr_sh`=yes
+	   done
 
-           if test "x$_libcurl_protocols" = "x" ; then
+	   if test "x$_libcurl_protocols" = "x" ; then
 
-              # We don't have --protocols, so just assume that all
-              # protocols are available
-              _libcurl_protocols="HTTP FTP FILE TELNET LDAP DICT TFTP"
+	      # We don't have --protocols, so just assume that all
+	      # protocols are available
+	      _libcurl_protocols="HTTP FTP FILE TELNET LDAP DICT TFTP"
 
-              if test x$libcurl_feature_SSL = xyes ; then
-                 _libcurl_protocols="$_libcurl_protocols HTTPS"
+	      if test x$libcurl_feature_SSL = xyes ; then
+		 _libcurl_protocols="$_libcurl_protocols HTTPS"
 
-                 # FTPS wasn't standards-compliant until version
-                 # 7.11.0 (0x070b00 == 461568)
-                 if test $_libcurl_version -ge 461568; then
-                    _libcurl_protocols="$_libcurl_protocols FTPS"
-                 fi
-              fi
+		 # FTPS wasn't standards-compliant until version
+		 # 7.11.0 (0x070b00 == 461568)
+		 if test $_libcurl_version -ge 461568; then
+		    _libcurl_protocols="$_libcurl_protocols FTPS"
+		 fi
+	      fi
 
-              # RTSP, IMAP, POP3 and SMTP were added in
-              # 7.20.0 (0x071400 == 463872)
-              if test $_libcurl_version -ge 463872; then
-                 _libcurl_protocols="$_libcurl_protocols RTSP IMAP POP3 SMTP"
-              fi
-           fi
+	      # RTSP, IMAP, POP3 and SMTP were added in
+	      # 7.20.0 (0x071400 == 463872)
+	      if test $_libcurl_version -ge 463872; then
+		 _libcurl_protocols="$_libcurl_protocols RTSP IMAP POP3 SMTP"
+	      fi
+	   fi
 
-           for _libcurl_protocol in $_libcurl_protocols ; do
-              cat >>confdefs.h <<_ACEOF
+	   for _libcurl_protocol in $_libcurl_protocols ; do
+	      cat >>confdefs.h <<_ACEOF
 #define `$as_echo "libcurl_protocol_$_libcurl_protocol" | $as_tr_cpp` 1
 _ACEOF
 
-              eval `$as_echo "libcurl_protocol_$_libcurl_protocol" | $as_tr_sh`=yes
-           done
-        else
-           unset LIBCURL
-           unset LIBCURL_CPPFLAGS
-        fi
+	      eval `$as_echo "libcurl_protocol_$_libcurl_protocol" | $as_tr_sh`=yes
+	   done
+	else
+	   unset LIBCURL
+	   unset LIBCURL_CPPFLAGS
+	fi
      fi
 
      unset _libcurl_try_link
@@ -3270,397 +3262,13 @@ _ACEOF
 		if test x$libcurl_protocol_HTTPS != xyes || test x$libcurl_feature_SSL != xyes; then
 			{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: silently building without HTTPS support. requires: libcurl_protocol_https." >&5
 $as_echo "$as_me: WARNING: silently building without HTTPS support. requires: libcurl_protocol_https." >&2;}
+		else
+            { $as_echo "$as_me:${as_lineno-$LINENO}: curl-config's cflags were \"${LIBCURL_CPPFLAGS}\"" >&5
+$as_echo "$as_me: curl-config's cflags were \"${LIBCURL_CPPFLAGS}\"" >&6;}
+		    LIBCURL_CPPFLAGS=$(echo "$LIBCURL_CPPFLAGS" | sed 's/-I */-isystem /g')
+		    { $as_echo "$as_me:${as_lineno-$LINENO}: Sanitized cflags are \"$(echo "${LIBCURL_CPPFLAGS}" | sed 's/-I */-isystem /g')\"" >&5
+$as_echo "$as_me: Sanitized cflags are \"$(echo "${LIBCURL_CPPFLAGS}" | sed 's/-I */-isystem /g')\"" >&6;}
 		fi
-	fi
-
-
-		jsonc_include_dir=
-
-# Check whether --with-jsonc-include-dir was given.
-if test "${with_jsonc_include_dir+set}" = set; then :
-  withval=$with_jsonc_include_dir; case "$withval" in
-		    no)
-			as_fn_error $? "Need jsonc-include-dir" "$LINENO" 5
-		    ;;
-		        yes)
-		    ;;
-		    *)
-		        jsonc_include_dir="$withval"
-		    ;;
-		esac
-fi
-
-
-		jsonc_lib_dir=
-
-# Check whether --with-jsonc-lib-dir was given.
-if test "${with_jsonc_lib_dir+set}" = set; then :
-  withval=$with_jsonc_lib_dir; case "$withval" in
-		    no)
-			as_fn_error $? "Need jsonc-lib-dir" "$LINENO" 5
-			;;
-		    yes)
-			;;
-		    *)
-			jsonc_lib_dir="$withval"
-			;;
-		esac
-fi
-
-
-
-# Check whether --with-jsonc-dir was given.
-if test "${with_jsonc_dir+set}" = set; then :
-  withval=$with_jsonc_dir; case "$withval" in
-		    no)
-			as_fn_error $? "Need json-c-dir" "$LINENO" 5
-			;;
-		    yes)
-			;;
-		    *)
-			jsonc_lib_dir="$withval/lib"
-			jsonc_include_dir="$withval/include"
-			;;
-		esac
-fi
-
-
-
-
-	have_json="yes"
-	smart_try_dir="$jsonc_include_dir"
-
-
-ac_safe=`echo "json/json.h" | sed 'y%./+-%__pm%'`
-old_CFLAGS="$CFLAGS"
-smart_include=
-smart_include_dir=
-
-if test "x$smart_try_dir" != "x"; then
-  for try in $smart_try_dir; do
-    { $as_echo "$as_me:${as_lineno-$LINENO}: checking for json/json.h in $try" >&5
-$as_echo_n "checking for json/json.h in $try... " >&6; }
-    CFLAGS="$old_CFLAGS -isystem $try"
-    cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-
-		    #include <json/json.h>
-int
-main ()
-{
-int a = 1;
-  ;
-  return 0;
-}
-_ACEOF
-if ac_fn_c_try_compile "$LINENO"; then :
-
-		     smart_include="-isystem $try"
-		     { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
-$as_echo "yes" >&6; }
-		     break
-
-else
-
-		     smart_include=
-		     { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
-$as_echo "no" >&6; }
-
-fi
-rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
-  done
-  CFLAGS="$old_CFLAGS"
-fi
-
-if test "x$smart_include" = "x"; then
-  { $as_echo "$as_me:${as_lineno-$LINENO}: checking for json/json.h" >&5
-$as_echo_n "checking for json/json.h... " >&6; }
-  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-
-		  #include <json/json.h>
-int
-main ()
-{
-int a = 1;
-  ;
-  return 0;
-}
-_ACEOF
-if ac_fn_c_try_compile "$LINENO"; then :
-
-		   smart_include=" "
-		   { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
-$as_echo "yes" >&6; }
-		   break
-
-else
-
-		   smart_include=
-		   { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
-$as_echo "no" >&6; }
-
-fi
-rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
-fi
-
-if test "x$smart_include" = "x"; then
-
-
-if test "x$LOCATE" != "x"; then
-        DIRS=
-  file=json/json.h
-
-  for x in `${LOCATE} $file 2>/dev/null`; do
-                                        base=`echo $x | sed "s%/${file}%%"`
-    if test "x$x" = "x$base"; then
-      continue;
-    fi
-
-    dir=`${DIRNAME} $x 2>/dev/null`
-                exclude=`echo ${dir} | ${GREP} /home`
-    if test "x$exclude" != "x"; then
-      continue
-    fi
-
-                    already=`echo \$smart_include_dir ${DIRS} | ${GREP} ${dir}`
-    if test "x$already" = "x"; then
-      DIRS="$DIRS $dir"
-    fi
-  done
-fi
-
-eval "smart_include_dir=\"\$smart_include_dir $DIRS\""
-
-  for try in $smart_include_dir /usr/local/include /opt/include; do
-    { $as_echo "$as_me:${as_lineno-$LINENO}: checking for json/json.h in $try" >&5
-$as_echo_n "checking for json/json.h in $try... " >&6; }
-    CFLAGS="$old_CFLAGS -isystem $try"
-    cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-
-		    #include <json/json.h>
-int
-main ()
-{
-int a = 1;
-  ;
-  return 0;
-}
-_ACEOF
-if ac_fn_c_try_compile "$LINENO"; then :
-
-		     smart_include="-isystem $try"
-		     { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
-$as_echo "yes" >&6; }
-		     break
-
-else
-
-		     smart_include=
-		     { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
-$as_echo "no" >&6; }
-
-fi
-rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
-  done
-  CFLAGS="$old_CFLAGS"
-fi
-
-if test "x$smart_include" != "x"; then
-  eval "ac_cv_header_$ac_safe=yes"
-  CFLAGS="$old_CFLAGS $smart_include"
-  SMART_CFLAGS="$SMART_CFLAGS $smart_include"
-fi
-
-	if test "x$ac_cv_header_json_json_h" != "xyes"; then
-		have_json="no"
-		{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: json-c headers not found. Use --with-jsonc-include-dir=<path>." >&5
-$as_echo "$as_me: WARNING: json-c headers not found. Use --with-jsonc-include-dir=<path>." >&2;}
-	fi
-
-
-	smart_try_dir="$jsonc_lib_dir"
-
-
-sm_lib_safe=`echo "json-c" | sed 'y%./+-%__p_%'`
-sm_func_safe=`echo "json_c_version" | sed 'y%./+-%__p_%'`
-
-old_LIBS="$LIBS"
-smart_lib=
-smart_lib_dir=
-
-if test "x$smart_try_dir" != "x"; then
-  for try in $smart_try_dir; do
-    { $as_echo "$as_me:${as_lineno-$LINENO}: checking for json_c_version in -ljson-c in $try" >&5
-$as_echo_n "checking for json_c_version in -ljson-c in $try... " >&6; }
-    LIBS="-L$try -ljson-c $old_LIBS -Wl,-rpath,$try"
-    cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-extern char json_c_version();
-int
-main ()
-{
-json_c_version()
-  ;
-  return 0;
-}
-_ACEOF
-if ac_fn_c_try_link "$LINENO"; then :
-
-		 smart_lib="-L$try -ljson-c -Wl,-rpath,$try"
-		 { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
-$as_echo "yes" >&6; }
-		 break
-
-else
-  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
-$as_echo "no" >&6; }
-fi
-rm -f core conftest.err conftest.$ac_objext \
-    conftest$ac_exeext conftest.$ac_ext
-  done
-  LIBS="$old_LIBS"
-fi
-
-if test "x$smart_lib" = "x"; then
-  { $as_echo "$as_me:${as_lineno-$LINENO}: checking for json_c_version in -ljson-c" >&5
-$as_echo_n "checking for json_c_version in -ljson-c... " >&6; }
-  LIBS="-ljson-c $old_LIBS"
-  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-extern char json_c_version();
-int
-main ()
-{
-json_c_version()
-  ;
-  return 0;
-}
-_ACEOF
-if ac_fn_c_try_link "$LINENO"; then :
-
-	        smart_lib="-ljson-c"
-	        { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
-$as_echo "yes" >&6; }
-
-else
-  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
-$as_echo "no" >&6; }
-fi
-rm -f core conftest.err conftest.$ac_objext \
-    conftest$ac_exeext conftest.$ac_ext
-  LIBS="$old_LIBS"
-fi
-
-if test "x$smart_lib" = "x"; then
-
-
-if test "x$LOCATE" != "x"; then
-        DIRS=
-  file=libjson-c${libltdl_cv_shlibext}
-
-  for x in `${LOCATE} $file 2>/dev/null`; do
-                                        base=`echo $x | sed "s%/${file}%%"`
-    if test "x$x" = "x$base"; then
-      continue;
-    fi
-
-    dir=`${DIRNAME} $x 2>/dev/null`
-                exclude=`echo ${dir} | ${GREP} /home`
-    if test "x$exclude" != "x"; then
-      continue
-    fi
-
-                    already=`echo \$smart_lib_dir ${DIRS} | ${GREP} ${dir}`
-    if test "x$already" = "x"; then
-      DIRS="$DIRS $dir"
-    fi
-  done
-fi
-
-eval "smart_lib_dir=\"\$smart_lib_dir $DIRS\""
-
-
-
-if test "x$LOCATE" != "x"; then
-        DIRS=
-  file=libjson-c.a
-
-  for x in `${LOCATE} $file 2>/dev/null`; do
-                                        base=`echo $x | sed "s%/${file}%%"`
-    if test "x$x" = "x$base"; then
-      continue;
-    fi
-
-    dir=`${DIRNAME} $x 2>/dev/null`
-                exclude=`echo ${dir} | ${GREP} /home`
-    if test "x$exclude" != "x"; then
-      continue
-    fi
-
-                    already=`echo \$smart_lib_dir ${DIRS} | ${GREP} ${dir}`
-    if test "x$already" = "x"; then
-      DIRS="$DIRS $dir"
-    fi
-  done
-fi
-
-eval "smart_lib_dir=\"\$smart_lib_dir $DIRS\""
-
-
-  for try in $smart_lib_dir /usr/local/lib /opt/lib; do
-    { $as_echo "$as_me:${as_lineno-$LINENO}: checking for json_c_version in -ljson-c in $try" >&5
-$as_echo_n "checking for json_c_version in -ljson-c in $try... " >&6; }
-    LIBS="-L$try -ljson-c $old_LIBS -Wl,-rpath,$try"
-    cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-extern char json_c_version();
-int
-main ()
-{
-json_c_version()
-  ;
-  return 0;
-}
-_ACEOF
-if ac_fn_c_try_link "$LINENO"; then :
-
-		  smart_lib="-L$try -ljson-c -Wl,-rpath,$try"
-		  { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
-$as_echo "yes" >&6; }
-		  break
-
-else
-  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
-$as_echo "no" >&6; }
-fi
-rm -f core conftest.err conftest.$ac_objext \
-    conftest$ac_exeext conftest.$ac_ext
-  done
-  LIBS="$old_LIBS"
-fi
-
-if test "x$smart_lib" != "x"; then
-  eval "ac_cv_lib_${sm_lib_safe}_${sm_func_safe}=yes"
-  LIBS="$smart_lib $old_LIBS"
-  SMART_LIBS="$smart_lib $SMART_LIBS"
-fi
-
-	if test "x$ac_cv_lib_json_c_json_c_version" != "xyes"
-	then
-	    have_json="no"
-		{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: json-c libraries not found. Use --with-jsonc-lib-dir=<path>." >&5
-$as_echo "$as_me: WARNING: json-c libraries not found. Use --with-jsonc-lib-dir=<path>." >&2;}
-	fi
-
-	if test "x$have_json" = "xyes"; then
-
-$as_echo "#define HAVE_JSON 1" >>confdefs.h
-
-	else
-		{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: silently building without JSON support. requires: json-c" >&5
-$as_echo "$as_me: WARNING: silently building without JSON support. requires: json-c" >&2;}
 	fi
 
 	targetname=rlm_rest
@@ -3681,18 +3289,18 @@ $as_echo "$as_me: WARNING: FAILURE: rlm_rest requires: $fail." >&2;};
 	fi
 fi
 
-mod_ldflags="${LIBCURL} ${SMART_LIBS}"
-mod_cflags="${SMART_CFLAGS}"
+mod_ldflags="$LIBCURL"
+mod_cflags="$LIBCURL_CPPFLAGS"
 
 
 
 
 
 
-  unset ac_cv_env_LIBS_set
-  unset ac_cv_env_LIBS_value
+unset ac_cv_env_LIBS_set
+unset ac_cv_env_LIBS_value
 
-  ac_config_files="$ac_config_files all.mk"
+ac_config_files="$ac_config_files all.mk"
 
 cat >confcache <<\_ACEOF
 # This file is a shell script that caches the results of configure
@@ -4966,5 +4574,6 @@ if test -n "$ac_unrecognized_opts" && test "$enable_option_checking" != no; then
   { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: unrecognized options: $ac_unrecognized_opts" >&5
 $as_echo "$as_me: WARNING: unrecognized options: $ac_unrecognized_opts" >&2;}
 fi
+
 
 

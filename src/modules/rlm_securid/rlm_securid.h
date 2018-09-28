@@ -1,9 +1,7 @@
-#ifndef _RLM_SECURID_H
-#define _RLM_SECURID_H
-
-#include <freeradius-devel/radiusd.h>
-#include <freeradius-devel/modules.h>
-#include <freeradius-devel/rad_assert.h>
+#pragma once
+#include <freeradius-devel/server/base.h>
+#include <freeradius-devel/server/modules.h>
+#include <freeradius-devel/server/rad_assert.h>
 
 #include "acexport.h"
 
@@ -46,7 +44,7 @@ typedef struct _securid_session_t {
 	fr_ipaddr_t		  src_ipaddr;
 	time_t			  timestamp;
 	unsigned int		  session_id;
-	int			  trips;
+	uint32_t		  trips;
 
 	char			  *pin;	     /* previous pin if user entered it during NEW-PIN mode process */
 	char			  *identity; /* save user's identity name for future use */
@@ -73,19 +71,23 @@ typedef struct rlm_securid_t {
 	/*
 	 *	Configuration items.
 	 */
-	int		timer_limit;
-	int		max_sessions;
-	int		max_trips_per_session;
+	uint32_t	timer_limit;
+	uint32_t	max_sessions;
+	uint32_t	max_trips_per_session;
 } rlm_securid_t;
+
+extern fr_dict_attr_t const *attr_prompt;
+extern fr_dict_attr_t const *attr_reply_message;
+extern fr_dict_attr_t const *attr_state;
+extern fr_dict_attr_t const *attr_user_password;
 
 /* Memory Management */
 SECURID_SESSION*     securid_session_alloc(void);
-void		     securid_session_free(rlm_securid_t *inst, REQUEST *request,SECURID_SESSION *session);
+void		     securid_session_free(rlm_securid_t *inst, REQUEST *request,SECURID_SESSION *session)
+		     CC_HINT(nonnull);
 
-void		     securid_sessionlist_free(rlm_securid_t *inst,REQUEST *request);
+void		     securid_sessionlist_free(rlm_securid_t *inst,REQUEST *request) CC_HINT(nonnull);
 
-int		     securid_sessionlist_add(rlm_securid_t *inst, REQUEST *request, SECURID_SESSION *session);
-SECURID_SESSION*     securid_sessionlist_find(rlm_securid_t *inst, REQUEST *request);
-
-
-#endif
+int		     securid_sessionlist_add(rlm_securid_t *inst, REQUEST *request, SECURID_SESSION *session)
+		     CC_HINT(nonnull);
+SECURID_SESSION	     *securid_sessionlist_find(rlm_securid_t *inst, REQUEST *request) CC_HINT(nonnull);

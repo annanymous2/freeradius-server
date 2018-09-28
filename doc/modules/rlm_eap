@@ -170,9 +170,6 @@ EAP CLIENTS
 
    http://www.denobula.com/EAPTLS.pdf
 
-  3. Freeradius has an "radeapclient" that can do EAP-MD5 (passwords),
-     as well as EAP-SIM. It is in modules/rlm_eap/radeapclient.
-
 TESTING
 
   You will find several test cases in src/tests/ for the EAP-SIM code.
@@ -196,13 +193,13 @@ HOW DO I USE IT (FAQ/Examples)
 	}
 
 	# eap sets the authenticate type as EAP
-	authorize {
+	recv Access-Request {
 		...
 		eap
 	}
 
 	# eap authentication takes place.
-	authenticate {
+	process Access-Request {
 		eap
 	}
 
@@ -229,7 +226,7 @@ HOW DO I USE IT (FAQ/Examples)
 
 	# ldap gets the Configured password.
 	# eap sets the authenticate type as EAP
-	authorize {
+	recv Access-Request {
 		...
 		ldap
 		eap
@@ -237,7 +234,7 @@ HOW DO I USE IT (FAQ/Examples)
 	}
 
 	# eap authentication takes place.
-	authenticate {
+	process Access-Request {
 		...
 		eap
 		...
@@ -256,7 +253,7 @@ HOW DO I USE IT (FAQ/Examples)
    # eap module should be configured as the First module in
    # the authorize stanza
 
-	authorize {
+	recv Access-Request {
 		eap
 		...  other modules.
 	}
@@ -272,7 +269,7 @@ HOW DO I USE IT (FAQ/Examples)
 
    Only if it is required then, in radiusd.conf
 
-	authorize {
+	recv Access-Request {
 		eap
 		...  other modules.
 	}
@@ -308,7 +305,7 @@ HOW DO I USE IT (FAQ/Examples)
    Once EAP-Identity response is received by the server, based on the
    default_eap_type, the server will send a new request (MD5-Challenge
    request incase of md5, TLS-START request incase of tls) to the supplicant.
-   If the supplicant is rfc2284 compliant and doesnot support the
+   If the supplicant is rfc2284 compliant and does not support the
    EAP-Type sent by the server then it sends EAP-Acknowledge with the
    supported EAP-Type. If this EAP-Type is supported by the server then it
    will send the respective EAP-request.

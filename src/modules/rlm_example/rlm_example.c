@@ -1,7 +1,8 @@
 /*
  *   This program is is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License, version 2 if the
- *   License as published by the Free Software Foundation.
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation; either version 2 of the License, or (at
+ *   your option) any later version.
  *
  *   This program is distributed in the hope that it will be useful,
  *   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,8 +24,9 @@
  */
 RCSID("$Id$")
 
-#include <freeradius-devel/radiusd.h>
-#include <freeradius-devel/modules.h>
+#include <freeradius-devel/server/base.h>
+#include <freeradius-devel/server/modules.h>
+#include <freeradius-devel/server/rad_assert.h>
 
 /*
  *	Define a structure for our module configuration.
@@ -34,44 +36,74 @@ RCSID("$Id$")
  *	be used as the instance handle.
  */
 typedef struct rlm_example_t {
-	int		boolean;
-	int		value;
-	char		*string;
-	uint32_t	ipaddr;
+	bool		boolean;
+	uint32_t	value;
+	char const	*string;
+	fr_ipaddr_t	ipaddr;
 } rlm_example_t;
 
 /*
  *	A mapping of configuration file names to internal variables.
  */
 static const CONF_PARSER module_config[] = {
-  { "integer", PW_TYPE_INTEGER,    offsetof(rlm_example_t,value), NULL,   "1" },
-  { "boolean", PW_TYPE_BOOLEAN,    offsetof(rlm_example_t,boolean), NULL, "no"},
-  { "string",  PW_TYPE_STRING_PTR, offsetof(rlm_example_t,string), NULL,  NULL},
-  { "ipaddr",  PW_TYPE_IPADDR,     offsetof(rlm_example_t,ipaddr), NULL,  "*" },
-
-  { NULL, -1, 0, NULL, NULL }		/* end the list */
+	{ FR_CONF_OFFSET("integer", FR_TYPE_UINT32, rlm_example_t, value), .dflt = "1" },
+	{ FR_CONF_OFFSET("boolean", FR_TYPE_BOOL, rlm_example_t, boolean), .dflt = "no" },
+	{ FR_CONF_OFFSET("string", FR_TYPE_STRING, rlm_example_t, string) },
+	{ FR_CONF_OFFSET("ipaddr", FR_TYPE_IPV4_ADDR, rlm_example_t, ipaddr), .dflt = "*" },
+	CONF_PARSER_TERMINATOR
 };
 
+static fr_dict_t *dict_radius;
+
+extern fr_dict_autoload_t rlm_example_dict[];
+fr_dict_autoload_t rlm_example_dict[] = {
+	{ .out = &dict_radius, .proto = "radius" },
+	{ NULL }
+};
+
+static fr_dict_attr_t const *attr_user_name;
+static fr_dict_attr_t const *attr_reply_message;
+static fr_dict_attr_t const *attr_state;
+
+extern fr_dict_attr_autoload_t rlm_example_dict_attr[];
+fr_dict_attr_autoload_t rlm_example_dict_attr[] = {
+	{ .out = &attr_user_name, .name = "User-Name", .type = FR_TYPE_STRING, .dict = &dict_radius },
+	{ .out = &attr_reply_message, .name = "Reply-Message", .type = FR_TYPE_STRING, .dict = &dict_radius },
+	{ .out = &attr_state, .name = "State", .type = FR_TYPE_OCTETS, .dict = &dict_radius },
+
+	{ NULL }
+};
+
+static int rlm_example_cmp(UNUSED void *instance, REQUEST *request, UNUSED VALUE_PAIR *thing, VALUE_PAIR *check,
+			   UNUSED VALUE_PAIR *check_pairs, UNUSED VALUE_PAIR **reply_pairs)
+{
+	rad_assert(check->vp_type == FR_TYPE_STRING);
+
+	RINFO("Example-Paircmp called with \"%s\"", check->vp_strvalue);
+
+	if (strcmp(check->vp_strvalue, "yes") == 0) return 0;
+	return 1;
+}
 
 /*
  *	Do any per-module initialization that is separate to each
  *	configured instance of the module.  e.g. set up connections
  *	to external databases, read configuration files, set up
  *	dictionary entries, etc.
- *
- *	If configuration information is given in the config section
- *	that must be referenced in later calls, store a handle to it
- *	in *instance otherwise put a null pointer there.
  */
-static int mod_instantiate(CONF_SECTION *conf, void *instance)
+static int mod_instantiate(void *instance, CONF_SECTION *conf)
 {
-	rlm_example_t *inst = instance;
+	rlm_example_t	*inst = instance;
 
 	/*
 	 *	Do more work here
 	 */
 	if (!inst->boolean) {
-		cf_log_err_cs(conf, "Boolean is false: forcing error!");
+		cf_log_err(conf, "Boolean is false: forcing error!");
+		return -1;
+	}
+
+	if (paircmp_register_by_name("Example-Paircmp", attr_user_name, false, rlm_example_cmp, inst) < 0) {
 		return -1;
 	}
 
@@ -84,31 +116,31 @@ static int mod_instantiate(CONF_SECTION *conf, void *instance)
  *	from the database. The authentication code only needs to check
  *	the password, the rest is done here.
  */
-static rlm_rcode_t mod_authorize(UNUSED void *instance, UNUSED REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_authorize(UNUSED void *instance, UNUSED void *thread, REQUEST *request)
 {
-	VALUE_PAIR *state;
+	VALUE_PAIR *vp;
 
 	/*
 	 *  Look for the 'state' attribute.
 	 */
-	state =  pairfind(request->packet->vps, PW_STATE, 0, TAG_ANY);
-	if (state != NULL) {
+	vp = fr_pair_find_by_da(request->packet->vps, attr_state, TAG_ANY);
+	if (vp != NULL) {
 		RDEBUG("Found reply to access challenge");
 		return RLM_MODULE_OK;
 	}
 
-	/*
-	 *  Create the challenge, and add it to the reply.
-	 */
-	pairmake_reply("Reply-Message", "This is a challenge", T_OP_EQ);
-	pairmake_reply("State", "0", T_OP_EQ);
+	MEM(pair_update_reply(&vp, attr_reply_message) >= 0);
+	if (vp->vp_length == 0) fr_pair_value_strcpy(vp, "This is a challenge");
+
+	MEM(pair_add_reply(&vp, attr_state) >= 0);
+	fr_pair_value_memcpy(vp, (uint8_t *){ 0x00 }, 1);
 
 	/*
 	 *  Mark the packet as an Access-Challenge packet.
 	 *
 	 *  The server will take care of sending it to the user.
 	 */
-	request->reply->code = PW_CODE_ACCESS_CHALLENGE;
+	request->reply->code = FR_CODE_ACCESS_CHALLENGE;
 	RDEBUG("Sending Access-Challenge");
 
 	return RLM_MODULE_HANDLED;
@@ -117,15 +149,16 @@ static rlm_rcode_t mod_authorize(UNUSED void *instance, UNUSED REQUEST *request)
 /*
  *	Authenticate the user with the given password.
  */
-static rlm_rcode_t mod_authenticate(UNUSED void *instance, UNUSED REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_authenticate(UNUSED void *instance, UNUSED void *thread, UNUSED REQUEST *request)
 {
 	return RLM_MODULE_OK;
 }
 
+#ifdef WITH_ACCOUNTING
 /*
  *	Massage the request before recording it or proxying it
  */
-static rlm_rcode_t mod_preacct(UNUSED void *instance, UNUSED REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_preacct(UNUSED void *instance, UNUSED void *thread, UNUSED REQUEST *request)
 {
 	return RLM_MODULE_OK;
 }
@@ -133,27 +166,11 @@ static rlm_rcode_t mod_preacct(UNUSED void *instance, UNUSED REQUEST *request)
 /*
  *	Write accounting information to this modules database.
  */
-static rlm_rcode_t mod_accounting(UNUSED void *instance, UNUSED REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_accounting(UNUSED void *instance, UNUSED void *thread, UNUSED REQUEST *request)
 {
 	return RLM_MODULE_OK;
 }
-
-/*
- *	See if a user is already logged in. Sets request->simul_count to the
- *	current session count for this user and sets request->simul_mpp to 2
- *	if it looks like a multilink attempt based on the requested IP
- *	address, otherwise leaves request->simul_mpp alone.
- *
- *	Check twice. If on the first pass the user exceeds his
- *	max. number of logins, do a second pass and validate all
- *	logins by querying the terminal server (using eg. SNMP).
- */
-static rlm_rcode_t mod_checksimul(UNUSED void *instance, UNUSED REQUEST *request)
-{
-  request->simul_count=0;
-
-  return RLM_MODULE_OK;
-}
+#endif
 
 
 /*
@@ -175,22 +192,21 @@ static int mod_detach(UNUSED void *instance)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-module_t rlm_example = {
-	RLM_MODULE_INIT,
-	"example",
-	RLM_TYPE_THREAD_SAFE,		/* type */
-	sizeof(rlm_example_t),
-	module_config,
-	mod_instantiate,		/* instantiation */
-	mod_detach,			/* detach */
-	{
-		mod_authenticate,	/* authentication */
-		mod_authorize,	/* authorization */
-		mod_preacct,	/* preaccounting */
-		mod_accounting,	/* accounting */
-		mod_checksimul,	/* checksimul */
-		NULL,			/* pre-proxy */
-		NULL,			/* post-proxy */
-		NULL			/* post-auth */
+extern rad_module_t rlm_example;
+rad_module_t rlm_example = {
+	.magic		= RLM_MODULE_INIT,
+	.name		= "example",
+	.type		= RLM_TYPE_THREAD_SAFE,
+	.inst_size	= sizeof(rlm_example_t),
+	.config		= module_config,
+	.instantiate	= mod_instantiate,
+	.detach		= mod_detach,
+	.methods = {
+		[MOD_AUTHENTICATE]	= mod_authenticate,
+		[MOD_AUTHORIZE]		= mod_authorize,
+#ifdef WITH_ACCOUNTING
+		[MOD_PREACCT]		= mod_preacct,
+		[MOD_ACCOUNTING]	= mod_accounting,
+#endif
 	},
 };

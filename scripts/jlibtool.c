@@ -20,6 +20,7 @@
 #include <stdint.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <libgen.h>
 
 #if !defined(__MINGW32__)
 #  include <sys/wait.h>
@@ -29,6 +30,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <assert.h>
+#include <signal.h>
 
 #ifdef __EMX__
 #  define SHELL_CMD 			"sh"
@@ -68,8 +70,8 @@
 #  define PIC_FLAG			"-fPIC -fno-common"
 #  define SHARED_OPTS			"-dynamiclib"
 #  define MODULE_OPTS			"-bundle -dynamic"
-#  define DYNAMIC_LINK_OPTS		"-flat_namespace"
-#  define DYNAMIC_LINK_UNDEFINED	"-undefined suppress"
+#  define DYNAMIC_LINK_OPTS		"-bind_at_load"
+#  define DYNAMIC_LINK_UNDEFINED	"-undefined dynamic_lookup"
 #  define dynamic_link_version_func	darwin_dynamic_link_function
 #  define DYNAMIC_INSTALL_NAME		"-install_name"
 #  define DYNAMIC_LINK_NO_INSTALL	"-dylib_file"
@@ -79,7 +81,7 @@
 #  define LD_LIBRARY_PATH_LOCAL		"DYLD_FALLBACK_LIBRARY_PATH"
 #endif
 
-#if defined(__linux__) || defined(__FreeBSD__) || defined(__NetBSD__)
+#if defined(__linux__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || (defined(__sun) && defined(__GNUC__))
 #  define SHELL_CMD 			"/bin/sh"
 #  define DYNAMIC_LIB_EXT		"so"
 #  define MODULE_LIB_EXT		"so"
@@ -93,14 +95,18 @@
 #  define SHARED_OPTS			"-shared"
 #  define MODULE_OPTS			"-shared"
 #  define LINKER_FLAG_PREFIX		"-Wl,"
+#if !defined(__sun)
 #  define DYNAMIC_LINK_OPTS		LINKER_FLAG_PREFIX "-export-dynamic"
+#else
+#  define DYNAMIC_LINK_OPTS		""
+#endif
 #  define ADD_MINUS_L
 #  define LD_RUN_PATH			"LD_RUN_PATH"
 #  define LD_LIBRARY_PATH		"LD_LIBRARY_PATH"
 #  define LD_LIBRARY_PATH_LOCAL		LD_LIBRARY_PATH
 #endif
 
-#if defined(sun)
+#if defined(__sun) && !defined(__GNUC__)
 #  define SHELL_CMD			"/bin/sh"
 #  define DYNAMIC_LIB_EXT		"so"
 #  define MODULE_LIB_EXT		"so"
@@ -318,6 +324,8 @@ typedef struct {
 static void add_rpath(count_chars *cc, char const *path);
 #endif
 
+static pid_t spawn_pid;
+
 static void usage(int code)
 {
 	printf("Usage: jlibtool [OPTIONS...] COMMANDS...\n");
@@ -396,9 +404,9 @@ static int snprintf(char *str, size_t n, char const *fmt, ...)
 	va_list ap;
 	int res;
 
-	va_start( ap, fmt );
-	res = vsnprintf( str, n, fmt, ap );
-	va_end( ap );
+	va_start(ap, fmt);
+	res = vsnprintf(str, n, fmt, ap);
+	va_end(ap);
 	return res;
 }
 #endif
@@ -430,13 +438,10 @@ static void init_count_chars(count_chars *cc)
 	cc->num = 0;
 }
 
-static count_chars *alloc_countchars()
+static count_chars *alloc_countchars(void)
 {
 	count_chars *out;
 	out = lt_malloc(sizeof(count_chars));
-	if (!out) {
-		exit(1);
-	}
 	init_count_chars(out);
 
 	return out;
@@ -457,9 +462,12 @@ static void push_count_chars(count_chars *cc, char const *newval)
 	cc->vals[cc->num++] = newval;
 }
 
-static void pop_count_chars(count_chars *cc)
+static char const *pop_count_chars(count_chars *cc)
 {
-	cc->num--;
+	if (!cc->num) {
+		return NULL;
+	}
+	return cc->vals[--cc->num];
 }
 
 static void insert_count_chars(count_chars *cc, char const *newval, int position)
@@ -484,7 +492,7 @@ static void append_count_chars(count_chars *cc, count_chars *cctoadd)
 	}
 }
 
-static char const *flatten_count_chars(count_chars *cc, int space)
+static char const *flatten_count_chars(count_chars *cc, char delim)
 {
 	int i, size;
 	char *newval;
@@ -493,20 +501,22 @@ static char const *flatten_count_chars(count_chars *cc, int space)
 	for (i = 0; i < cc->num; i++) {
 		if (cc->vals[i]) {
 			size += strlen(cc->vals[i]) + 1;
-			if (space) {
-			  size++;
+			if (delim) {
+				size++;
 			}
 		}
 	}
 
 	newval = (char*)lt_malloc(size + 1);
-	newval[0] = 0;
+	newval[0] = '\0';
 
 	for (i = 0; i < cc->num; i++) {
 		if (cc->vals[i]) {
 			strcat(newval, cc->vals[i]);
-			if (space) {
-				strcat(newval, " ");
+			if (delim) {
+				size_t len = strlen(newval);
+				newval[len] = delim;
+				newval[len + 1] = '\0';
 			}
 		}
 	}
@@ -548,6 +558,11 @@ static char *shell_esc(char const *str)
 	return cmd;
 }
 
+static void external_spawn_sig_handler(int signo)
+{
+	kill(spawn_pid, signo);	/* Forward the signal to the process we're executing */
+}
+
 static int external_spawn(command_t *cmd, char const *file, char const **argv)
 {
 	file = file;		/* -Wunused */
@@ -569,18 +584,61 @@ static int external_spawn(command_t *cmd, char const *file, char const **argv)
 	return spawnvp(P_WAIT, argv[0], argv);
 #else
 	{
-		pid_t pid;
-		pid = fork();
-		if (pid == 0) {
+		/*
+		 *	Signals we forward to our executing process
+		 */
+		spawn_pid = fork();
+		if (spawn_pid == 0) {
 			return execvp(argv[0], (char**)argv);
 		}
 		else {
-			int statuscode;
-			waitpid(pid, &statuscode, 0);
-			if (WIFEXITED(statuscode)) {
-				return WEXITSTATUS(statuscode);
+			int status;
+
+#define SIGNAL_FORWARD(_sig) if (signal(_sig, external_spawn_sig_handler) < 0) \
+	do { \
+		fprintf(stderr, "Failed setting signal handler for %i: %s\n", _sig, strerror(errno)); \
+		exit(EXIT_FAILURE); \
+	} while(0)
+
+#define SIGNAL_RESET(_sig) signal(_sig, SIG_DFL)
+
+			SIGNAL_FORWARD(SIGHUP);
+			SIGNAL_FORWARD(SIGINT);
+			SIGNAL_FORWARD(SIGQUIT);
+			SIGNAL_FORWARD(SIGTRAP);
+			SIGNAL_FORWARD(SIGPIPE);
+			SIGNAL_FORWARD(SIGTERM);
+			SIGNAL_FORWARD(SIGUSR1);
+			SIGNAL_FORWARD(SIGUSR2);
+
+			waitpid(spawn_pid, &status, 0);
+
+			SIGNAL_RESET(SIGHUP);
+			SIGNAL_RESET(SIGINT);
+			SIGNAL_RESET(SIGQUIT);
+			SIGNAL_RESET(SIGTRAP);
+			SIGNAL_RESET(SIGPIPE);
+			SIGNAL_RESET(SIGTERM);
+			SIGNAL_RESET(SIGUSR1);
+			SIGNAL_RESET(SIGUSR2);
+
+			/*
+			 *	Exited via exit(status)
+			 */
+			if (WIFEXITED(status)) {
+				return WEXITSTATUS(status);
 			}
-			return 0;
+
+#ifdef WTERMSIG
+			if (WIFSIGNALED(status)) {
+				return WTERMSIG(status);
+			}
+#endif
+
+			/*
+			 *	Some other failure.
+			 */
+			return 1;
 		}
 	}
 #endif
@@ -605,7 +663,7 @@ static int run_command(command_t *cmd, count_chars *cc)
 
 	append_count_chars(&tmpcc, cc);
 
-	raw = flatten_count_chars(&tmpcc, 1);
+	raw = flatten_count_chars(&tmpcc, ' ');
 	command = shell_esc(raw);
 
 	memcpy(&tmp, &raw, sizeof(tmp));
@@ -696,13 +754,15 @@ static int parse_long_opt(char const *arg, command_t *cmd)
 	if (equal_pos) {
 		strncpy(var, arg, equal_pos - arg);
 		var[equal_pos - arg] = 0;
-	if (strlen(equal_pos + 1) >= sizeof(var)) return 0;
+		if (strlen(equal_pos + 1) >= sizeof(var)) {
+			return 0;
+		}
 		strcpy(value, equal_pos + 1);
 	} else {
 		strncpy(var, arg, sizeof(var) - 1);
 		var[sizeof(var) - 1] = '\0';
 
-	value[0] = '\0';
+		value[0] = '\0';
 	}
 
 	if (strcmp(var, "silent") == 0) {
@@ -1102,7 +1162,7 @@ static char const *check_object_exists(command_t *cmd, char const *arg, int argl
  * 1 - .libs suffix
  */
 static char *check_library_exists(command_t *cmd, char const *arg, int pathlen,
-				  int libdircheck, enum lib_type*libtype)
+				  int libdircheck, enum lib_type *libtype)
 {
 	char *newarg, *ext;
 	int pass, rv, newpathlen;
@@ -1176,21 +1236,42 @@ static char *check_library_exists(command_t *cmd, char const *arg, int pathlen,
 static char * load_install_path(char const *arg)
 {
 	FILE *f;
-	char *path;
+	char *path = NULL;
+	char line[PATH_MAX + 10]; /* libdir='<path>'\n */
+	char token[] = "libdir='";
+	char *p;
 
 	f = fopen(arg,"r");
 	if (f == NULL) {
 		return NULL;
 	}
 
-	path = lt_malloc(PATH_MAX);
+	while (fgets(line, sizeof(line), f)) {
+		/* Skip comments and blank lines */
+		if ((line[0] == '#') || (line[0] < ' ')) continue;
 
-	fgets(path, PATH_MAX, f);
+		if ((p = strstr(line, token))) {
+			p += strlen(token);
+			path = lt_malloc(PATH_MAX);
+			strncpy(path, p, PATH_MAX);
+
+			/* fgets reads newline */
+			if (path[strlen(path)-1] == '\n') {
+				path[strlen(path)-1] = '\0';
+			}
+
+			/* Remove endquote for libdir */
+			if (path[strlen(path)-1] == '\'') {
+				path[strlen(path)-1] = '\0';
+			}
+
+			break;
+		}
+	}
+
 	fclose(f);
 
-	if (path[strlen(path)-1] == '\n') {
-		path[strlen(path)-1] = '\0';
-	}
+	if (!path) return NULL;
 
 	/* Check that we have an absolute path.
 	 * Otherwise the file could be a GNU libtool file.
@@ -1200,10 +1281,11 @@ static char * load_install_path(char const *arg)
 
 		return NULL;
 	}
+
 	return path;
 }
 
-static char * load_noinstall_path(char const *arg, int pathlen)
+static char *load_noinstall_path(char const *arg, int pathlen)
 {
 	char *newarg, *expanded_path;
 	int newpathlen;
@@ -1306,10 +1388,8 @@ static void add_rpath_noinstall(count_chars *cc, char const *arg, int pathlen)
 	char const *path;
 
 	path = load_noinstall_path(arg, pathlen);
-	if (path) {
-		add_rpath(cc, path);
-		lt_const_free(path);
-	}
+	add_rpath(cc, path);
+	lt_const_free(path);
 }
 #endif
 
@@ -1608,6 +1688,8 @@ static int parse_input_file_name(char const *arg, command_t *cmd)
 				char *tmp;
 
 				tmp = strdup(arg);
+				if (!tmp) exit(1);
+
 				tmp[pathlen] = '\0';
 				push_count_chars(cmd->arglist, tmp);
 
@@ -1660,7 +1742,7 @@ static int parse_output_file_name(char const *arg, command_t *cmd)
 	char const *name;
 	char const *ext;
 	char *newarg = NULL;
-	int pathlen;
+	size_t pathlen;
 
 	cmd->fake_output_name = arg;
 
@@ -2207,21 +2289,27 @@ static int run_mode(command_t *cmd)
 
 		strcpy(libpath, cmd->arglist->vals[0]);
 		add_dotlibs(libpath);
-	l = strrchr(libpath, '/');
-	if (!l) l = strrchr(libpath, '\\');
-	if (l) {
-		*l = '\0';
-		l = libpath;
-	} else {
-		l = ".libs/";
-	}
+#if 0
+		l = strrchr(libpath, '/');
+		if (!l) l = strrchr(libpath, '\\');
+		if (l) {
+			*l = '\0';
+			l = libpath;
+		} else {
+			l = ".libs/";
+		}
+#endif
 
-	l = "./build/lib/.libs";
-	setenv(LD_LIBRARY_PATH_LOCAL, l, 1);
-	rv = run_command(cmd, cmd->arglist);
+		l = "./build/lib/local/.libs";
+		setenv(LD_LIBRARY_PATH_LOCAL, l, 1);
+#ifdef __APPLE__
+		setenv("DYLD_FALLBACK_LIBRARY_PATH", l, 1);
+#endif
+		setenv("FR_LIBRARY_PATH", "./build/lib/local/.libs", 1);
+		rv = run_command(cmd, cmd->arglist);
 		if (rv) goto finish;
 	}
-	  break;
+		break;
 
 	default:
 		break;
@@ -2300,12 +2388,44 @@ static int add_for_runtime(command_t *cmd)
 	}
 	if (cmd->output == OUT_DYNAMIC_LIB_ONLY ||
 		cmd->output == OUT_LIB) {
+		int i;
 		FILE *f=fopen(cmd->fake_output_name,"w");
+		char *lib_so = basename((char *)cmd->module_name.normal);
+		count_chars *dep = cmd->shared_opts.dependencies;
+
 		if (f == NULL) {
 			return -1;
 		}
-		fprintf(f,"%s\n", cmd->install_path);
+		fprintf(f,"# Generated by jlibtool %s\n", VERSION);
+		fprintf(f,"#\n");
+		fprintf(f,"# Please DO NOT delete this file!\n");
+		fprintf(f,"# It is necessary for linking the library.\n");
+		fprintf(f,"\n");
+		fprintf(f,"# The name that we can dlopen(3).\n");
+		fprintf(f,"dlname='%s'\n", lib_so);
+		fprintf(f,"\n");
+
+		fprintf(f,"# Libraries that this one depends upon.\n");
+		fprintf(f,"dependency_libs='");
+		for (i = 0; i < dep->num; i++) {
+			fprintf(f,"%s ", dep->vals[i]);
+		}
+		fprintf(f,"'\n\n");
+
+		fprintf(f,"# Names of this library.\n");
+		fprintf(f,"library_names='%s'\n", lib_so);
+		fprintf(f,"\n");
+		fprintf(f,"# Is this an already installed library?\n");
+		fprintf(f,"installed=yes\n");
+		fprintf(f,"\n");
+		fprintf(f,"# Files to dlopen/dlpreopen\n");
+		fprintf(f,"dlopen=''\n");
+		fprintf(f,"dlpreopen=''\n");
+		fprintf(f,"\n");
+		fprintf(f,"# Directory that this library needs to be installed in:\n");
+		fprintf(f,"libdir='%s'\n", cmd->install_path);
 		fclose(f);
+
 		return(0);
 	} else {
 		return(ensure_fake_uptodate(cmd));
@@ -2407,6 +2527,28 @@ static void parse_args(int argc, char *argv[], command_t *cmd)
 		arg = argv[a];
 		arg_used = 1;
 
+		if (cmd->mode == MODE_EXECUTE) {
+			if (strchr(arg, ' ') == NULL) {
+				push_count_chars(cmd->arglist, arg);
+
+			} else {
+				size_t len;
+				char *sp;
+
+				len = strlen(arg);
+
+				sp = lt_malloc(len + 3);
+				sp[0] = '\'';
+				memcpy(sp + 1, arg, len);
+				sp[len + 1] = '\'';
+				sp[len + 2] = '\0';
+
+				push_count_chars(cmd->arglist, sp);
+			}
+
+			continue;
+		}
+
 		if (arg[0] == '-') {
 			/*
 			 *	Double dashed (long) single dash (short)
@@ -2416,6 +2558,11 @@ static void parse_args(int argc, char *argv[], command_t *cmd)
 				parse_short_opt(arg + 1, cmd);
 
 			if (arg_used) continue;
+
+			/*
+			 *	Ignore all options after the '--execute'
+			 */
+			if (cmd->mode == MODE_EXECUTE) continue;
 
 			/*
 			 *	We haven't done anything with it yet, but

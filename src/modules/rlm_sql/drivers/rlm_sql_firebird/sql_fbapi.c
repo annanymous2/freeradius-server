@@ -15,8 +15,8 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- * Copyright 2006  The FreeRADIUS server project
- * Copyright 2006  Vitaly Bodzhgua <vitaly@eastera.net>
+ * @copyright 2006  The FreeRADIUS server project
+ * @copyright 2006  Vitaly Bodzhgua <vitaly@eastera.net>
  */
 
 RCSID("$Id$")
@@ -113,7 +113,7 @@ int fb_error(rlm_sql_firebird_conn_t *conn)
 		 *	API.
 		 */
 		isc_interprete(&error[0], &pstatus);
-		conn->error = talloc_asprintf(conn, "%s. ", &error[0]);
+		conn->error = talloc_typed_asprintf(conn, "%s. ", &error[0]);
 
 		while (isc_interprete(&error[0], &pstatus)) {
 			conn->error = talloc_asprintf_append(conn->error, "%s. ", &error[0]);
@@ -196,83 +196,85 @@ void fb_store_row(rlm_sql_firebird_conn_t *conn)
 
 			memmove(conn->row[i], var->sqldata, var->sqllen);
 			conn->row[i][var->sqllen] = 0;
-
 			break;
+
 		case SQL_VARYING:
 			vary = (VARY*) var->sqldata;
 			if (conn->row_sizes[i] <= vary->vary_length) {
 				conn->row_sizes[i] = vary->vary_length + 1;
 				conn->row[i] = realloc(conn->row[i],
 						       conn->row_sizes[i]);
-		   	}
+			}
 			memmove(conn->row[i], vary->vary_string, vary->vary_length);
 			conn->row[i][vary->vary_length] = 0;
-
 			break;
 
 		case SQL_FLOAT:
 			snprintf(conn->row[i], conn->row_sizes[i], "%15g",
-				 *(float ISC_FAR *) (var->sqldata));
+				 *(double ISC_FAR *) (var->sqldata));
 			break;
+
 		case SQL_SHORT:
 		case SQL_LONG:
 		case SQL_INT64:
-			{
-				ISC_INT64 value = 0;
-				short field_width = 0;
-				short dscale = 0;
-				char *p;
-				p = conn->row[i];
+		{
+			ISC_INT64 value = 0;
+			short field_width = 0;
+			short dscale = 0;
+			char *p;
+			p = conn->row[i];
 
-				switch (dtype) {
-				case SQL_SHORT:
-					value = (ISC_INT64) *(short *)var->sqldata;
-					field_width = 6;
-					break;
-				case SQL_LONG:
-					value = (ISC_INT64) *(int *)var->sqldata;
-					field_width = 11;
-					break;
-				case SQL_INT64:
-					value = (ISC_INT64) *(ISC_INT64 *)var->sqldata;
-					field_width = 21;
-					break;
-				}
-				dscale = var->sqlscale;
+			switch (dtype) {
+			case SQL_SHORT:
+				value = (ISC_INT64) *(short *)var->sqldata;
+				field_width = 6;
+				break;
 
-				if (dscale < 0) {
-					ISC_INT64 tens;
-					short j;
+			case SQL_LONG:
+				value = (ISC_INT64) *(int *)var->sqldata;
+				field_width = 11;
+				break;
 
-					tens = 1;
-					for (j = 0; j > dscale; j--) {
-						tens *= 10;
-					}
-
-					if (value >= 0) {
-						sprintf(p, "%*lld.%0*lld",
-							field_width - 1 + dscale,
-							(ISC_INT64) value / tens,
-							-dscale,
-							(ISC_INT64) value % tens);
-					} else if ((value / tens) != 0) {
-						sprintf (p, "%*lld.%0*lld",
-							field_width - 1 + dscale,
-							(ISC_INT64) (value / tens),
-							-dscale,
-							(ISC_INT64) -(value % tens));
-					} else {
-						sprintf(p, "%*s.%0*lld", field_width - 1 + dscale,
-							"-0", -dscale, (ISC_INT64) - (value % tens));
-					}
-				} else if (dscale) {
-					sprintf(p, "%*lld%0*d", field_width,
-						(ISC_INT64) value, dscale, 0);
-				} else {
-					sprintf(p, "%*lld", field_width,
-						(ISC_INT64) value);
-				}
+			case SQL_INT64:
+				value = (ISC_INT64) *(ISC_INT64 *)var->sqldata;
+				field_width = 21;
+				break;
 			}
+			dscale = var->sqlscale;
+
+			if (dscale < 0) {
+				ISC_INT64 tens;
+				short j;
+
+				tens = 1;
+				for (j = 0; j > dscale; j--) {
+					tens *= 10;
+				}
+
+				if (value >= 0) {
+					sprintf(p, "%*lld.%0*lld",
+						field_width - 1 + dscale,
+						(ISC_INT64) value / tens,
+						-dscale,
+						(ISC_INT64) value % tens);
+				} else if ((value / tens) != 0) {
+					sprintf (p, "%*lld.%0*lld",
+						field_width - 1 + dscale,
+						(ISC_INT64) (value / tens),
+						-dscale,
+						(ISC_INT64) -(value % tens));
+				} else {
+					sprintf(p, "%*s.%0*lld", field_width - 1 + dscale,
+						"-0", -dscale, (ISC_INT64) - (value % tens));
+				}
+			} else if (dscale) {
+				sprintf(p, "%*lld%0*d", field_width,
+					(ISC_INT64) value, dscale, 0);
+			} else {
+				sprintf(p, "%*lld", field_width,
+					(ISC_INT64) value);
+			}
+		}
 			break;
 
 		case SQL_D_FLOAT:
@@ -317,7 +319,6 @@ void fb_store_row(rlm_sql_firebird_conn_t *conn)
 			snprintf(conn->row[i], conn->row_sizes[i], "%08" ISC_LONG_FMT "x:%08" ISC_LONG_FMT "x",
 				 bid.gds_quad_high, bid.gds_quad_low);
 			break;
-
 		}
 	}
 }
@@ -329,10 +330,9 @@ int fb_init_socket(rlm_sql_firebird_conn_t *conn)
 	conn->sqlda_out->sqln = 5;
 	conn->sqlda_out->version =  SQLDA_VERSION1;
 	conn->sql_dialect = 3;
-#ifdef _PTHREAD_H
+
 	pthread_mutex_init (&conn->mut, NULL);
 	DEBUG("Init mutex %p\n", &conn->mut);
-#endif
 
 	/*
 	 *	Set tpb to read_committed/wait/no_rec_version
@@ -346,7 +346,7 @@ int fb_init_socket(rlm_sql_firebird_conn_t *conn)
 	return 0;
 }
 
-int fb_connect(rlm_sql_firebird_conn_t * conn, rlm_sql_config_t *config)
+int fb_connect(rlm_sql_firebird_conn_t *conn, rlm_sql_config_t *config)
 {
 	char *p;
 	char *database;
@@ -490,6 +490,7 @@ int fb_sql_query(rlm_sql_firebird_conn_t *conn, char const *query) {
 			isc_dsql_execute2(conn->status, &conn->trh, &conn->stmt,
 					  SQL_DIALECT_V6, 0, conn->sqlda_out);
 			break;
+
 		default:
 			isc_dsql_execute(conn->status, &conn->trh, &conn->stmt,
 					 SQL_DIALECT_V6, 0);
@@ -547,9 +548,7 @@ int fb_rollback(rlm_sql_firebird_conn_t *conn) {
 	if (conn->trh)  {
 		isc_rollback_transaction(conn->status, &conn->trh);
 //		conn->in_use = 0;
-#ifdef _PTHREAD_H
 		pthread_mutex_unlock(&conn->mut);
-#endif
 
 		if (IS_ISC_ERROR(conn->status)) {
 			return fb_error(conn);
@@ -561,7 +560,7 @@ int fb_rollback(rlm_sql_firebird_conn_t *conn) {
 int fb_commit(rlm_sql_firebird_conn_t *conn) {
 	conn->sql_code = 0;
 	if (conn->trh)  {
-		isc_commit_transaction (conn->status, &conn->trh);
+		isc_commit_transaction(conn->status, &conn->trh);
 		if (IS_ISC_ERROR(conn->status)) {
 			fb_error(conn);
 			ERROR("Fail to commit. Error: %s. Try to rollback.", conn->error);
@@ -569,8 +568,7 @@ int fb_commit(rlm_sql_firebird_conn_t *conn) {
 		}
 	}
 //	conn->in_use = 0;
-#ifdef _PTHREAD_H
 	pthread_mutex_unlock(&conn->mut);
-#endif
+
 	return conn->sql_code;
 }

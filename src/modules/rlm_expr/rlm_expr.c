@@ -1,7 +1,8 @@
 /*
  *   This program is is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License, version 2 if the
- *   License as published by the Free Software Foundation.
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation; either version 2 of the License, or (at
+ *   your option) any later version.
  *
  *   This program is distributed in the hope that it will be useful,
  *   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -16,18 +17,18 @@
 /**
  * $Id$
  * @file rlm_expr.c
- * @brief Register many xlat expansions including the expr expansion.
+ * @brief Register an xlat expansion to perform basic mathematical operations.
  *
  * @copyright 2001,2006  The FreeRADIUS server project
  * @copyright 2002  Alan DeKok <aland@ox.org>
  */
 RCSID("$Id$")
+USES_APPLE_DEPRECATED_API
 
-#include <freeradius-devel/radiusd.h>
-#include <freeradius-devel/md5.h>
-#include <freeradius-devel/sha1.h>
-#include <freeradius-devel/base64.h>
-#include <freeradius-devel/modules.h>
+#include <freeradius-devel/server/base.h>
+
+#include <freeradius-devel/server/modules.h>
+#include <freeradius-devel/server/rad_assert.h>
 
 #include <ctype.h>
 
@@ -38,28 +39,102 @@ RCSID("$Id$")
  */
 typedef struct rlm_expr_t {
 	char const *xlat_name;
-	char *allowed_chars;
 } rlm_expr_t;
 
-static const CONF_PARSER module_config[] = {
-	{"safe_characters", PW_TYPE_STRING_PTR,
-	 offsetof(rlm_expr_t, allowed_chars), NULL,
-	"@abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_: /"},
-	{NULL, -1, 0, NULL, NULL}
-};
+/** Calculate powers
+ *
+ * @author Orson Peters
+ * @note Borrowed from the gist here: https://gist.github.com/nightcracker/3551590.
+ *
+ * @param base a 32bit signed integer.
+ * @param exp amount to raise base by.
+ * @return base ^ pow, or 0 on underflow/overflow.
+ */
+static int64_t fr_pow(int64_t base, int64_t exp)
+{
+	static const uint8_t highest_bit_set[] = {
+		0, 1, 2, 2, 3, 3, 3, 3,
+		4, 4, 4, 4, 4, 4, 4, 4,
+		5, 5, 5, 5, 5, 5, 5, 5,
+		5, 5, 5, 5, 5, 5, 5, 5,
+		6, 6, 6, 6, 6, 6, 6, 6,
+		6, 6, 6, 6, 6, 6, 6, 6,
+		6, 6, 6, 6, 6, 6, 6, 6,
+		6, 6, 6, 6, 6, 6, 6, 6 // anything past 63 is a guaranteed overflow with base > 1
+	};
 
+	int64_t result = 1;
+
+	if (exp > 63) {
+		if (base == 1) return 1;
+		if (base == -1) return 1 - 2 * (exp & 1);
+		return 0;	/* overflow */
+	}
+
+	switch (highest_bit_set[exp]) {
+	case 6:
+		if (exp & 1) result *= base;
+		exp >>= 1;
+		base *= base;
+		/* FALL-THROUGH */
+	case 5:
+		if (exp & 1) result *= base;
+		exp >>= 1;
+		base *= base;
+		/* FALL-THROUGH */
+	case 4:
+		if (exp & 1) result *= base;
+		exp >>= 1;
+		base *= base;
+		/* FALL-THROUGH */
+	case 3:
+		if (exp & 1) result *= base;
+		exp >>= 1;
+		base *= base;
+		/* FALL-THROUGH */
+	case 2:
+		if (exp & 1) result *= base;
+		exp >>= 1;
+		base *= base;
+		/* FALL-THROUGH */
+	case 1:
+		if (exp & 1) result *= base;
+		/* FALL-THROUGH */
+	default:
+		return result;
+	}
+}
+
+/*
+ *	Start of expression calculator.
+ */
 typedef enum expr_token_t {
-  TOKEN_NONE = 0,
-  TOKEN_INTEGER,
-  TOKEN_ADD,
-  TOKEN_SUBTRACT,
-  TOKEN_DIVIDE,
-  TOKEN_REMAINDER,
-  TOKEN_MULTIPLY,
-  TOKEN_AND,
-  TOKEN_OR,
-  TOKEN_LAST
+	TOKEN_NONE = 0,
+	TOKEN_INTEGER,
+
+	TOKEN_AND,
+	TOKEN_OR,
+
+	TOKEN_LSHIFT,
+	TOKEN_RSHIFT,
+
+	TOKEN_ADD,
+	TOKEN_SUBTRACT,
+
+	TOKEN_DIVIDE,
+	TOKEN_REMAINDER,
+	TOKEN_MULTIPLY,
+
+	TOKEN_POWER,
+	TOKEN_LAST
 } expr_token_t;
+
+static int precedence[TOKEN_LAST + 1] = {
+	0, 0, 1, 1,		/* and or */
+	2, 2, 3, 3,		/* shift add */
+	4, 4, 4, 5,		/* mul, pow */
+	0
+};
 
 typedef struct expr_map_t {
 	char op;
@@ -75,594 +150,378 @@ static expr_map_t map[] =
 	{'%',	TOKEN_REMAINDER },
 	{'&',	TOKEN_AND },
 	{'|',	TOKEN_OR },
+	{'^',	TOKEN_POWER },
 	{0,	TOKEN_LAST}
 };
 
-/*
- *	Lookup tables for randstr char classes
- */
-static char randstr_punc[] = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
-static char randstr_salt[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmopqrstuvwxyz/.";
+static bool get_expression(REQUEST *request, char const **string, int64_t *answer, expr_token_t prev);
 
-static int get_number(REQUEST *request, char const **string, int64_t *answer)
+static bool get_number(REQUEST *request, char const **string, int64_t *answer)
 {
-	int		i, found;
-	int64_t		result;
-	int64_t		x;
-	char const 	*p;
-	expr_token_t	this;
+	int64_t x;
+	bool invert = false;
+	bool negative = false;
+	char const *p = *string;
+	vp_tmpl_t *vpt = NULL;
 
 	/*
-	 *  Loop over the input.
+	 *	Look for a number.
 	 */
-	result = 0;
-	this = TOKEN_NONE;
+	while (isspace((int) *p)) p++;
 
-	for (p = *string; *p != '\0'; /* nothing */) {
-		if ((*p == ' ') ||
-		    (*p == '\t')) {
-			p++;
-			continue;
-		}
-
-		/*
-		 *  Discover which token it is.
-		 */
-		found = false;
-		for (i = 0; map[i].token != TOKEN_LAST; i++) {
-			if (*p == map[i].op) {
-				if (this != TOKEN_NONE) {
-					RDEBUG2("Invalid operator at \"%s\"", p);
-					return -1;
-				}
-				this = map[i].token;
-				p++;
-				found = true;
-				break;
-			}
-		}
-
-		/*
-		 *  Found the algebraic operator.  Get the next number.
-		 */
-		if (found) {
-			continue;
-		}
-
-		/*
-		 *  End of a group.  Stop.
-		 */
-		if (*p == ')') {
-			if (this != TOKEN_NONE) {
-				RDEBUG2("Trailing operator before end sub-expression at \"%s\"", p);
-				return -1;
-			}
-			p++;
-			break;
-		}
-
-		/*
-		 *  Start of a group.  Call ourselves recursively.
-		 */
-		if (*p == '(') {
-			p++;
-
-			found = get_number(request, &p, &x);
-			if (found < 0) {
-				return -1;
-			}
-		} else {
-			/*
-			 *  No algrebraic operator found, the next thing
-			 *  MUST be a number.
-			 *
-			 *  If it isn't, then we die.
-			 */
-			if ((*p == '0') && (p[1] == 'x')) {
-				char *end;
-
-				x = strtoul(p, &end, 16);
-				p = end;
-				goto calc;
-			}
-
-
-			if ((*p < '0') || (*p > '9')) {
-				RDEBUG2("Not a number at \"%s\"", p);
-				return -1;
-			}
-
-			/*
-			 *  This is doing it the hard way, but it also allows
-			 *  us to increment 'p'.
-			 */
-			x = 0;
-			while ((*p >= '0') && (*p <= '9')) {
-				x *= 10;
-				x += (*p - '0');
-				p++;
-			}
-		}
-
-	calc:
-		switch (this) {
-		default:
-		case TOKEN_NONE:
-			result = x;
-			break;
-
-		case TOKEN_ADD:
-			result += x;
-			break;
-
-		case TOKEN_SUBTRACT:
-			result -= x;
-			break;
-
-		case TOKEN_DIVIDE:
-			if (x == 0) {
-				result = 0; /* we don't have NaN for integers */
-				break;
-			}
-			result /= x;
-			break;
-
-		case TOKEN_REMAINDER:
-			if (x == 0) {
-				result = 0; /* we don't have NaN for integers */
-				break;
-			}
-			result %= x;
-			break;
-
-		case TOKEN_MULTIPLY:
-			result *= x;
-			break;
-
-		case TOKEN_AND:
-			result &= x;
-			break;
-
-		case TOKEN_OR:
-			result |= x;
-			break;
-		}
-
-		/*
-		 *  We've used this token.
-		 */
-		this = TOKEN_NONE;
+	/*
+	 *	~1 == 0xff...ffe
+	 */
+	if (*p == '~') {
+		invert = true;
+		p++;
 	}
 
 	/*
-	 *  And return the answer to the caller.
+	 *  No algrebraic operator found, the next thing
+	 *  MUST be a number.
+	 *
+	 *  If it isn't, then we die.
 	 */
+	if ((*p == '0') && (p[1] == 'x')) {
+		char *end;
+
+		x = strtoul(p, &end, 16);
+		p = end;
+		goto done;
+	}
+
+	if (*p == '-') {
+		negative = true;
+		p++;
+	}
+
+	/*
+	 *	Look for an attribute.
+	 */
+	if (*p == '&') {
+		int		i, max, err;
+		ssize_t		slen;
+		VALUE_PAIR	*vp;
+		fr_cursor_t	cursor;
+
+		p += 1;
+
+		slen = tmpl_afrom_attr_substr(request, &vpt, p, &(vp_tmpl_rules_t){ .dict_def = request->dict });
+		if (slen <= 0) {
+			RPEDEBUG("Failed parsing attribute name '%s'", p);
+			return false;
+		}
+
+		p += slen;
+
+		if (vpt->tmpl_num == NUM_COUNT) {
+			REDEBUG("Attribute count is not supported");
+			return false;
+		}
+
+		if (vpt->tmpl_num == NUM_ALL) {
+			max = 65535;
+		} else {
+			max = 1;
+		}
+
+		x = 0;
+		for (i = 0, vp = tmpl_cursor_init(&err, &cursor, request, vpt);
+		     (i < max) && (vp != NULL);
+		     i++, vp = fr_cursor_next(&cursor)) {
+			int64_t y;
+
+			if (vp->vp_type != FR_TYPE_UINT64) {
+				fr_value_box_t	value;
+
+				if (fr_value_box_cast(vp, &value, FR_TYPE_UINT64, NULL, &vp->data) < 0) {
+					RPEDEBUG("Failed converting &%.*s to an integer value", (int) vpt->len,
+						 vpt->name);
+					return false;
+				}
+				if (value.vb_uint64 > INT64_MAX) {
+				overflow:
+					talloc_free(vpt);
+					REDEBUG("Value of &%.*s (%"PRIu64 ") would overflow a signed 64bit integer "
+						"(our internal arithmetic type)", (int)vpt->len, vpt->name, value.vb_uint64);
+					return false;
+				}
+				y = (int64_t)value.vb_uint64;
+
+				RINDENT();
+				RDEBUG3("&%.*s --> %" PRIu64, (int)vpt->len, vpt->name, y);
+				REXDENT();
+			} else {
+				if (vp->vp_uint64 > INT64_MAX) goto overflow;
+				y = (int64_t)vp->vp_uint64;
+			}
+
+			/*
+			 *	Check for overflow without actually overflowing.
+			 */
+			if ((y > 0) && (x > (int64_t) INT64_MAX - y)) goto overflow;
+
+			if ((y < 0) && (x < (int64_t) INT64_MIN - y)) goto overflow;
+
+			x += y;
+		} /* loop over all found VPs */
+
+		if (err != 0) {
+			RWDEBUG("Can't find &%.*s.  Using 0 as operand value", (int)vpt->len, vpt->name);
+			goto done;
+		}
+
+		goto done;
+	}
+
+	/*
+	 *	Do brackets recursively
+	 */
+	if (*p == '(') {
+		p++;
+		if (!get_expression(request, &p, &x, TOKEN_NONE)) return false;
+
+		if (*p != ')') {
+			RDEBUG("No trailing ')'");
+			return false;
+		}
+		p++;
+		goto done;
+	}
+
+	if ((*p < '0') || (*p > '9')) {
+		RDEBUG2("Not a number at \"%s\"", p);
+		return false;
+	}
+
+	/*
+	 *  This is doing it the hard way, but it also allows
+	 *  us to increment 'p'.
+	 */
+	x = 0;
+	while ((*p >= '0') && (*p <= '9')) {
+		x *= 10;
+		x += (*p - '0');
+		p++;
+	}
+
+done:
+	if (vpt) talloc_free(vpt);
+
+	if (invert) x = ~x;
+
+	if (negative) x = -x;
+
 	*string = p;
-	*answer = result;
-	return 0;
+	*answer = x;
+	return true;
+}
+
+static bool calc_result(REQUEST *request, int64_t lhs, expr_token_t op, int64_t rhs, int64_t *answer)
+{
+	switch (op) {
+	default:
+	case TOKEN_SUBTRACT:
+		rhs = -rhs;
+		/* FALL-THROUGH */
+
+	case TOKEN_ADD:
+		if ((rhs > 0) && (lhs > (int64_t) INT64_MAX - rhs)) {
+		overflow:
+			REDEBUG("Numerical overflow in expression!");
+			return false;
+		}
+
+		if ((rhs < 0) && (lhs < (int64_t) INT64_MIN - rhs)) goto overflow;
+
+		*answer = lhs + rhs;
+		break;
+
+	case TOKEN_DIVIDE:
+		if (rhs == 0) {
+			REDEBUG("Division by zero in expression!");
+			return false;
+		}
+
+		*answer = lhs / rhs;
+		break;
+
+	case TOKEN_REMAINDER:
+		if (rhs == 0) {
+			RDEBUG("Division by zero!");
+			return false;
+		}
+
+		*answer = lhs % rhs;
+		break;
+
+	case TOKEN_MULTIPLY:
+		*answer = lhs * rhs;
+		break;
+
+	case TOKEN_LSHIFT:
+		if (rhs > 63) {
+			RDEBUG("Shift must be less than 63 (was %lld)", (long long int) rhs);
+			return false;
+		}
+
+		*answer = lhs << rhs;
+		break;
+
+	case TOKEN_RSHIFT:
+		if (rhs > 63) {
+			RDEBUG("Shift must be less than 63 (was %lld)", (long long int) rhs);
+			return false;
+		}
+
+		*answer = lhs >> rhs;
+		break;
+
+	case TOKEN_AND:
+		*answer = lhs & rhs;
+		break;
+
+	case TOKEN_OR:
+		*answer = lhs | rhs;
+		break;
+
+	case TOKEN_POWER:
+		if (rhs > 63) {
+			REDEBUG("Exponent must be between 0-63 (was %lld)", (long long int) rhs);
+			return false;
+		}
+
+		if (lhs > 65535) {
+			REDEBUG("Base must be between 0-65535 (was %lld)", (long long int) lhs);
+			return false;
+		}
+
+		*answer = fr_pow(lhs, rhs);
+		break;
+	}
+
+	return true;
+}
+
+static bool get_operator(REQUEST *request, char const **string, expr_token_t *op)
+{
+	int		i;
+	char const	*p = *string;
+
+	/*
+	 *	All tokens are one character.
+	 */
+	for (i = 0; map[i].token != TOKEN_LAST; i++) {
+		if (*p == map[i].op) {
+			*op = map[i].token;
+			*string = p + 1;
+			return true;
+		}
+	}
+
+	if ((p[0] == '<') && (p[1] == '<')) {
+		*op = TOKEN_LSHIFT;
+		*string = p + 2;
+		return true;
+	}
+
+	if ((p[0] == '>') && (p[1] == '>')) {
+		*op = TOKEN_RSHIFT;
+		*string = p + 2;
+		return true;
+	}
+
+	REDEBUG("Expected operator at \"%s\"", p);
+
+	return false;
+}
+
+
+static bool get_expression(REQUEST *request, char const **string, int64_t *answer, expr_token_t prev)
+{
+	int64_t		lhs, rhs;
+	char const 	*p, *op_p;
+	expr_token_t	this;
+
+	p = *string;
+
+	if (!get_number(request, &p, &lhs)) return false;
+
+redo:
+	while (isspace((int) *p)) p++;
+
+	/*
+	 *	A number by itself is OK.
+	 */
+	if (!*p || (*p == ')')) {
+		*answer = lhs;
+		*string = p;
+		return true;
+	}
+
+	/*
+	 *	Peek at the operator.
+	 */
+	op_p = p;
+	if (!get_operator(request, &p, &this)) return false;
+
+	/*
+	 *	a + b + c ... = (a + b) + c ...
+	 *	a * b + c ... = (a * b) + c ...
+	 *
+	 *	Feed the current number to the caller, who will take
+	 *	care of continuing.
+	 */
+	if (precedence[this] <= precedence[prev]) {
+		*answer = lhs;
+		*string = op_p;
+		return true;
+	}
+
+	/*
+	 *	a + b * c ... = a + (b * c) ...
+	 */
+	if (!get_expression(request, &p, &rhs, this)) return false;
+
+	if (!calc_result(request, lhs, this, rhs, answer)) return false;
+
+	/*
+	 *	There may be more to calculate.  The answer we
+	 *	calculated here is now the LHS of the lower priority
+	 *	operation which follows the current expression.  e.g.
+	 *
+	 *	a * b + c ... = (a * b) + c ...
+	 *	              =       d + c ...
+	 */
+	lhs = *answer;
+	goto redo;
 }
 
 /*
  *  Do xlat of strings!
  */
-static ssize_t expr_xlat(UNUSED void *instance, REQUEST *request, char const *fmt,
-			 char *out, size_t outlen)
-{
-	int		rcode;
-	int64_t		result;
-	char const 	*p;
-
-	p = fmt;
-	rcode = get_number(request, &p, &result);
-	if (rcode < 0) {
-		return -1;
-	}
-
-	/*
-	 *  We MUST have eaten the entire input string.
-	 */
-	if (*p != '\0') {
-		RDEBUG2("Failed at %s", p);
-		return -1;
-	}
-
-	snprintf(out, outlen, "%ld", (long int) result);
-	return strlen(out);
-}
-
-/**
- *  @brief Generate a random integer value
- *
- */
-static ssize_t rand_xlat(UNUSED void *instance, UNUSED REQUEST *request, char const *fmt,
-			 char *out, size_t outlen)
+static ssize_t expr_xlat(UNUSED TALLOC_CTX *ctx, char **out, size_t outlen,
+			 UNUSED void const *mod_inst, UNUSED void const *xlat_inst,
+			 REQUEST *request, char const *fmt)
 {
 	int64_t		result;
-
-	result = atoi(fmt);
-
-	/*
-	 *	Too small or too big.
-	 */
-	if (result <= 0) {
-		*out = '\0';
-		return -1;
-	}
-	if (result >= (1 << 30)) result = (1 << 30);
-
-	result *= fr_rand();	/* 0..2^32-1 */
-	result >>= 32;
-
-	snprintf(out, outlen, "%ld", (long int) result);
-	return strlen(out);
-}
-
-/**
- *  @brief Generate a string of random chars
- *
- *  Build strings of random chars, useful for generating tokens and passcodes
- *  Format similar to String::Random.
- */
-static ssize_t randstr_xlat(UNUSED void *instance, UNUSED REQUEST *request,
-			    char const *fmt, char *out, size_t outlen)
-{
 	char const 	*p;
-	unsigned int	result;
-	size_t		freespace = outlen;
-
-	if (outlen <= 1) return 0;
-
-	*out = '\0';
 
 	p = fmt;
-	while (*p && (--freespace > 0)) {
-		result = fr_rand();
-		switch (*p) {
-			/*
-			 *  Lowercase letters
-			 */
-			case 'c':
-				*out++ = 'a' + (result % 26);
-				break;
 
-			/*
-			 *  Uppercase letters
-			 */
-			case 'C':
-				*out++ = 'A' + (result % 26);
-				break;
-
-			/*
-			 *  Numbers
-			 */
-			case 'n':
-				*out++ = '0' + (result % 10);
-				break;
-
-			/*
-			 *  Alpha numeric
-			 */
-			case 'a':
-				*out++ = randstr_salt[result % (sizeof(randstr_salt) - 3)];
-				break;
-
-			/*
-			 *  Punctuation
-			 */
-			case '!':
-				*out++ = randstr_punc[result % (sizeof(randstr_punc) - 1)];
-				break;
-
-			/*
-			 *  Alpa numeric + punctuation
-			 */
-			case '.':
-				*out++ = '!' + (result % 95);
-				break;
-
-			/*
-			 *  Alpha numeric + salt chars './'
-			 */
-			case 's':
-				*out++ = randstr_salt[result % (sizeof(randstr_salt) - 1)];
-				break;
-
-			/*
-			 *  Binary data as hexits (we don't really support
-			 *  non printable chars).
-			 */
-			case 'h':
-				if (freespace < 2) {
-					break;
-				}
-
-				snprintf(out, 3, "%02x", result % 256);
-
-				/* Already decremented */
-				freespace -= 1;
-				out += 2;
-				break;
-
-			default:
-				ERROR("rlm_expr: invalid character class '%c'", *p);
-
-				return -1;
-		}
-
-		p++;
-	}
-
-	*out++ = '\0';
-
-	return outlen - freespace;
-}
-
-/**
- * @brief URLencode special characters
- *
- * Example: "%{urlquote:http://example.org/}" == "http%3A%47%47example.org%47"
- */
-static ssize_t urlquote_xlat(UNUSED void *instance, UNUSED REQUEST *request,
-			     char const *fmt, char *out, size_t outlen)
-{
-	char const 	*p;
-	size_t	freespace = outlen;
-
-	if (outlen <= 1) return 0;
-
-	p = fmt;
-	while (*p && (--freespace > 0)) {
-		if (isalnum(*p)) {
-			*out++ = *p++;
-			continue;
-		}
-
-		switch (*p) {
-			case '-':
-			case '_':
-			case '.':
-			case '~':
-				*out++ = *p++;
-				break;
-			default:
-				if (freespace < 3)
-					break;
-
-				snprintf(out, 4, "%%%02x", *p++); /* %xx */
-
-				/* Already decremented */
-				freespace -= 2;
-				out += 3;
-		}
-	}
-
-	*out = '\0';
-
-	return outlen - freespace;
-}
-
-/**
- * @brief Equivalent to the old safe_characters functionality in rlm_sql
- *
- * @verbatim Example: "%{escape:<img>foo.jpg</img>}" == "=60img=62foo.jpg=60=/img=62" @endverbatim
- */
-static ssize_t escape_xlat(UNUSED void *instance, UNUSED REQUEST *request,
-			   char const *fmt, char *out, size_t outlen)
-{
-	rlm_expr_t *inst = instance;
-	char const 	*p;
-	size_t	freespace = outlen;
-
-	if (outlen <= 1) return 0;
-
-	p = fmt;
-	while (*p && (--freespace > 0)) {
-		/*
-		 *	Non-printable characters get replaced with their
-		 *	mime-encoded equivalents.
-		 */
-		if ((*p > 31) && strchr(inst->allowed_chars, *p)) {
-			*out++ = *p++;
-			continue;
-		}
-
-		if (freespace < 3)
-			break;
-
-		snprintf(out, 4, "=%02X", *p++);
-
-		/* Already decremented */
-		freespace -= 2;
-		out += 3;
-	}
-
-	*out = '\0';
-
-	return outlen - freespace;
-}
-
-/**
- * @brief Convert a string to lowercase
- *
- * Example "%{lc:Bar}" == "bar"
- *
- * Probably only works for ASCII
- */
-static ssize_t lc_xlat(UNUSED void *instance, UNUSED REQUEST *request,
-		       char const *fmt, char *out, size_t outlen)
-{
-	char *q;
-	char const *p;
-
-	if (outlen <= 1) return 0;
-
-	for (p = fmt, q = out; *p != '\0'; p++, outlen--) {
-		if (outlen <= 1) break;
-
-		*(q++) = tolower((int) *p);
-	}
-
-	*q = '\0';
-
-	return strlen(out);
-}
-
-/**
- * @brief Convert a string to uppercase
- *
- * Example: "%{uc:Foo}" == "FOO"
- *
- * Probably only works for ASCII
- */
-static ssize_t uc_xlat(UNUSED void *instance, UNUSED REQUEST *request,
-		       char const *fmt, char *out, size_t outlen)
-{
-	char *q;
-	char const *p;
-
-	if (outlen <= 1) return 0;
-
-	for (p = fmt, q = out; *p != '\0'; p++, outlen--) {
-		if (outlen <= 1) break;
-
-		*(q++) = toupper((int) *p);
-	}
-
-	*q = '\0';
-
-	return strlen(out);
-}
-
-/**
- * @brief Calculate the MD5 hash of a string.
- *
- * Example: "%{md5:foo}" == "acbd18db4cc2f85cedef654fccc4a4d8"
- */
-static ssize_t md5_xlat(UNUSED void *instance, UNUSED REQUEST *request,
-		        char const *fmt, char *out, size_t outlen)
-{
-	uint8_t digest[16];
-	int i, len;
-	FR_MD5_CTX ctx;
-
-	/*
-	 *	We need room for at least one octet of output.
-	 */
-	if (outlen < 3) {
-		*out = '\0';
-		return 0;
-	}
-
-	fr_MD5Init(&ctx);
-	fr_MD5Update(&ctx, (const void *) fmt, strlen(fmt));
-	fr_MD5Final(digest, &ctx);
-
-	/*
-	 *	Each digest octet takes two hex digits, plus one for
-	 *	the terminating NUL.
-	 */
-	len = (outlen / 2) - 1;
-	if (len > 16) len = 16;
-
-	for (i = 0; i < len; i++) {
-		snprintf(out + i * 2, 3, "%02x", digest[i]);
-	}
-
-	return strlen(out);
-}
-
-/**
- * @brief Calculate the SHA1 hash of a string.
- *
- * Example: "%{sha1:foo}" == "0beec7b5ea3f0fdbc95d0dd47f3c5bc275da8a33"
- */
-static ssize_t sha1_xlat(UNUSED void *instance, UNUSED REQUEST *request,
-                         char const *fmt, char *out, size_t outlen)
-{
-        uint8_t digest[20];
-        int i, len;
-        fr_SHA1_CTX ctx;
-
-        /*
-         *      We need room for at least one octet of output.
-         */
-        if (outlen < 3) {
-                *out = '\0';
-                return 0;
-        }
-
-        fr_SHA1Init(&ctx);
-        fr_SHA1Update(&ctx, (const void *) fmt, strlen(fmt));
-        fr_SHA1Final(digest, &ctx);
-
-        /*
-         *      Each digest octet takes two hex digits, plus one for
-         *      the terminating NUL. SHA1 is 160 bits (20 bytes)
-         */
-        len = (outlen / 2) - 1;
-        if (len > 20) len = 20;
-
-        for (i = 0; i < len; i++) {
-                snprintf(out + i * 2, 3, "%02x", digest[i]);
-        }
-
-        return strlen(out);
-}
-
-/**
- * @brief Encode string as base64
- *
- * Example: "%{tobase64:foo}" == "Zm9v"
- */
-static ssize_t base64_xlat(UNUSED void *instance, UNUSED REQUEST *request,
-			   char const *fmt, char *out, size_t outlen)
-{
-	ssize_t len;
-
-	len = strlen(fmt);
-
-	/*
-	 *  We can accurately calculate the length of the output string
-	 *  if it's larger than outlen, the output would be useless so abort.
-	 */
-	if ((len < 0) || ((FR_BASE64_ENC_LENGTH(len) + 1) > (ssize_t) outlen)) {
-		REDEBUG("xlat failed");
-		*out = '\0';
+	if (!get_expression(request, &p, &result, TOKEN_NONE)) {
 		return -1;
 	}
 
-	return fr_base64_encode((const uint8_t *) fmt, len, out, outlen);
-}
-
-/**
- * @brief Convert base64 to hex
- *
- * Example: "%{base64tohex:Zm9v}" == "666f6f"
- */
-static ssize_t base64_to_hex_xlat(UNUSED void *instance, UNUSED REQUEST *request,
-				  char const *fmt, char *out, size_t outlen)
-{
-	uint8_t decbuf[1024];
-
-	ssize_t declen;
-	ssize_t len = strlen(fmt);
-
-	*out = '\0';
-
-	declen = fr_base64_decode(fmt, len, decbuf, sizeof(decbuf));
-	if (declen < 0) {
-		REDEBUG("Base64 string invalid");
+	if (*p) {
+		RDEBUG("Invalid text after expression: %s", p);
 		return -1;
 	}
 
-	if ((size_t)((declen * 2) + 1) > outlen) {
-		REDEBUG("Base64 conversion failed, output buffer exhausted, needed %zd bytes, have %zd bytes",
-			(declen * 2) + 1, outlen);
-	}
-
-	return fr_bin2hex(out, decbuf, declen);
+	snprintf(*out, outlen, "%lld", (long long int) result);
+	return strlen(*out);
 }
-
 
 /*
  *	Do any per-module initialization that is separate to each
@@ -674,7 +533,7 @@ static ssize_t base64_to_hex_xlat(UNUSED void *instance, UNUSED REQUEST *request
  *	that must be referenced in later calls, store a handle to it
  *	in *instance otherwise put a null pointer there.
  */
-static int mod_instantiate(CONF_SECTION *conf, void *instance)
+static int mod_bootstrap(void *instance, CONF_SECTION *conf)
 {
 	rlm_expr_t *inst = instance;
 
@@ -683,26 +542,8 @@ static int mod_instantiate(CONF_SECTION *conf, void *instance)
 		inst->xlat_name = cf_section_name1(conf);
 	}
 
-	xlat_register(inst->xlat_name, expr_xlat, NULL, inst);
+	xlat_register(inst, inst->xlat_name, expr_xlat, NULL, NULL, 0, XLAT_DEFAULT_BUF_LEN, true);
 
-	/*
-	 *	FIXME: unregister these, too
-	 */
-	xlat_register("rand", rand_xlat, NULL, inst);
-	xlat_register("randstr", randstr_xlat, NULL, inst);
-	xlat_register("urlquote", urlquote_xlat, NULL, inst);
-	xlat_register("escape", escape_xlat, NULL, inst);
-	xlat_register("tolower", lc_xlat, NULL, inst);
-	xlat_register("toupper", uc_xlat, NULL, inst);
-	xlat_register("md5", md5_xlat, NULL, inst);
-	xlat_register("sha1", sha1_xlat, NULL, inst);
-	xlat_register("tobase64", base64_xlat, NULL, inst);
-	xlat_register("base64tohex", base64_to_hex_xlat, NULL, inst);
-
-	/*
-	 *	Initialize various paircompare functions
-	 */
-	pair_builtincompare_add(instance);
 	return 0;
 }
 
@@ -715,18 +556,10 @@ static int mod_instantiate(CONF_SECTION *conf, void *instance)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-module_t rlm_expr = {
-	RLM_MODULE_INIT,
-	"expr",				/* Name */
-	RLM_TYPE_CHECK_CONFIG_SAFE,   	/* type */
-	sizeof(rlm_expr_t),
-	module_config,
-	mod_instantiate,		/* instantiation */
-	NULL,				/* detach */
-	{
-		NULL,			/* authentication */
-		NULL,			/* authorization */
-		NULL,			/* pre-accounting */
-		NULL			/* accounting */
-	},
+extern rad_module_t rlm_expr;
+rad_module_t rlm_expr = {
+	.magic		= RLM_MODULE_INIT,
+	.name		= "expr",
+	.inst_size	= sizeof(rlm_expr_t),
+	.bootstrap	= mod_bootstrap,
 };

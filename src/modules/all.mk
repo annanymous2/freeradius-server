@@ -4,6 +4,12 @@
 #
 CFLAGS += -DIS_MODULE=1
 
+
+SUBMAKEFILES := $(wildcard ${top_srcdir}/src/modules/rlm_*/all.mk)
+SUBMAKEFILES += $(wildcard ${top_srcdir}/src/modules/proto_*/all.mk)
+
+EXT_MODULES := $(subst ${top_srcdir}/,,$(wildcard ${top_srcdir}/src/modules/*_ext))
+
 #
 #  If we haven't run configure, ignore the modules which require it.
 #  Otherwise, load in all of the module makefiles, including ones
@@ -11,10 +17,11 @@ CFLAGS += -DIS_MODULE=1
 #  duplicates.
 #
 ifeq "$(CONFIGURE_ARGS)" ""
-SUBMAKEFILES := $(wildcard ${top_srcdir}/src/modules/rlm_*/all.mk)
-else
-SUBMAKEFILES := $(sort $(wildcard ${top_srcdir}/src/modules/rlm_*/all.mk) \
-		$(patsubst %.in,%,$(wildcard ${top_srcdir}/src/modules/rlm_*/all.mk.in)))
+NEEDS_CONFIG := $(patsubst %.in,%,$(foreach file,$(SUBMAKEFILES),$(wildcard $(file).in)))
+SUBMAKEFILES := $(sort $(SUBMAKEFILES) $(NEEDS_CONFIG))
 endif
 
-SUBMAKEFILES += $(wildcard ${top_srcdir}/src/modules/proto_*/all.mk)
+ifneq "$(MAKECMDGOALS)" "reconfig"
+src/modules/%/configure: src/modules/%/configure.ac
+	@echo WARNING - may need "'make reconfig'" for AUTOCONF $(dir $@)
+endif

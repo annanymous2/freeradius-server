@@ -1,3 +1,4 @@
+#pragma once
 /*
  * eap_ttls.h
  *
@@ -17,30 +18,33 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * Copyright 2003 Alan DeKok <aland@freeradius.org>
- * Copyright 2006 The FreeRADIUS server project
+ * @copyright 2003 Alan DeKok <aland@freeradius.org>
+ * @copyright 2006 The FreeRADIUS server project
  */
-#ifndef _EAP_TTLS_H
-#define _EAP_TTLS_H
-
 RCSIDH(eap_ttls_h, "$Id$")
 
 #include "eap_tls.h"
 
 typedef struct ttls_tunnel_t {
 	VALUE_PAIR	*username;
-	VALUE_PAIR	*state;
-	VALUE_PAIR	*accept_vps;
-	int		authenticated;
-	int		default_method;
-	int		copy_request_to_tunnel;
-	int		use_tunneled_reply;
+	bool		authenticated;
 	char const	*virtual_server;
 } ttls_tunnel_t;
+
+extern fr_dict_attr_t const *attr_eap_tls_require_client_cert;
+extern fr_dict_attr_t const *attr_proxy_to_realm;
+extern fr_dict_attr_t const *attr_chap_challenge;
+extern fr_dict_attr_t const *attr_ms_chap2_success;
+extern fr_dict_attr_t const *attr_eap_message;
+extern fr_dict_attr_t const *attr_freeradius_proxied_to;
+extern fr_dict_attr_t const *attr_ms_chap_challenge;
+extern fr_dict_attr_t const *attr_reply_message;
+extern fr_dict_attr_t const *attr_eap_channel_binding_message;
+extern fr_dict_attr_t const *attr_user_name;
+extern fr_dict_attr_t const *attr_user_password;
+extern fr_dict_attr_t const *attr_vendor_specific;
 
 /*
  *	Process the TTLS portion of an EAP-TTLS request.
  */
-PW_CODE eapttls_process(eap_handler_t *handler, tls_session_t *tls_session);
-
-#endif /* _EAP_TTLS_H */
+FR_CODE eap_ttls_process(eap_session_t *eap_session, tls_session_t *tls_session) CC_HINT(nonnull);

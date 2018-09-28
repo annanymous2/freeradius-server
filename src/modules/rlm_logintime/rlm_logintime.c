@@ -1,7 +1,8 @@
 /*
  *   This program is is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License, version 2 if the
- *   License as published by the Free Software Foundation.
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation; either version 2 of the License, or (at
+ *   your option) any later version.
  *
  *   This program is distributed in the hope that it will be useful,
  *   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,8 +24,8 @@
  */
 RCSID("$Id$")
 
-#include <freeradius-devel/radiusd.h>
-#include <freeradius-devel/modules.h>
+#include <freeradius-devel/server/base.h>
+#include <freeradius-devel/server/modules.h>
 
 #include <ctype.h>
 
@@ -39,25 +40,40 @@ int		timestr_match(char const *, time_t);
  *	be used as the instance handle.
  */
 typedef struct rlm_logintime_t {
-	int min_time;
+	uint32_t	min_time;
 } rlm_logintime_t;
 
-/*
- *	A mapping of configuration file names to internal variables.
- *
- *	Note that the string is dynamically allocated, so it MUST
- *	be freed.  When the configuration file parse re-reads the string,
- *	it free's the old one, and strdup's the new one, placing the pointer
- *	to the strdup'd string into 'config.string'.  This gets around
- *	buffer over-flows.
- */
 static const CONF_PARSER module_config[] = {
-  { "minimum-timeout", PW_TYPE_INTEGER | PW_TYPE_DEPRECATED, offsetof(rlm_logintime_t,min_time), NULL, NULL},
-  { "minimum_timeout", PW_TYPE_INTEGER, offsetof(rlm_logintime_t,min_time), NULL, "60" },
-
-  { NULL, -1, 0, NULL, NULL }
+  { FR_CONF_OFFSET("minimum_timeout", FR_TYPE_UINT32, rlm_logintime_t, min_time), .dflt = "60" },
+	CONF_PARSER_TERMINATOR
 };
 
+static fr_dict_t *dict_freeradius;
+static fr_dict_t *dict_radius;
+
+extern fr_dict_autoload_t rlm_logintime_dict[];
+fr_dict_autoload_t rlm_logintime_dict[] = {
+	{ .out = &dict_freeradius, .proto = "freeradius" },
+	{ .out = &dict_radius, .proto = "radius" },
+	{ NULL }
+};
+
+static fr_dict_attr_t const *attr_current_time;
+static fr_dict_attr_t const *attr_login_time;
+static fr_dict_attr_t const *attr_time_of_day;
+
+static fr_dict_attr_t const *attr_session_timeout;
+
+extern fr_dict_attr_autoload_t rlm_logintime_dict_attr[];
+fr_dict_attr_autoload_t rlm_logintime_dict_attr[] = {
+	{ .out = &attr_current_time, .name = "Current-Time", .type = FR_TYPE_STRING, .dict = &dict_freeradius },
+	{ .out = &attr_login_time, .name = "Login-Time", .type = FR_TYPE_STRING, .dict = &dict_freeradius },
+	{ .out = &attr_time_of_day, .name = "Time-Of-Day", .type = FR_TYPE_STRING, .dict = &dict_freeradius },
+
+	{ .out = &attr_session_timeout, .name = "User-Name", .type = FR_TYPE_STRING, .dict = &dict_radius },
+
+	{ NULL }
+};
 
 /*
  *      Compare the current time to a range.
@@ -68,9 +84,7 @@ static int timecmp(UNUSED void *instance, REQUEST *req, UNUSED VALUE_PAIR *reque
 	/*
 	 *      If there's a request, use that timestamp.
 	 */
-	if (timestr_match(check->vp_strvalue,
-	req ? req->timestamp : time(NULL)) >= 0)
-		return 0;
+	if (timestr_match(check->vp_strvalue, req ? req->packet->timestamp.tv_sec : time(NULL)) >= 0) return 0;
 
 	return -1;
 }
@@ -79,26 +93,21 @@ static int timecmp(UNUSED void *instance, REQUEST *req, UNUSED VALUE_PAIR *reque
 /*
  *	Time-Of-Day support
  */
-static int time_of_day(UNUSED void *instance, REQUEST *req, UNUSED VALUE_PAIR *request, VALUE_PAIR *check,
+static int time_of_day(UNUSED void *instance, REQUEST *request,
+		       UNUSED VALUE_PAIR *request_pairs, VALUE_PAIR *check,
 		       UNUSED VALUE_PAIR *check_pairs, UNUSED VALUE_PAIR **reply_pairs)
 {
-	int scan;
-	int hhmmss, when;
-	char const *p;
-	struct tm *tm, s_tm;
-
-	/*
-	 *	Must be called with a request pointer.
-	 */
-	if (!req) return -1;
+	int		scan;
+	int		hhmmss, when;
+	char const	*p;
+	struct tm	*tm, s_tm;
 
 	if (strspn(check->vp_strvalue, "0123456789: ") != strlen(check->vp_strvalue)) {
-		DEBUG("rlm_logintime: Bad Time-Of-Day value \"%s\"",
-		      check->vp_strvalue);
+		RDEBUG2("Bad Time-Of-Day value \"%s\"", check->vp_strvalue);
 		return -1;
 	}
 
-	tm = localtime_r(&req->timestamp, &s_tm);
+	tm = localtime_r(&request->packet->timestamp.tv_sec, &s_tm);
 	hhmmss = (tm->tm_hour * 3600) + (tm->tm_min * 60) + tm->tm_sec;
 
 	/*
@@ -108,8 +117,7 @@ static int time_of_day(UNUSED void *instance, REQUEST *req, UNUSED VALUE_PAIR *r
 	scan = atoi(p);
 	p = strchr(p, ':');
 	if ((scan > 23) || !p) {
-		DEBUG("rlm_logintime: Bad Time-Of-Day value \"%s\"",
-		      check->vp_strvalue);
+		RDEBUG2("Bad Time-Of-Day value \"%s\"", check->vp_strvalue);
 		return -1;
 	}
 	when = scan * 3600;
@@ -117,8 +125,7 @@ static int time_of_day(UNUSED void *instance, REQUEST *req, UNUSED VALUE_PAIR *r
 
 	scan = atoi(p);
 	if (scan > 59) {
-		DEBUG("rlm_logintime: Bad Time-Of-Day value \"%s\"",
-		      check->vp_strvalue);
+		RDEBUG2("Bad Time-Of-Day value \"%s\"", check->vp_strvalue);
 		return -1;
 	}
 	when += scan * 60;
@@ -127,8 +134,7 @@ static int time_of_day(UNUSED void *instance, REQUEST *req, UNUSED VALUE_PAIR *r
 	if (p) {
 		scan = atoi(p + 1);
 		if (scan > 59) {
-			DEBUG("rlm_logintime: Bad Time-Of-Day value \"%s\"",
-			      check->vp_strvalue);
+			RDEBUG2("Bad Time-Of-Day value \"%s\"", check->vp_strvalue);
 			return -1;
 		}
 		when += scan;
@@ -143,16 +149,14 @@ static int time_of_day(UNUSED void *instance, REQUEST *req, UNUSED VALUE_PAIR *r
 /*
  *      Check if account has expired, and if user may login now.
  */
-static rlm_rcode_t mod_authorize(void *instance, REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_authorize(void *instance, UNUSED void *thread, REQUEST *request)
 {
-	rlm_logintime_t *inst = instance;
-	VALUE_PAIR *ends, *timeout;
-	int left;
+	rlm_logintime_t const	*inst = instance;
+	VALUE_PAIR		*ends, *vp;
+	int32_t			left;
 
-	ends = pairfind(request->config_items, PW_LOGIN_TIME, 0, TAG_ANY);
-	if (!ends) {
-		return RLM_MODULE_NOOP;
-	}
+	ends = fr_pair_find_by_da(request->control, attr_login_time, TAG_ANY);
+	if (!ends) return RLM_MODULE_NOOP;
 
 	/*
 	 *      Authentication is OK. Now see if this user may login at this time of the day.
@@ -162,22 +166,21 @@ static rlm_rcode_t mod_authorize(void *instance, REQUEST *request)
 	/*
 	 *	Compare the time the request was received with the current Login-Time value
 	 */
-	left = timestr_match(ends->vp_strvalue, request->timestamp);
+	left = timestr_match(ends->vp_strvalue, request->packet->timestamp.tv_sec);
+	if (left < 0) return RLM_MODULE_USERLOCK; /* outside of the allowed time */
 
 	/*
 	 *      Do nothing, login time is not controlled (unendsed).
 	 */
-	if (left == 0) {
-		return RLM_MODULE_OK;
-	}
+	if (left == 0) return RLM_MODULE_OK;
 
 	/*
-	 *      The min_time setting is to deal with NAS that won't allow Session-Timeout values below a certain value
-	 *	For example some Alcatel Lucent products won't allow a Session-Timeout < 300 (5 minutes).
+	 *      The min_time setting is to deal with NAS that won't allow Session-vp values below a certain value
+	 *	For example some Alcatel Lucent products won't allow a Session-vp < 300 (5 minutes).
 	 *
 	 *	We don't know were going to get another chance to lock out the user, so we need to do it now.
 	 */
-	if (left < inst->min_time) {
+	if ((uint32_t)left < inst->min_time) {
 		REDEBUG("Login outside of allowed time-slot (session end %s, with lockout %i seconds before)",
 			ends->vp_strvalue, inst->min_time);
 
@@ -187,22 +190,28 @@ static rlm_rcode_t mod_authorize(void *instance, REQUEST *request)
 	/* else left > inst->min_time */
 
 	/*
-	 *	There's time left in the users session, inform the NAS by including a Session-Timeout
+	 *	There's time left in the users session, inform the NAS by including a Session-vp
 	 *	attribute in the reply, or modifying the existing one.
 	 */
-	RDEBUG("Login within allowed time-slot, %i seconds left in this session", left);
+	RDEBUG("Login within allowed time-slot, %d seconds left in this session", left);
 
-	timeout = pairfind(request->reply->vps, PW_SESSION_TIMEOUT, 0, TAG_ANY);
-	if (timeout) {	/* just update... */
-		if (timeout->vp_integer > (unsigned int) left) {
-			timeout->vp_integer = left;
+	switch (pair_update_reply(&vp, attr_session_timeout)) {
+	case 1:
+		/* just update... */
+		if (vp->vp_uint32 > (uint32_t)left) {
+			vp->vp_uint32 = (uint32_t)left;
+			RDEBUG("&reply:Session-Timeout := %pV", &vp->data);
 		}
-	} else {
-		timeout = radius_paircreate(request, &request->reply->vps, PW_SESSION_TIMEOUT, 0);
-		timeout->vp_integer = left;
-	}
+		break;
 
-	RDEBUG("reply:Session-Timeout set to %i", left);
+	case 0:	/* no pre-existing */
+		vp->vp_uint32 = (uint32_t)left;
+		RDEBUG("&reply:Session-Timeout := %pV", &vp->data);
+		break;
+
+	case -1: /* malloc failure */
+		MEM(NULL);
+	}
 
 	return RLM_MODULE_OK;
 }
@@ -218,28 +227,21 @@ static rlm_rcode_t mod_authorize(void *instance, REQUEST *request)
  *	that must be referenced in later calls, store a handle to it
  *	in *instance otherwise put a null pointer there.
  */
-static int mod_instantiate(CONF_SECTION *conf, void *instance)
+static int mod_instantiate(void *instance, CONF_SECTION *conf)
 {
 	rlm_logintime_t *inst = instance;
 
 	if (inst->min_time == 0) {
-		cf_log_err_cs(conf, "Invalid value '0' for minimum_timeout");
+		cf_log_err(conf, "Invalid value '0' for minimum_timeout");
 		return -1;
 	}
 
 	/*
 	 * Register a Current-Time comparison function
 	 */
-	paircompare_register(dict_attrbyvalue(PW_CURRENT_TIME, 0), NULL, true, timecmp, inst);
-	paircompare_register(dict_attrbyvalue(PW_TIME_OF_DAY, 0), NULL, true, time_of_day, inst);
+	paircmp_register(attr_current_time, NULL, true, timecmp, inst);
+	paircmp_register(attr_time_of_day, NULL, true, time_of_day, inst);
 
-	return 0;
-}
-
-static int mod_detach(UNUSED void *instance)
-{
-	paircompare_unregister(dict_attrbyvalue(PW_CURRENT_TIME, 0), timecmp);
-	paircompare_unregister(dict_attrbyvalue(PW_TIME_OF_DAY, 0), time_of_day);
 	return 0;
 }
 
@@ -252,22 +254,15 @@ static int mod_detach(UNUSED void *instance)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-module_t rlm_logintime = {
-	RLM_MODULE_INIT,
-	"logintime",
-	RLM_TYPE_CHECK_CONFIG_SAFE,   	/* type */
-	sizeof(rlm_logintime_t),
-	module_config,
-	mod_instantiate,		/* instantiation */
-	mod_detach,		/* detach */
-	{
-		NULL,			/* authentication */
-		mod_authorize, 	/* authorization */
-		NULL,			/* preaccounting */
-		NULL,			/* accounting */
-		NULL,			/* checksimul */
-		NULL,			/* pre-proxy */
-		NULL,			/* post-proxy */
-		NULL			/* post-auth */
+extern rad_module_t rlm_logintime;
+rad_module_t rlm_logintime = {
+	.magic		= RLM_MODULE_INIT,
+	.name		= "logintime",
+	.inst_size	= sizeof(rlm_logintime_t),
+	.config		= module_config,
+	.instantiate	= mod_instantiate,
+	.methods = {
+		[MOD_AUTHORIZE]		= mod_authorize,
+		[MOD_POST_AUTH]		= mod_authorize
 	},
 };

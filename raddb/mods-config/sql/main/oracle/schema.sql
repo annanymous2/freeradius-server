@@ -34,16 +34,22 @@ CREATE TABLE radacct (
 	servicetype		VARCHAR(32),
 	framedprotocol		VARCHAR(32),
 	framedipaddress		VARCHAR(15),
+	framedipv6address	VARCHAR(44),
+	framedipv6prefix	VARCHAR(44),
+	framedinterfaceid	VARCHAR(44),
+	delegatedipv6prefix	VARCHAR(44),
 	acctstartdelay		NUMERIC(12),
 	acctstopdelay		NUMERIC(12),
 	XAscendSessionSvrKey	VARCHAR(10)
 );
 
-CREATE UNIUQE INDEX radacct_idx0
+CREATE UNIQUE INDEX radacct_idx0
 	ON radacct(acctuniqueid);
 CREATE UNIQUE INDEX radacct_idx1
 	ON radacct(acctsessionid,username,acctstarttime,
-		acctstoptime,nasipaddress,framedipaddress);
+		acctstoptime,nasipaddress,framedipaddress,framedipv6address,framedipv6prefix,framedinterfaceid,delegatedipv6prefix);
+CREATE INDEX radacct_idx2
+        ON radacct(acctstoptime,nasipaddress,acctstarttime);
 
 CREATE SEQUENCE radacct_seq START WITH 1 INCREMENT BY 1;
 
@@ -171,44 +177,44 @@ CREATE TABLE realms (
 CREATE SEQUENCE realms_seq START WITH 1 INCREMENT BY 1;
 
 CREATE TABLE radhuntgroup (
-        id              INT PRIMARY KEY,
-        GroupName VARCHAR(64) NOT NULL,
-        Nasipaddress VARCHAR(15) UNIQUE NOT NULL,
-        NASPortID VARCHAR(15)
+	id              INT PRIMARY KEY,
+	GroupName VARCHAR(64) NOT NULL,
+	Nasipaddress VARCHAR(15) UNIQUE NOT NULL,
+	NASPortID VARCHAR(15)
 );
 
 CREATE SEQUENCE radhuntgroup_seq START WITH 1 INCREMENT BY 1;
 
 CREATE OR REPLACE TRIGGER radhuntgroup_serialnumber
-        BEFORE INSERT OR UPDATE OF id ON radhuntgroup
-        FOR EACH ROW
-        BEGIN
-                if ( :new.id = 0 or :new.id is null ) then
-                        SELECT radhuntgroup_seq.nextval into :new.id from dual;
-                end if;
-        END;
+	BEFORE INSERT OR UPDATE OF id ON radhuntgroup
+	FOR EACH ROW
+	BEGIN
+		if ( :new.id = 0 or :new.id is null ) then
+			SELECT radhuntgroup_seq.nextval into :new.id from dual;
+		end if;
+	END;
 
 CREATE TABLE radpostauth (
-          id            INT PRIMARY KEY,
-          UserName      VARCHAR(64) NOT NULL,
-          Pass          VARCHAR(64),
-          Reply         VARCHAR(64),
-          AuthDate 	DATE
+	  id            INT PRIMARY KEY,
+	  UserName      VARCHAR(64) NOT NULL,
+	  Pass          VARCHAR(64),
+	  Reply         VARCHAR(64),
+	  AuthDate 	DATE
 );
 
 CREATE SEQUENCE radpostauth_seq START WITH 1 INCREMENT BY 1;
 
 CREATE OR REPLACE TRIGGER radpostauth_TRIG
-        BEFORE INSERT OR UPDATE OF id ON radpostauth
-        FOR EACH ROW
-        BEGIN
-                if ( :new.id = 0 or :new.id is null ) then
-                        SELECT radpostauth_seq.nextval into :new.id from dual;
-                end if;
-                if (:new.AuthDate is null) then
-                  select sysdate into :new.AuthDate from dual;
-                end if;
-        END;
+	BEFORE INSERT OR UPDATE OF id ON radpostauth
+	FOR EACH ROW
+	BEGIN
+		if ( :new.id = 0 or :new.id is null ) then
+			SELECT radpostauth_seq.nextval into :new.id from dual;
+		end if;
+		if (:new.AuthDate is null) then
+		  select sysdate into :new.AuthDate from dual;
+		end if;
+	END;
 
 /
 
@@ -216,15 +222,15 @@ CREATE OR REPLACE TRIGGER radpostauth_TRIG
  * Table structure for table 'nas'
  */
 CREATE TABLE nas (
-        id              INT PRIMARY KEY,
-        nasname         VARCHAR(128),
-        shortname       VARCHAR(32),
-        type            VARCHAR(30),
-        ports           INT,
-        secret          VARCHAR(60),
-        server          VARCHAR(64),
-        community       VARCHAR(50),
-        description     VARCHAR(200)
+	id              INT PRIMARY KEY,
+	nasname         VARCHAR(128),
+	shortname       VARCHAR(32),
+	type            VARCHAR(30),
+	ports           INT,
+	secret          VARCHAR(60),
+	server          VARCHAR(64),
+	community       VARCHAR(50),
+	description     VARCHAR(200)
 );
 CREATE SEQUENCE nas_seq START WITH 1 INCREMENT BY 1;
 

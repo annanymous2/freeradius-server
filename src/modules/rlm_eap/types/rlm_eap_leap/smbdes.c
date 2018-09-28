@@ -4,8 +4,8 @@
    a partial implementation of DES designed for use in the
    SMB authentication protocol
 
-   Copyright (C) Andrew Tridgell 1998
-   Copyright 2006 The FreeRADIUS server project
+   @copyright Andrew Tridgell 1998
+   @copyright 2006 The FreeRADIUS server project
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -310,30 +310,11 @@ static void smbhash(unsigned char *out, unsigned char const *in, unsigned char *
 }
 
 /*
- *	Converts the password to uppercase, and creates the LM
- *	password hash.
- */
-void eapleap_lmpwdhash(unsigned char const *password, unsigned char *lmhash)
-{
-	int i;
-	unsigned char p14[14];
-	static unsigned char sp8[8] = {0x4b, 0x47, 0x53, 0x21, 0x40, 0x23, 0x24, 0x25};
-
-	memset(p14, 0, sizeof(p14));
-	for (i = 0; i < 14 && password[i]; i++) {
-		p14[i] = toupper((int) password[i]);
-	}
-
-	smbhash(lmhash, sp8, p14);
-	smbhash(lmhash+8, sp8, p14+7);
-}
-
-/*
  *	Take the NT or LM password, and return the MSCHAP response
  *
  *	The win_password MUST be exactly 16 bytes long.
  */
-void eapleap_mschap(unsigned char const *win_password, unsigned char const *challenge, unsigned char *response)
+void eap_leap_mschap(unsigned char const *win_password, unsigned char const *challenge, unsigned char *response)
 {
 	unsigned char p21[21];
 

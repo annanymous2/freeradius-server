@@ -1,7 +1,8 @@
 /*
  *   This program is is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License, version 2 if the
- *   License as published by the Free Software Foundation.
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation; either version 2 of the License, or (at
+ *   your option) any later version.
  *
  *   This program is distributed in the hope that it will be useful,
  *   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,116 +24,104 @@
  */
 RCSID("$Id$")
 
-#include	<freeradius-devel/radiusd.h>
-#include	<freeradius-devel/modules.h>
+#include	<freeradius-devel/server/base.h>
+#include	<freeradius-devel/server/modules.h>
 
 #include	<ctype.h>
 #include	<fcntl.h>
-#include	<limits.h>
 
 typedef struct rlm_files_t {
-	char *compat_mode;
+	char const *key;
 
-	char *key;
-
-	char *filename;
-	fr_hash_table_t *common;
+	char const *filename;
+	rbtree_t *common;
 
 	/* autz */
-	char *usersfile;
-	fr_hash_table_t *users;
+	char const *usersfile;
+	rbtree_t *users;
 
 
 	/* authenticate */
-	char *auth_usersfile;
-	fr_hash_table_t *auth_users;
+	char const *auth_usersfile;
+	rbtree_t *auth_users;
 
 	/* preacct */
-	char *acctusersfile;
-	fr_hash_table_t *acctusers;
+	char const *acct_usersfile;
+	rbtree_t *acct_users;
 
 #ifdef WITH_PROXY
 	/* pre-proxy */
-	char *preproxy_usersfile;
-	fr_hash_table_t *preproxy_users;
+	char const *preproxy_usersfile;
+	rbtree_t *preproxy_users;
 
 	/* post-proxy */
-	char *postproxy_usersfile;
-	fr_hash_table_t *postproxy_users;
+	char const *postproxy_usersfile;
+	rbtree_t *postproxy_users;
 #endif
 
 	/* post-authenticate */
-	char *postauth_usersfile;
-	fr_hash_table_t *postauth_users;
+	char const *postauth_usersfile;
+	rbtree_t *postauth_users;
 } rlm_files_t;
 
+static fr_dict_t *dict_freeradius;
+
+extern fr_dict_autoload_t rlm_files_dict[];
+fr_dict_autoload_t rlm_files_dict[] = {
+	{ .out = &dict_freeradius, .proto = "freeradius" },
+	{ NULL }
+};
+
+static fr_dict_attr_t const *attr_fall_through;
+
+extern fr_dict_attr_autoload_t rlm_files_dict_attr[];
+fr_dict_attr_autoload_t rlm_files_dict_attr[] = {
+	{ .out = &attr_fall_through, .name = "Fall-Through", .type = FR_TYPE_BOOL, .dict = &dict_freeradius },
+
+	{ NULL }
+};
 
 /*
  *     See if a VALUE_PAIR list contains Fall-Through = Yes
  */
-static int fallthrough(VALUE_PAIR *vp)
+static int fall_through(VALUE_PAIR *vp)
 {
 	VALUE_PAIR *tmp;
-	tmp = pairfind(vp, PW_FALL_THROUGH, 0, TAG_ANY);
+	tmp = fr_pair_find_by_da(vp, attr_fall_through, TAG_ANY);
 
-	return tmp ? tmp->vp_integer : 0;
+	return tmp ? tmp->vp_uint32 : 0;
 }
 
 static const CONF_PARSER module_config[] = {
-	{ "filename",	   PW_TYPE_FILE_INPUT,
-	  offsetof(rlm_files_t,filename), NULL, NULL },
-	{ "usersfile",	   PW_TYPE_FILE_INPUT,
-	  offsetof(rlm_files_t,usersfile), NULL, NULL },
-	{ "acctusersfile", PW_TYPE_FILE_INPUT,
-	  offsetof(rlm_files_t,acctusersfile), NULL, NULL },
+	{ FR_CONF_OFFSET("filename", FR_TYPE_FILE_INPUT, rlm_files_t, filename) },
+	{ FR_CONF_OFFSET("usersfile", FR_TYPE_FILE_INPUT, rlm_files_t, usersfile) },
+	{ FR_CONF_OFFSET("acctusersfile", FR_TYPE_FILE_INPUT, rlm_files_t, acct_usersfile) },
 #ifdef WITH_PROXY
-	{ "preproxy_usersfile", PW_TYPE_FILE_INPUT,
-	  offsetof(rlm_files_t,preproxy_usersfile), NULL, NULL },
-	{ "postproxy_usersfile", PW_TYPE_FILE_INPUT,
-	  offsetof(rlm_files_t,postproxy_usersfile), NULL, NULL },
+	{ FR_CONF_OFFSET("preproxy_usersfile", FR_TYPE_FILE_INPUT, rlm_files_t, preproxy_usersfile) },
+	{ FR_CONF_OFFSET("postproxy_usersfile", FR_TYPE_FILE_INPUT, rlm_files_t, postproxy_usersfile) },
 #endif
-	{ "auth_usersfile", PW_TYPE_FILE_INPUT,
-	  offsetof(rlm_files_t,auth_usersfile), NULL, NULL },
-	{ "postauth_usersfile", PW_TYPE_FILE_INPUT,
-	  offsetof(rlm_files_t,postauth_usersfile), NULL, NULL },
-	{ "compat",	   PW_TYPE_STRING_PTR,
-	  offsetof(rlm_files_t,compat_mode), NULL, "cistron" },
-	{ "key",	   PW_TYPE_STRING_PTR,
-	  offsetof(rlm_files_t,key), NULL, NULL },
-	{ NULL, -1, 0, NULL, NULL }
+	{ FR_CONF_OFFSET("auth_usersfile", FR_TYPE_FILE_INPUT, rlm_files_t, auth_usersfile) },
+	{ FR_CONF_OFFSET("postauth_usersfile", FR_TYPE_FILE_INPUT, rlm_files_t, postauth_usersfile) },
+	{ FR_CONF_OFFSET("key", FR_TYPE_STRING | FR_TYPE_XLAT, rlm_files_t, key) },
+	CONF_PARSER_TERMINATOR
 };
 
 
-static uint32_t pairlist_hash(void const *data)
-{
-	return fr_hash_string(((PAIR_LIST const *)data)->name);
-}
-
 static int pairlist_cmp(void const *a, void const *b)
 {
-	return strcmp(((PAIR_LIST const *)a)->name,
-		      ((PAIR_LIST const *)b)->name);
+	return strcmp(((PAIR_LIST const *)a)->name, ((PAIR_LIST const *)b)->name);
 }
 
-static void my_pairlist_free(void *data)
-{
-	PAIR_LIST *pl = data;
-
-	pairlist_free(&pl);
-}
-
-
-static int getusersfile(TALLOC_CTX *ctx, char const *filename, fr_hash_table_t **pht,
-			char *compat_mode_str)
+static int getusersfile(TALLOC_CTX *ctx, char const *filename, rbtree_t **ptree)
 {
 	int rcode;
 	PAIR_LIST *users = NULL;
 	PAIR_LIST *entry, *next;
-	fr_hash_table_t *ht, *tailht;
-	int order = 0;
+	PAIR_LIST *user_list, *default_list, **default_tail;
+	rbtree_t *tree;
 
 	if (!filename) {
-		*pht = NULL;
+		*ptree = NULL;
 		return 0;
 	}
 
@@ -142,26 +131,14 @@ static int getusersfile(TALLOC_CTX *ctx, char const *filename, fr_hash_table_t *
 	}
 
 	/*
-	 *	Walk through the 'users' file list, if we're debugging,
-	 *	or if we're in compat_mode.
+	 *	Walk through the 'users' file list, if we're debugging.
 	 */
-	if ((debug_flag) ||
-	    (strcmp(compat_mode_str, "cistron") == 0)) {
+	if (rad_debug_lvl) {
 		VALUE_PAIR *vp;
-		int compat_mode = false;
-
-		if (strcmp(compat_mode_str, "cistron") == 0) {
-			compat_mode = true;
-		}
 
 		entry = users;
 		while (entry) {
-			vp_cursor_t cursor;
-			if (compat_mode) {
-				DEBUG("[%s]:%d Cistron compatibility checks for entry %s ...",
-						filename, entry->lineno,
-						entry->name);
-			}
+			fr_cursor_t cursor;
 
 			/*
 			 *	Look for improper use of '=' in the
@@ -170,7 +147,9 @@ static int getusersfile(TALLOC_CTX *ctx, char const *filename, fr_hash_table_t *
 			 *	and probably ':=' for server
 			 *	configuration items.
 			 */
-			for (vp = paircursor(&cursor, &entry->check); vp; vp = pairnext(&cursor)) {
+			for (vp = fr_cursor_init(&cursor, &entry->check);
+			     vp;
+			     vp = fr_cursor_next(&cursor)) {
 				/*
 				 *	Ignore attributes which are set
 				 *	properly.
@@ -184,50 +163,15 @@ static int getusersfile(TALLOC_CTX *ctx, char const *filename, fr_hash_table_t *
 				 *	or it's a wire protocol,
 				 *	ensure it has '=='.
 				 */
-				if ((vp->da->vendor != 0) ||
-						(vp->da->attr < 0x100)) {
-					if (!compat_mode) {
-						WDEBUG("[%s]:%d Changing '%s =' to '%s =='\n\tfor comparing RADIUS attribute in check item list for user %s",
-								filename, entry->lineno,
-								vp->da->name, vp->da->name,
-								entry->name);
-					} else {
-						DEBUG("\tChanging '%s =' to '%s =='",
-								vp->da->name, vp->da->name);
-					}
+				if ((fr_dict_vendor_num_by_da(vp->da) != 0) ||
+				    (vp->da->attr < 0x100)) {
+					WARN("[%s]:%d Changing '%s =' to '%s =='\n\tfor comparing RADIUS attribute in check item list for user %s",
+					     filename, entry->lineno,
+					     vp->da->name, vp->da->name,
+					     entry->name);
 					vp->op = T_OP_CMP_EQ;
 					continue;
 				}
-
-				/*
-				 *	Cistron Compatibility mode.
-				 *
-				 *	Re-write selected attributes
-				 *	to be '+=', instead of '='.
-				 *
-				 *	All others get set to '=='
-				 */
-				if (compat_mode) {
-					/*
-					 *	Non-wire attributes become +=
-					 *
-					 *	On the write attributes
-					 *	become ==
-					 */
-					if ((vp->da->attr >= 0x100) &&
-							(vp->da->attr <= 0xffff) &&
-							(vp->da->attr != PW_HINT) &&
-							(vp->da->attr != PW_HUNTGROUP_NAME)) {
-						DEBUG("\tChanging '%s =' to '%s +='", vp->da->name, vp->da->name);
-
-						vp->op = T_OP_ADD;
-					} else {
-						DEBUG("\tChanging '%s =' to '%s =='", vp->da->name, vp->da->name);
-
-						vp->op = T_OP_CMP_EQ;
-					}
-				}
-
 			} /* end of loop over check items */
 
 			/*
@@ -237,7 +181,9 @@ static int getusersfile(TALLOC_CTX *ctx, char const *filename, fr_hash_table_t *
 			 *	It's a common enough mistake, that it's
 			 *	worth doing.
 			 */
-			for (vp = paircursor(&cursor, &entry->reply); vp; vp = pairnext(&cursor)) {
+			for (vp = fr_cursor_init(&cursor, &entry->reply);
+			     vp;
+			     vp = fr_cursor_next(&cursor)) {
 				/*
 				 *	If it's NOT a vendor attribute,
 				 *	and it's NOT a wire protocol
@@ -245,10 +191,8 @@ static int getusersfile(TALLOC_CTX *ctx, char const *filename, fr_hash_table_t *
 				 *	then bitch about it, giving a
 				 *	good warning message.
 				 */
-				 if ((vp->da->vendor == 0) &&
-					(vp->da->attr > 0xff) &&
-					(vp->da->attr > 1000)) {
-					WDEBUG("[%s]:%d Check item \"%s\"\n"
+				 if (fr_dict_attr_is_top_level(vp->da) && (vp->da->attr > 1000)) {
+					WARN("[%s]:%d Check item \"%s\"\n"
 					       "\tfound in reply item list for user \"%s\".\n"
 					       "\tThis attribute MUST go on the first line"
 					       " with the other check items", filename, entry->lineno, vp->da->name,
@@ -258,83 +202,82 @@ static int getusersfile(TALLOC_CTX *ctx, char const *filename, fr_hash_table_t *
 
 			entry = entry->next;
 		}
-
 	}
 
-	ht = fr_hash_table_create(pairlist_hash, pairlist_cmp,
-				    my_pairlist_free);
-	if (!ht) {
+	tree = rbtree_create(ctx, pairlist_cmp, NULL, RBTREE_FLAG_NONE);
+	if (!tree) {
 		pairlist_free(&users);
 		return -1;
 	}
 
-	tailht = fr_hash_table_create(pairlist_hash, pairlist_cmp,
-					NULL);
-	if (!tailht) {
-		fr_hash_table_free(ht);
-		pairlist_free(&users);
-		return -1;
-	}
+	default_list = NULL;
+	default_tail = &default_list;
 
 	/*
-	 *	Now that we've read it in, put the entries into a hash
-	 *	for faster access.
+	 *	We've read the entries in linearly, but putting them
+	 *	into an indexed data structure would be much faster.
+	 *	Let's go fix that now.
 	 */
 	for (entry = users; entry != NULL; entry = next) {
-		PAIR_LIST *tail;
-
+		/*
+		 *	Remove this entry from the input list.
+		 */
 		next = entry->next;
 		entry->next = NULL;
-		entry->order = order++;
+		(void) talloc_steal(tree, entry);
 
 		/*
-		 *	Insert it into the hash table, and remember
-		 *	the tail of the linked list.
+		 *	DEFAULT entries get their own list.
 		 */
-		tail = fr_hash_table_finddata(tailht, entry);
-		if (!tail) {
+		if (strcmp(entry->name, "DEFAULT") == 0) {
+			if (!default_list) {
+				default_list = entry;
+
+				/*
+				 *	Insert the first DEFAULT into the tree.
+				 */
+				if (!rbtree_insert(tree, entry)) {
+				error:
+					pairlist_free(&entry);
+					pairlist_free(&next);
+					talloc_free(tree);
+					return -1;
+				}
+
+			} else {
+				/*
+				 *	Tack this entry onto the tail
+				 *	of the DEFAULT list.
+				 */
+				*default_tail = entry;
+			}
+
+			default_tail = &entry->next;
+			continue;
+		}
+
+		/*
+		 *	Not DEFAULT, must be a normal user.
+		 */
+		user_list = rbtree_finddata(tree, entry);
+		if (!user_list) {
 			/*
-			 *	Insert it into the head & tail.
+			 *	Insert the first one.
 			 */
-			if (!fr_hash_table_insert(ht, entry) ||
-			    !fr_hash_table_insert(tailht, entry)) {
-				pairlist_free(&next);
-				fr_hash_table_free(ht);
-				fr_hash_table_free(tailht);
-				return -1;
-			}
+			if (!rbtree_insert(tree, entry)) goto error;
 		} else {
-			tail->next = entry;
-			if (!fr_hash_table_replace(tailht, entry)) {
-				pairlist_free(&next);
-				fr_hash_table_free(ht);
-				fr_hash_table_free(tailht);
-				return -1;
-			}
+			/*
+			 *	Find the tail of this list, and add it
+			 *	there.
+			 */
+			while (user_list->next) user_list = user_list->next;
+
+			user_list->next = entry;
 		}
 	}
 
-	fr_hash_table_free(tailht);
-	*pht = ht;
+	*ptree = tree;
 
-	return 0;
-}
-
-/*
- *	Clean up.
- */
-static int mod_detach(void *instance)
-{
-	rlm_files_t *inst = instance;
-	fr_hash_table_free(inst->common);
-	fr_hash_table_free(inst->users);
-	fr_hash_table_free(inst->acctusers);
-#ifdef WITH_PROXY
-	fr_hash_table_free(inst->preproxy_users);
-	fr_hash_table_free(inst->postproxy_users);
-#endif
-	fr_hash_table_free(inst->auth_users);
-	fr_hash_table_free(inst->postauth_users);
 	return 0;
 }
 
@@ -343,16 +286,16 @@ static int mod_detach(void *instance)
 /*
  *	(Re-)read the "users" file into memory.
  */
-static int mod_instantiate(UNUSED CONF_SECTION *conf, void *instance)
+static int mod_instantiate(void *instance, UNUSED CONF_SECTION *conf)
 {
 	rlm_files_t *inst = instance;
 
 #undef READFILE
-#define READFILE(_x, _y) do { if (getusersfile(inst, inst->_x, &inst->_y, inst->compat_mode) != 0) { ERROR("Failed reading %s", inst->_x); mod_detach(inst);return -1;} } while (0)
+#define READFILE(_x, _y) do { if (getusersfile(inst, inst->_x, &inst->_y) != 0) { ERROR("Failed reading %s", inst->_x); return -1;} } while (0)
 
 	READFILE(filename, common);
 	READFILE(usersfile, users);
-	READFILE(acctusersfile, acctusers);
+	READFILE(acct_usersfile, acct_users);
 
 #ifdef WITH_PROXY
 	READFILE(preproxy_usersfile, preproxy_users);
@@ -368,15 +311,14 @@ static int mod_instantiate(UNUSED CONF_SECTION *conf, void *instance)
 /*
  *	Common code called by everything below.
  */
-static rlm_rcode_t file_common(rlm_files_t *inst, REQUEST *request,
-		       char const *filename, fr_hash_table_t *ht,
-		       VALUE_PAIR *request_pairs, VALUE_PAIR **reply_pairs)
+static rlm_rcode_t file_common(rlm_files_t const *inst, REQUEST *request, char const *filename, rbtree_t *tree,
+			       RADIUS_PACKET *request_packet, RADIUS_PACKET *reply_packet)
 {
-	char const	*name, *match;
-	VALUE_PAIR	*check_tmp;
-	VALUE_PAIR	*reply_tmp;
+	char const	*name;
+	VALUE_PAIR	*check_tmp = NULL;
+	VALUE_PAIR	*reply_tmp = NULL;
 	PAIR_LIST const *user_pl, *default_pl;
-	int		found = 0;
+	bool		found = false;
 	PAIR_LIST	my_pl;
 	char		buffer[256];
 
@@ -388,7 +330,7 @@ static rlm_rcode_t file_common(rlm_files_t *inst, REQUEST *request,
 	} else {
 		int len;
 
-		len = radius_xlat(buffer, sizeof(buffer), request, inst->key, NULL, NULL);
+		len = xlat_eval(buffer, sizeof(buffer), request, inst->key, NULL, NULL);
 		if (len < 0) {
 			return RLM_MODULE_FAIL;
 		}
@@ -396,78 +338,77 @@ static rlm_rcode_t file_common(rlm_files_t *inst, REQUEST *request,
 		name = len ? buffer : "NONE";
 	}
 
-	if (!ht) return RLM_MODULE_NOOP;
+	if (!tree) return RLM_MODULE_NOOP;
 
 	my_pl.name = name;
-	user_pl = fr_hash_table_finddata(ht, &my_pl);
+	user_pl = rbtree_finddata(tree, &my_pl);
 	my_pl.name = "DEFAULT";
-	default_pl = fr_hash_table_finddata(ht, &my_pl);
+	default_pl = rbtree_finddata(tree, &my_pl);
 
 	/*
 	 *	Find the entry for the user.
 	 */
 	while (user_pl || default_pl) {
-		vp_cursor_t cursor;
+		fr_cursor_t cursor;
 		VALUE_PAIR *vp;
 		PAIR_LIST const *pl;
 
+		/*
+		 *	Figure out which entry to match on.
+		 */
+
 		if (!default_pl && user_pl) {
 			pl = user_pl;
-			match = name;
 			user_pl = user_pl->next;
 
 		} else if (!user_pl && default_pl) {
 			pl = default_pl;
-			match = "DEFAULT";
 			default_pl = default_pl->next;
 
 		} else if (user_pl->order < default_pl->order) {
 			pl = user_pl;
-			match = name;
 			user_pl = user_pl->next;
 
 		} else {
 			pl = default_pl;
-			match = "DEFAULT";
 			default_pl = default_pl->next;
 		}
 
-		check_tmp = paircopy(request, pl->check);
-		for (vp = paircursor(&cursor, &check_tmp);
+		MEM(fr_pair_list_copy(request, &check_tmp, pl->check) >= 0);
+		for (vp = fr_cursor_init(&cursor, &check_tmp);
 		     vp;
-		     vp = pairnext(&cursor)) {
-			if (radius_xlat_do(request, vp) < 0) {
+		     vp = fr_cursor_next(&cursor)) {
+			if (xlat_eval_pair(request, vp) < 0) {
 				RWARN("Failed parsing expanded value for check item, skipping entry: %s", fr_strerror());
-				pairfree(&check_tmp);
+				fr_pair_list_free(&check_tmp);
 				continue;
 			}
 		}
 
-		if (paircompare(request, request_pairs, pl->check, reply_pairs) == 0) {
-			RDEBUG2("%s: Matched entry %s at line %d", filename, match, pl->lineno);
-			found = 1;
+		if (paircmp(request, request_packet->vps, check_tmp, &reply_packet->vps) == 0) {
+			RDEBUG2("Found match \"%s\" one line %d of %s", pl->name, pl->lineno, filename);
+			found = true;
 
 			/* ctx may be reply or proxy */
-			reply_tmp = paircopy(request, pl->reply);
-			radius_xlat_move(request, reply_pairs, &reply_tmp);
-			pairmove(request, &request->config_items, &check_tmp);
+			MEM(fr_pair_list_copy(reply_packet, &reply_tmp, pl->reply) >= 0);
 
-			/* Cleanup any unmoved valuepairs */
-			pairfree(&reply_tmp);
-			pairfree(&check_tmp);
+			radius_pairmove(request, &reply_packet->vps, reply_tmp, true);
+			fr_pair_list_move(request, &request->control, &check_tmp);
+
+			reply_tmp = NULL;	/* radius_pairmove() frees input attributes */
+			fr_pair_list_free(&check_tmp);
 
 			/*
 			 *	Fallthrough?
 			 */
-			if (!fallthrough(pl->reply))
-				break;
+			if (!fall_through(pl->reply)) break;
 		}
 	}
 
 	/*
 	 *	Remove server internal parameters.
 	 */
-	pairdelete(reply_pairs, PW_FALL_THROUGH, 0, TAG_ANY);
+	fr_pair_delete_by_da(&reply_packet->vps, attr_fall_through);
 
 	/*
 	 *	See if we succeeded.
@@ -486,91 +427,87 @@ static rlm_rcode_t file_common(rlm_files_t *inst, REQUEST *request,
  *	for this user from the database. The main code only
  *	needs to check the password, the rest is done here.
  */
-static rlm_rcode_t mod_authorize(void *instance, REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_authorize(void *instance, UNUSED void *thread, REQUEST *request)
 {
-	rlm_files_t *inst = instance;
+	rlm_files_t const *inst = instance;
 
-	return file_common(inst, request, "users",
+	return file_common(inst, request, inst->filename,
 			   inst->users ? inst->users : inst->common,
-			   request->packet->vps, &request->reply->vps);
+			   request->packet, request->reply);
 }
 
 
 /*
  *	Pre-Accounting - read the acct_users file for check_items and
- *	config_items. Reply items are Not Recommended(TM) in acct_users,
+ *	config. Reply items are Not Recommended(TM) in acct_users,
  *	except for Fallthrough, which should work
  */
-static rlm_rcode_t mod_preacct(void *instance, REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_preacct(void *instance, UNUSED void *thread, REQUEST *request)
 {
-	rlm_files_t *inst = instance;
+	rlm_files_t const *inst = instance;
 
-	return file_common(inst, request, "acct_users",
-			   inst->acctusers ? inst->acctusers : inst->common,
-			   request->packet->vps, &request->reply->vps);
+	return file_common(inst, request, inst->acct_usersfile,
+			   inst->acct_users ? inst->acct_users : inst->common,
+			   request->packet, request->reply);
 }
 
 #ifdef WITH_PROXY
-static rlm_rcode_t file_preproxy(void *instance, REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_pre_proxy(void *instance, UNUSED void *thread, REQUEST *request)
 {
-	rlm_files_t *inst = instance;
+	rlm_files_t const *inst = instance;
 
-	return file_common(inst, request, "preproxy_users",
+	return file_common(inst, request, inst->preproxy_usersfile,
 			   inst->preproxy_users ? inst->preproxy_users : inst->common,
-			   request->packet->vps, &request->proxy->vps);
+			   request->packet, request->proxy->packet);
 }
 
-static rlm_rcode_t file_postproxy(void *instance, REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_post_proxy(void *instance, UNUSED void *thread, REQUEST *request)
 {
-	rlm_files_t *inst = instance;
+	rlm_files_t const *inst = instance;
 
-	return file_common(inst, request, "postproxy_users",
+	return file_common(inst, request, inst->postproxy_usersfile,
 			   inst->postproxy_users ? inst->postproxy_users : inst->common,
-			   request->proxy_reply->vps, &request->reply->vps);
+			   request->proxy->reply, request->reply);
 }
 #endif
 
-static rlm_rcode_t mod_authenticate(void *instance, REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_authenticate(void *instance, UNUSED void *thread, REQUEST *request)
 {
-	rlm_files_t *inst = instance;
+	rlm_files_t const *inst = instance;
 
-	return file_common(inst, request, "auth_users",
+	return file_common(inst, request, inst->auth_usersfile,
 			   inst->auth_users ? inst->auth_users : inst->common,
-			   request->packet->vps, &request->reply->vps);
+			   request->packet, request->reply);
 }
 
-static rlm_rcode_t mod_post_auth(void *instance, REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_post_auth(void *instance, UNUSED void *thread, REQUEST *request)
 {
-	rlm_files_t *inst = instance;
+	rlm_files_t const *inst = instance;
 
-	return file_common(inst, request, "postauth_users",
+	return file_common(inst, request, inst->postauth_usersfile,
 			   inst->postauth_users ? inst->postauth_users : inst->common,
-			   request->packet->vps, &request->reply->vps);
+			   request->packet, request->reply);
 }
 
 
 /* globally exported name */
-module_t rlm_files = {
-	RLM_MODULE_INIT,
-	"files",
-	RLM_TYPE_CHECK_CONFIG_SAFE | RLM_TYPE_HUP_SAFE,
-	sizeof(rlm_files_t),
-	module_config,
-	mod_instantiate,		/* instantiation */
-	mod_detach,			/* detach */
-	{
-		mod_authenticate,	/* authentication */
-		mod_authorize, 	/* authorization */
-		mod_preacct,		/* preaccounting */
-		NULL,			/* accounting */
-		NULL,			/* checksimul */
+extern rad_module_t rlm_files;
+rad_module_t rlm_files = {
+	.magic		= RLM_MODULE_INIT,
+	.name		= "files",
+	.inst_size	= sizeof(rlm_files_t),
+	.config		= module_config,
+	.instantiate	= mod_instantiate,
+	.methods = {
+		[MOD_AUTHENTICATE]	= mod_authenticate,
+		[MOD_AUTHORIZE]		= mod_authorize,
+		[MOD_PREACCT]		= mod_preacct,
+
 #ifdef WITH_PROXY
-		file_preproxy,		/* pre-proxy */
-		file_postproxy,		/* post-proxy */
-#else
-		NULL, NULL,
+		[MOD_PRE_PROXY]		= mod_pre_proxy,
+		[MOD_POST_PROXY]	= mod_post_proxy,
 #endif
-		mod_post_auth		/* post-auth */
+		[MOD_POST_AUTH]		= mod_post_auth
 	},
 };
 

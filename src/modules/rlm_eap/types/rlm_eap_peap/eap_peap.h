@@ -1,3 +1,4 @@
+#pragma once
 /*
  * eap_peap.h
  *
@@ -17,55 +18,61 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * Copyright 2003 Alan DeKok <aland@freeradius.org>
- * Copyright 2006 The FreeRADIUS server project
+ * @copyright 2003 Alan DeKok <aland@freeradius.org>
+ * @copyright 2006 The FreeRADIUS server project
  */
-#ifndef _EAP_PEAP_H
-#define _EAP_PEAP_H
-
 RCSIDH(eap_peap_h, "$Id$")
 
 #include "eap_tls.h"
-#include <freeradius-devel/soh.h>
+#include <freeradius-devel/soh/base.h>
+
+typedef enum {
+	PEAP_STATUS_INVALID,
+	PEAP_STATUS_SENT_TLV_SUCCESS,
+	PEAP_STATUS_SENT_TLV_FAILURE,
+	PEAP_STATUS_TUNNEL_ESTABLISHED,
+	PEAP_STATUS_INNER_IDENTITY_REQ_SENT,
+	PEAP_STATUS_PHASE2_INIT,
+	PEAP_STATUS_PHASE2,
+	PEAP_STATUS_WAIT_FOR_SOH_RESPONSE
+} peap_status;
+
+typedef enum {
+	PEAP_RESUMPTION_NO,
+	PEAP_RESUMPTION_YES,
+	PEAP_RESUMPTION_MAYBE
+} peap_resumption;
 
 typedef struct peap_tunnel_t {
 	VALUE_PAIR	*username;
-	VALUE_PAIR	*state;
-	VALUE_PAIR	*accept_vps;
-	int		status;
-	int		home_access_accept;
+	peap_status	status;
+	bool		home_access_accept;
 	int		default_method;
-	int		copy_request_to_tunnel;
-	int		use_tunneled_reply;
-	int		proxy_tunneled_request_as_eap;
+	bool		proxy_tunneled_request_as_eap;
 	char const	*virtual_server;
-	int		soh;
+	bool		soh;
 	char const	*soh_virtual_server;
 	VALUE_PAIR	*soh_reply_vps;
-	int		session_resumption_state;
+	peap_resumption	session_resumption_state;
 } peap_tunnel_t;
 
-#define PEAP_STATUS_INVALID 0
-#define PEAP_STATUS_SENT_TLV_SUCCESS 1
-#define PEAP_STATUS_SENT_TLV_FAILURE 2
-#define PEAP_STATUS_TUNNEL_ESTABLISHED 3
-#define PEAP_STATUS_INNER_IDENTITY_REQ_SENT 4
-#define PEAP_STATUS_PHASE2_INIT 5
-#define PEAP_STATUS_PHASE2 6
-#define PEAP_STATUS_WAIT_FOR_SOH_RESPONSE 7
+extern fr_dict_attr_t const *attr_auth_type;
+extern fr_dict_attr_t const *attr_eap_tls_require_client_cert;
+extern fr_dict_attr_t const *attr_proxy_to_realm;
+extern fr_dict_attr_t const *attr_soh_supported;
 
-#define PEAP_RESUMPTION_NO	(0)
-#define PEAP_RESUMPTION_YES	(1)
-#define PEAP_RESUMPTION_MAYBE	(2)
+extern fr_dict_attr_t const *attr_eap_message;
+extern fr_dict_attr_t const *attr_freeradius_proxied_to;
+extern fr_dict_attr_t const *attr_user_name;
+
 
 #define EAP_TLV_SUCCESS (1)
 #define EAP_TLV_FAILURE (2)
 #define EAP_TLV_ACK_RESULT (3)
 
-#define PW_EAP_TLV 33
+#define FR_PEAP_EXTENSIONS_TYPE 33
 
 /*
  *	Process the PEAP portion of an EAP-PEAP request.
  */
-rlm_rcode_t eappeap_process(eap_handler_t *handler, tls_session_t *tls_session);
-#endif /* _EAP_PEAP_H */
+rlm_rcode_t eap_peap_process(eap_session_t *eap_session, tls_session_t *tls_session, fr_dict_enum_t const *enumv) CC_HINT(nonnull(1,2));

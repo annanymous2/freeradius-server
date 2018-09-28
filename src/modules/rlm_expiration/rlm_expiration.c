@@ -1,7 +1,8 @@
 /*
  *   This program is is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License, version 2 if the
- *   License as published by the Free Software Foundation.
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation; either version 2 of the License, or (at
+ *   your option) any later version.
  *
  *   This program is distributed in the hope that it will be useful,
  *   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,21 +24,45 @@
  */
 RCSID("$Id$")
 
-#include <freeradius-devel/radiusd.h>
-#include <freeradius-devel/modules.h>
+#include <freeradius-devel/server/base.h>
+#include <freeradius-devel/server/modules.h>
 
 #include <ctype.h>
+
+static fr_dict_t *dict_freeradius;
+static fr_dict_t *dict_radius;
+
+extern fr_dict_autoload_t rlm_expiration_dict[];
+fr_dict_autoload_t rlm_expiration_dict[] = {
+	{ .out = &dict_freeradius, .proto = "freeradius" },
+	{ .out = &dict_radius, .proto = "radius" },
+	{ NULL }
+};
+
+static fr_dict_attr_t const *attr_expiration;
+
+static fr_dict_attr_t const *attr_session_timeout;
+
+extern fr_dict_attr_autoload_t rlm_expiration_dict_attr[];
+fr_dict_attr_autoload_t rlm_expiration_dict_attr[] = {
+	{ .out = &attr_expiration, .name = "Expiration", .type = FR_TYPE_DATE, .dict = &dict_freeradius },
+
+	{ .out = &attr_session_timeout, .name = "Session-Timeout", .type = FR_TYPE_UINT32, .dict = &dict_radius },
+
+	{ NULL }
+};
 
 /*
  *      Check if account has expired, and if user may login now.
  */
-static rlm_rcode_t mod_authorize(UNUSED void *instance, REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_authorize(UNUSED void *instance, UNUSED void *thread, REQUEST *request)
 {
 	VALUE_PAIR *vp, *check_item = NULL;
 
-	check_item = pairfind(request->config_items, PW_EXPIRATION, 0, TAG_ANY);
+	check_item = fr_pair_find_by_da(request->control, attr_expiration, TAG_ANY);
 	if (check_item != NULL) {
-		char date[50];
+		uint32_t left;
+
 		/*
 		*      Has this user's password expired?
 		*
@@ -45,28 +70,35 @@ static rlm_rcode_t mod_authorize(UNUSED void *instance, REQUEST *request)
 		*      and add our own Reply-Message, saying
 		*      why they're being rejected.
 		*/
-		if (((time_t) check_item->vp_date) <= request->timestamp) {
-			vp_prints_value(date, sizeof(date), check_item, 0);
-			REDEBUG("Account expired at '%s'", date);
+		if (((time_t) check_item->vp_date) <= request->packet->timestamp.tv_sec) {
+			REDEBUG("Account expired at '%pV'", &check_item->data);
 
 			return RLM_MODULE_USERLOCK;
-		} else {
-			if (RDEBUG_ENABLED) {
-				vp_prints_value(date, sizeof(date), check_item, 0);
-				RDEBUG("Account will expire at '%s'", date);
-			}
 		}
+		RDEBUG("Account will expire at '%pV'", &check_item->data);
+
+		left = (uint32_t)(((time_t) check_item->vp_date) - request->packet->timestamp.tv_sec);
 
 		/*
 		 *	Else the account hasn't expired, but it may do so
 		 *	in the future.  Set Session-Timeout.
 		 */
-		vp = pairfind(request->reply->vps, PW_SESSION_TIMEOUT, 0, TAG_ANY);
-		if (!vp) {
-			vp = radius_paircreate(request, &request->reply->vps, PW_SESSION_TIMEOUT, 0);
-			vp->vp_date = (uint32_t) (((time_t) check_item->vp_date) - request->timestamp);
-		} else if (vp->vp_date > ((uint32_t) (((time_t) check_item->vp_date) - request->timestamp))) {
-			vp->vp_date = (uint32_t) (((time_t) check_item->vp_date) - request->timestamp);
+		switch (pair_update_reply(&vp, attr_session_timeout)) {
+		case 1:
+			/* just update... */
+			if (vp->vp_uint32 > (uint32_t)left) {
+				vp->vp_uint32 = (uint32_t)left;
+				RDEBUG("&reply:Session-Timeout := %pV", &vp->data);
+			}
+			break;
+
+		case 0:	/* no pre-existing */
+			vp->vp_uint32 = (uint32_t)left;
+			RDEBUG("&reply:Session-Timeout := %pV", &vp->data);
+			break;
+
+		default: /* malloc failure */
+			MEM(NULL);
 		}
 	} else {
 		return RLM_MODULE_NOOP;
@@ -83,11 +115,11 @@ static int expirecmp(UNUSED void *instance, REQUEST *req, UNUSED VALUE_PAIR *req
 {
 	time_t now = 0;
 
-	now = (req) ? req->timestamp : time(NULL);
+	now = (req) ? req->packet->timestamp.tv_sec : time(NULL);
 
-	if (now <= ((time_t) check->vp_date))
-		return 0;
-	return +1;
+	if (now <= ((time_t) check->vp_date)) return 0;
+
+	return 1;
 }
 
 
@@ -101,12 +133,12 @@ static int expirecmp(UNUSED void *instance, REQUEST *req, UNUSED VALUE_PAIR *req
  *	that must be referenced in later calls, store a handle to it
  *	in *instance otherwise put a null pointer there.
  */
-static int mod_instantiate(UNUSED CONF_SECTION *conf, UNUSED void *instance)
+static int mod_instantiate(void *instance, UNUSED CONF_SECTION *conf)
 {
 	/*
 	 *	Register the expiration comparison operation.
 	 */
-	paircompare_register(dict_attrbyvalue(PW_EXPIRATION, 0), NULL, false, expirecmp, instance);
+	paircmp_register(attr_expiration, NULL, false, expirecmp, instance);
 	return 0;
 }
 
@@ -119,22 +151,14 @@ static int mod_instantiate(UNUSED CONF_SECTION *conf, UNUSED void *instance)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
-module_t rlm_expiration = {
-	RLM_MODULE_INIT,
-	"expiration",
-	RLM_TYPE_THREAD_SAFE,		/* type */
-	0,
-	NULL,
-	mod_instantiate,		/* instantiation */
-	NULL,				/* detach */
-	{
-		NULL,			/* authentication */
-		mod_authorize,		/* authorization */
-		NULL,			/* preaccounting */
-		NULL,			/* accounting */
-		NULL,			/* checksimul */
-		NULL,			/* pre-proxy */
-		NULL,			/* post-proxy */
-		NULL			/* post-auth */
+extern rad_module_t rlm_expiration;
+rad_module_t rlm_expiration = {
+	.magic		= RLM_MODULE_INIT,
+	.name		= "expiration",
+	.type		= RLM_TYPE_THREAD_SAFE,
+	.instantiate	= mod_instantiate,
+	.methods = {
+		[MOD_AUTHORIZE]		= mod_authorize,
+		[MOD_POST_AUTH]		= mod_authorize
 	},
 };
