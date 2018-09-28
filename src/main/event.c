@@ -51,7 +51,6 @@ extern char *debug_condition;
 static fr_event_list_t	*el = NULL;
 static fr_packet_list_t	*pl = NULL;
 static int			request_num_counter = 0;
-static struct timeval		now;
 time_t				fr_start_time;
 static int			have_children;
 static int			just_started = TRUE;
@@ -74,7 +73,7 @@ static pthread_mutex_t	proxy_mutex;
 #define PTHREAD_MUTEX_LOCK if (have_children) pthread_mutex_lock
 #define PTHREAD_MUTEX_UNLOCK if (have_children) pthread_mutex_unlock
 
-static pthread_t NO_SUCH_CHILD_PID;
+#define NO_CHILD_THREAD (0)
 #else
 /*
  *	This is easier than ifdef's throughout the code.
@@ -155,6 +154,14 @@ static void ev_request_free(REQUEST **prequest)
 	if (!prequest || !*prequest) return;
 
 	request = *prequest;
+
+#ifdef HAVE_PTHREAD_H
+	/*
+	 *	We can only free a request if there's no child thread
+	 *	using it.
+	 */
+	rad_assert(request->thread_id == NO_CHILD_THREAD);
+#endif
 
 #ifdef WITH_COA
 	if (request->coa) {
@@ -448,6 +455,7 @@ static int insert_into_proxy_hash(REQUEST *request, int retransmit)
 static void wait_for_proxy_id_to_expire(void *ctx)
 {
 	REQUEST *request = ctx;
+	struct timeval now;
 
 	rad_assert(request->magic == REQUEST_MAGIC);
 	rad_assert(request->proxy != NULL);
@@ -490,17 +498,18 @@ static void wait_for_child_to_die(void *ctx)
 	REQUEST *request = ctx;
 
 	rad_assert(request->magic == REQUEST_MAGIC);
-	remove_from_request_hash(request);
+
+	if (request->in_request_hash) {
+		remove_from_request_hash(request);
+	}
 
 	/*
 	 *	If it's still queued (waiting for a thread to pick it
-	 *	up) OR, it's running AND there's still a child thread
-	 *	handling it, THEN delay some more.
+	 *	up) OR there's still a child thread handling it, THEN
+	 *	delay some more.
 	 */
 	if ((request->child_state == REQUEST_QUEUED) ||
-	    ((request->child_state == REQUEST_RUNNING) &&
-	     (pthread_equal(request->child_pid, NO_SUCH_CHILD_PID) == 0))) {
-
+	    (request->thread_id != NO_CHILD_THREAD)) {
 		/*
 		 *	Cap delay at max_request_time
 		 */
@@ -519,6 +528,7 @@ static void wait_for_child_to_die(void *ctx)
 		return;
 	}
 
+	rad_assert(request->thread_id == NO_CHILD_THREAD);
 	RDEBUG2("Child is finally responsive for request %u", request->number);
 
 #ifdef WITH_PROXY
@@ -527,6 +537,8 @@ static void wait_for_child_to_die(void *ctx)
 		return;
 	}
 #endif
+
+	request->child_state = REQUEST_DONE;
 
 	ev_request_free(&request);
 }
@@ -637,9 +649,12 @@ void revive_home_server(void *ctx)
 {
 	home_server *home = ctx;
 	char buffer[128];
+	struct timeval now;
 
 	home->state = HOME_STATE_ALIVE;
 	home->currently_outstanding = 0;
+
+	gettimeofday(&now, NULL);
 	home->revive_time = now;
 
 	/*
@@ -683,6 +698,7 @@ static void received_response_to_ping(REQUEST *request)
 {
 	home_server *home;
 	char buffer[128];
+	struct timeval now;
 
 	rad_assert(request->home_server != NULL);
 
@@ -708,15 +724,20 @@ static void received_response_to_ping(REQUEST *request)
 	if (home->state == HOME_STATE_ALIVE) return;
 
 	/*
-	 *	We haven't received enough ping responses to mark it
-	 *	"alive".  Wait a bit.
+	 *	It's dead, and we haven't received enough ping
+	 *	responses to mark it "alive".  Wait a bit.
+	 *
+	 *	If it's zombie, we mark it alive immediately.
 	 */
-	if (home->num_received_pings < home->num_pings_to_alive) {
+	if ((home->state == HOME_STATE_IS_DEAD) &&
+	    (home->num_received_pings < home->num_pings_to_alive)) {
 		return;
 	}
 
 	home->state = HOME_STATE_ALIVE;
 	home->currently_outstanding = 0;
+
+	gettimeofday(&now, NULL);
 	home->revive_time = now;
 
 	if (!fr_event_delete(el, &home->ev)) {
@@ -787,7 +808,7 @@ static void ping_home_server(void *ctx)
 				"Acct-Session-Id", "00000000", T_OP_SET);
 		vp = radius_pairmake(request, &request->proxy->vps,
 				     "Event-Timestamp", "0", T_OP_SET);
-		vp->vp_date = now.tv_sec;
+		vp->vp_date = request->when.tv_sec;
 #else
 		rad_assert("Internal sanity check failed");
 #endif
@@ -876,7 +897,7 @@ void mark_home_server_dead(home_server *home, struct timeval *when)
 static void check_for_zombie_home_server(REQUEST *request)
 {
 	home_server *home;
-	struct timeval when;
+	struct timeval now, when;
 
 	home = request->home_server;
 
@@ -890,7 +911,7 @@ static void check_for_zombie_home_server(REQUEST *request)
 		return;
 	}
 
-	mark_home_server_dead(home, &request->when);
+	mark_home_server_dead(home, &when);
 }
 
 static int proxy_to_virtual_server(REQUEST *request);
@@ -903,6 +924,8 @@ static int virtual_server_handler(UNUSED REQUEST *request)
 
 static void proxy_fallback_handler(REQUEST *request)
 {
+	struct timeval now;
+
 	/*
 	 *	A proper time is required for wait_a_bit.
 	 */
@@ -996,6 +1019,8 @@ static int null_handler(UNUSED REQUEST *request)
 
 static void post_proxy_fail_handler(REQUEST *request)
 {
+	struct timeval now;
+
 	/*
 	 *	A proper time is required for wait_a_bit.
 	 */
@@ -1051,6 +1076,8 @@ static void post_proxy_fail_handler(REQUEST *request)
 static void no_response_to_proxied_request(void *ctx)
 {
 	REQUEST *request = ctx;
+       	struct timeval now;
+	time_t start;
 	home_server *home;
 	char buffer[128];
 
@@ -1087,8 +1114,22 @@ static void no_response_to_proxied_request(void *ctx)
 
 		post_proxy_fail_handler(request);
 	} else {
+		struct timeval when;
+
+		/*
+		 *	Do nothing, and let the request time out.
+		 */
 		rad_assert(request->ev == NULL);
-		request->child_state = REQUEST_RUNNING;
+
+		when = request->received;
+		when.tv_sec += request->root->max_request_time;
+
+		request->child_state = REQUEST_DONE;
+		request->next_when = when;
+		request->next_callback = cleanup_delay;
+
+		if (request->in_proxy_hash) remove_from_proxy_hash(request);
+
 		wait_a_bit(request);
 	}
 
@@ -1115,19 +1156,19 @@ static void no_response_to_proxied_request(void *ctx)
 	 *	where the proxy still sends packets to an unresponsive
 	 *	home server.
 	 */
-	if ((home->last_packet + ((home->zombie_period + 3) / 4)) >= now.tv_sec) {
+	fr_event_now(el, &now);
+	start = now.tv_sec - ((home->zombie_period + 3) / 4);
+	if (home->last_packet >= start) {
 		return;
 	}
 
 	/*
-	 *	Enable the zombie period when we notice that the home
-	 *	server hasn't responded for a while.  We back-date the
-	 *	zombie period to when we last received a response from
-	 *	the home server.
+	 *	Set the home server to "zombie", as of the time
+	 *	calculated above.
 	 */
 	home->state = HOME_STATE_ZOMBIE;
-	
-	home->zombie_period_start.tv_sec = home->last_packet;
+
+	home->zombie_period_start.tv_sec = start;
 	home->zombie_period_start.tv_usec = USEC / 2;
 	
 	fr_event_delete(el, &home->ev);
@@ -1148,7 +1189,7 @@ static void no_response_to_proxied_request(void *ctx)
 
 static void wait_a_bit(void *ctx)
 {
-	struct timeval when;
+	struct timeval now, when;
 	REQUEST *request = ctx;
 	fr_event_callback_t callback = NULL;
 
@@ -1237,9 +1278,9 @@ static void wait_a_bit(void *ctx)
 		 *	the request.
 		 */
 		if (have_children &&
-		    (pthread_equal(request->child_pid, NO_SUCH_CHILD_PID) == 0)) {
-			radlog(L_ERR, "WARNING: Unresponsive child for request %u, in component %s module %s",
-			       request->number,
+		    (request->thread_id == NO_CHILD_THREAD)) {
+			radlog(L_ERR, "WARNING: Unresponsive thread %d for request %u, in component %s module %s",
+			       request->number, request->thread_id,
 			       request->component ? request->component : "<server core>",
 			       request->module ? request->module : "<server core>");
 
@@ -1258,7 +1299,7 @@ static void wait_a_bit(void *ctx)
 	case REQUEST_DONE:
 	done:
 #ifdef HAVE_PTHREAD_H
-		request->child_pid = NO_SUCH_CHILD_PID;
+		request->thread_id = NO_CHILD_THREAD;
 #endif
 
 #ifdef WITH_COA
@@ -1285,7 +1326,7 @@ static void wait_a_bit(void *ctx)
 	case REQUEST_REJECT_DELAY:
 	case REQUEST_CLEANUP_DELAY:
 #ifdef HAVE_PTHREAD_H
-		request->child_pid = NO_SUCH_CHILD_PID;
+		request->thread_id = NO_CHILD_THREAD;
 #endif
 		request_stats_final(request);
 		/* FALL-THROUGH */
@@ -1372,7 +1413,7 @@ static int update_event_timestamp(RADIUS_PACKET *packet, time_t when)
 static void retransmit_coa_request(void *ctx)
 {
 	int delay, frac;
-	struct timeval mrd;
+	struct timeval now, mrd;
 	REQUEST *request = ctx;
 
 	rad_assert(request->magic == REQUEST_MAGIC);
@@ -1689,15 +1730,16 @@ static int originated_coa_request(REQUEST *request)
 	 */
 	request->num_proxied_requests = 1;
 	request->num_proxied_responses = 0;
-#ifdef HAVE_PTHREAD_H
-	request->child_pid = NO_SUCH_CHILD_PID;
-#endif
 
 	update_event_timestamp(request->proxy, request->proxy_when.tv_sec);
 
 	request->child_state = REQUEST_PROXIED;
 
 	DEBUG_PACKET(request, request->proxy, 1);
+
+#ifdef HAVE_PTHREAD_H
+	request->thread_id = NO_CHILD_THREAD;
+#endif
 
 	request->proxy_listener->send(request->proxy_listener,
 				      request);
@@ -1732,12 +1774,11 @@ static int process_proxy_reply(REQUEST *request)
 	    	DICT_VALUE	*dval;
 	
 		dval = dict_valbyname(PW_POST_PROXY_TYPE, "Reject");
-		if (!dval) return 0;
-			
-		vp = radius_paircreate(request, &request->config_items,
-				       PW_POST_PROXY_TYPE, PW_TYPE_INTEGER);
-
-		vp->vp_integer = dval->value;
+		if (dval) {
+			vp = radius_paircreate(request, &request->config_items,
+					       PW_POST_PROXY_TYPE, PW_TYPE_INTEGER);
+			vp->vp_integer = dval->value;
+		}
 	}
 	
 	if (vp) {
@@ -1795,12 +1836,11 @@ static int process_proxy_reply(REQUEST *request)
 	default:  /* Don't do anything */
 		break;
 	case RLM_MODULE_FAIL:
-		/* FIXME: debug print stuff */
-		request->child_state = REQUEST_DONE;
-		return 0;
-		
 	case RLM_MODULE_HANDLED:
 		/* FIXME: debug print stuff */
+#ifdef HAVE_PTHREAD_H
+		request->thread_id = NO_CHILD_THREAD;
+#endif
 		request->child_state = REQUEST_DONE;
 		return 0;
 	}
@@ -1868,6 +1908,9 @@ static int request_pre_handler(REQUEST *request)
 	if (rcode < 0) {
 		RDEBUG("%s Dropping packet without response.", fr_strerror());
 		request->reply->offset = -2; /* bad authenticator */
+#ifdef HAVE_PTHREAD_H
+		request->thread_id = NO_CHILD_THREAD;
+#endif
 		request->child_state = REQUEST_DONE;
 		return 0;
 	}
@@ -1947,7 +1990,7 @@ static int proxy_request(REQUEST *request)
 	request->num_proxied_requests = 1;
 	request->num_proxied_responses = 0;
 #ifdef HAVE_PTHREAD_H
-	request->child_pid = NO_SUCH_CHILD_PID;
+	request->thread_id = NO_CHILD_THREAD;
 #endif
 	request->child_state = REQUEST_PROXIED;
 
@@ -2013,7 +2056,9 @@ static int proxy_to_virtual_server(REQUEST *request)
 
 	ev_request_free(&fake);
 
-	process_proxy_reply(request);
+	if (!process_proxy_reply(request)) {
+		return 0;
+	}
 
 	/*
 	 *	Process it through the normal section again, but ONLY
@@ -2305,15 +2350,14 @@ static void request_post_handler(REQUEST *request)
 	    (request->parent &&
 	     (request->parent->master_state == REQUEST_STOP_PROCESSING))) {
 		RDEBUG2("request %u was cancelled.", request->number);
-#ifdef HAVE_PTHREAD_H
-		request->child_pid = NO_SUCH_CHILD_PID;
-#endif
 		child_state = REQUEST_DONE;
 		goto cleanup;
 	}
 
 	if (request->child_state != REQUEST_RUNNING) {
-		rad_panic("Internal sanity check failed");
+		radlog(L_ERR, "Request %d is unexpectedly in state %d.  Stopping it.",
+		       request->number, request->child_state);
+		return;
 	}
 
 #ifdef WITH_COA
@@ -2349,7 +2393,7 @@ static void request_post_handler(REQUEST *request)
 	    (request->packet->code != PW_STATUS_SERVER)) {
 		int rcode = successfully_proxied_request(request);
 
-		if (rcode == 1) return; /* request is invalid */
+		if (rcode == 1) return; /* "request" is now untouchable */
 
 		/*
 		 *	Failed proxying it (dead home servers, etc.)
@@ -2363,7 +2407,9 @@ static void request_post_handler(REQUEST *request)
 		 *	the post handler.
 		 */
 		if ((rcode < 0) && setup_post_proxy_fail(request)) {
-			request_pre_handler(request);
+			if (!request_pre_handler(request)) {
+				return;
+			}
 		}
 
 		/*
@@ -2388,7 +2434,7 @@ static void request_post_handler(REQUEST *request)
 	if (request->packet->dst_port == 0) {
 		/* FIXME: RDEBUG going to the next request */
 #ifdef HAVE_PTHREAD_H
-		request->child_pid = NO_SUCH_CHILD_PID;
+		request->thread_id = NO_CHILD_THREAD;
 #endif
 		request->child_state = REQUEST_DONE;
 		return;
@@ -2401,8 +2447,6 @@ static void request_post_handler(REQUEST *request)
 	vp = paircopy2(request->packet->vps, PW_PROXY_STATE);
 	if (vp) pairadd(&request->reply->vps, vp);
 #endif
-
-
 	
 	/*
 	 *	Access-Requests get delayed or cached.
@@ -2431,11 +2475,11 @@ static void request_post_handler(REQUEST *request)
 				request->next_when.tv_sec += request->root->max_request_time;
 				request->next_callback = cleanup_delay;
 				child_state = REQUEST_CLEANUP_DELAY;
-				
 				break;	
 			}
 			
 			request->reply->code = vp->vp_integer;
+
 		} else if (request->reply->code == 0) {
 			RDEBUG2("There was no response configured: rejecting "
 				"request %u", request->number);
@@ -2443,6 +2487,16 @@ static void request_post_handler(REQUEST *request)
 			request->reply->code = PW_AUTHENTICATION_REJECT;
 		}
 
+		/*
+		 *	Do post-auth.  If it returns reject, then
+		 *	run Post-Auth-Type Reject.
+		 */
+		if (request->reply->code == PW_AUTHENTICATION_ACK) {
+			if (rad_postauth(request) == RLM_MODULE_REJECT) {
+				request->reply->code = PW_AUTHENTICATION_REJECT;
+			}
+		}
+		
 		/*
 		 *	Run rejected packets through
 		 *
@@ -2471,15 +2525,11 @@ static void request_post_handler(REQUEST *request)
 				request->next_when = when;
 				request->next_callback = reject_delay;
 #ifdef HAVE_PTHREAD_H
-				request->child_pid = NO_SUCH_CHILD_PID;
+				request->thread_id = NO_CHILD_THREAD;
 #endif
 				request->child_state = REQUEST_REJECT_DELAY;
 				return;
 			}
-		}
-		
-		if (request->reply->code == PW_AUTHENTICATION_ACK) {
-			rad_postauth(request);
 		}
 		
 		/* FALL-THROUGH */
@@ -2584,12 +2634,20 @@ static void request_post_handler(REQUEST *request)
 
 	RDEBUG2("Finished request %u.", request->number);
 	rad_assert(child_state >= 0);
-	request->child_state = child_state;
 
-	/*
-	 *	Single threaded mode: update timers now.
-	 */
-	if (!have_children) wait_a_bit(request);
+	if (have_children) {
+#ifdef HAVE_PTHREAD_H
+		request->thread_id = NO_CHILD_THREAD;
+#endif
+		request->child_state = child_state;
+	} else {
+		request->child_state = child_state;
+
+		/*
+		 *	Single threaded mode: update timers now.
+		 */
+		wait_a_bit(request);
+	}
 }
 
 
@@ -2605,14 +2663,11 @@ static void received_retransmit(REQUEST *request, const RADCLIENT *client)
 	switch (request->child_state) {
 	case REQUEST_QUEUED:
 	case REQUEST_RUNNING:
-#ifdef WITH_PROXY
-	discard:
-#endif
 		radlog(L_ERR, "Discarding duplicate request from "
-		       "client %s port %d - ID: %u due to unfinished request %u",
+		       "client %s port %d - ID: %u due to unfinished request %u in component %s module %s.",
 		       client->shortname,
 		       request->packet->src_port,request->packet->id,
-		       request->number);
+		       request->number, request->component, request->module);
 		break;
 
 #ifdef WITH_PROXY
@@ -2637,7 +2692,12 @@ static void received_retransmit(REQUEST *request, const RADCLIENT *client)
 		 *	packets, this logic has to be fixed.
 		 */
 		if (request->packet->code != PW_AUTHENTICATION_REQUEST) {
-			goto discard;
+			radlog(L_ERR, "Discarding duplicate request from "
+			       "client %s port %d - ID: %u due to unfinished proxied request %u",
+			       client->shortname,
+			       request->packet->src_port,request->packet->id,
+			       request->number);
+			break;
 		}
 
 		check_for_zombie_home_server(request);
@@ -2965,7 +3025,7 @@ int received_request(rad_listen_t *listener,
 	request->number = request_num_counter++;
 	request->priority = listener->type;
 #ifdef HAVE_PTHREAD_H
-	request->child_pid = NO_SUCH_CHILD_PID;
+	request->thread_id = NO_CHILD_THREAD;
 #endif
 
 	/*
@@ -3045,6 +3105,7 @@ REQUEST *received_proxy_response(RADIUS_PACKET *packet)
 {
 	char		buffer[128];
 	REQUEST		*request;
+	struct timeval	now;
 
 	/*
 	 *	Also removes from the proxy hash if responses == requests
@@ -3202,9 +3263,6 @@ REQUEST *received_proxy_response(RADIUS_PACKET *packet)
 	switch (request->child_state) {
 	case REQUEST_QUEUED:
 	case REQUEST_RUNNING:
-		radlog(L_ERR, "Internal sanity check failed for child state");
-		/* FALL-THROUGH */
-
 	case REQUEST_REJECT_DELAY:
 	case REQUEST_CLEANUP_DELAY:
 	case REQUEST_DONE:
@@ -3472,7 +3530,7 @@ static void event_poll_detail(void *ctx)
 	RAD_REQUEST_FUNP fun;
 	REQUEST *request;
 	rad_listen_t *this = ctx;
-	struct timeval when;
+	struct timeval now, when;
 	listen_detail_t *detail = this->data;
 
 	rad_assert(this->type == RAD_LISTEN_DETAIL);
@@ -3592,11 +3650,6 @@ int radius_event_init(CONF_SECTION *cs, int spawn_flag)
 #endif
 
 #ifdef HAVE_PTHREAD_H
-#ifndef __MINGW32__
-	NO_SUCH_CHILD_PID = (pthread_t ) (0);
-#else
-	NO_SUCH_CHILD_PID = pthread_self(); /* not a child thread */
-#endif
 	/*
 	 *	Initialize the threads ONLY if we're spawning, AND
 	 *	we're running normally.

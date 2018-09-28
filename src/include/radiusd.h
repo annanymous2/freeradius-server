@@ -212,7 +212,7 @@ struct auth_req {
 	request_data_t		*data;
 	RADCLIENT		*client;
 #ifdef HAVE_PTHREAD_H
-	pthread_t    		child_pid;
+	int			thread_id;
 #endif
 	time_t			timestamp;
 	unsigned int	       	number; /* internal server number */
@@ -360,6 +360,9 @@ typedef struct main_config_t {
 	int		proxy_requests;
 	int		reject_delay;
 	int		status_server;
+#if defined(HAVE_OPENSSL_CRYPTO_H) && defined(ENABLE_OPENSSL_VERSION_CHECK)
+	int		allow_vulnerable_openssl;
+#endif
 	int		max_request_time;
 	int		cleanup_delay;
 	int		max_requests;
@@ -381,6 +384,7 @@ typedef struct main_config_t {
 	int		post_proxy_authorize;
 #endif
 	int		debug_memory;
+	const char	*panic_action;
 } MAIN_CONFIG_T;
 
 #define DEBUG	if(debug_flag)log_debug
@@ -407,6 +411,7 @@ typedef struct main_config_t {
 #define RETRY_DELAY             5
 #define RETRY_COUNT             3
 #define DEAD_TIME               120
+#define EXEC_TIMEOUT	       10
 
 #define L_DBG			1
 #define L_AUTH			2
@@ -485,6 +490,8 @@ int		log_err (char *);
 void (*reset_signal(int signo, void (*func)(int)))(int);
 void		request_free(REQUEST **request);
 int		rad_mkdir(char *directory, int mode);
+size_t		rad_filename_escape(char *out, size_t outlen,
+				    char const *in);
 int		rad_checkfilename(const char *filename);
 void		*rad_malloc(size_t size); /* calls exit(1) on error! */
 REQUEST		*request_alloc(void);
@@ -530,6 +537,7 @@ void		pairlist_free(PAIR_LIST **);
 
 /* version.c */
 int 		ssl_check_version(void);
+int 		ssl_check_vulnerable(void);
 const char	*ssl_version(void);
 void		version(void);
 
@@ -561,9 +569,10 @@ int		rad_virtual_server(REQUEST *);
 /* exec.c */
 int		radius_exec_program(const char *,  REQUEST *, int,
 				    char *user_msg, int msg_len,
+				    int timeout,
 				    VALUE_PAIR *input_pairs,
 				    VALUE_PAIR **output_pairs,
-					int shell_escape);
+				    int shell_escape);
 
 /* timestr.c */
 int		timestr_match(char *, time_t);

@@ -98,6 +98,13 @@ void cbtls_msg(int write_p, int msg_version, int content_type,
 	tls_session_t *state = (tls_session_t *)arg;
 
 	/*
+	 *	Work around for pseudo content types in OpenSSL 1.0.2
+	 */
+	if ((msg_version == 0) && (content_type > 255)) return;
+
+	if ((write_p != 0) && (write_p != 1)) return;
+
+	/*
 	 *	Work around bug #298, where we may be called with a NULL
 	 *	argument.  We should really log a serious error
 	 */
@@ -118,7 +125,25 @@ void cbtls_msg(int write_p, int msg_version, int content_type,
 		state->info.handshake_type = ((const unsigned char*)buf)[0];
 		state->info.alert_level = 0x00;
 		state->info.alert_description = 0x00;
+
+#ifdef SSL3_RT_HEARTBEAT
+	} else if (content_type == TLS1_RT_HEARTBEAT) {
+		uint8_t *p = buf;
+
+		if ((len >= 3) && (p[0] == 1)) {
+			size_t payload_len;
+
+			payload_len = (p[1] << 8) | p[2];
+
+			if ((payload_len + 3) > len) {
+				state->invalid_hb_used = TRUE;
+				ERROR("OpenSSL Heartbeat attack detected.  Closing connection");
+				return;
+			}
+		}
+#endif
 	}
+
 	tls_session_information(state);
 }
 

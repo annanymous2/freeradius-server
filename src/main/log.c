@@ -294,19 +294,26 @@ void radlog_request(int lvl, int priority, REQUEST *request, const char *msg, ..
 		if (log_dates_utc) {
 			struct tm utc;
 			gmtime_r(&timeval, &utc);
-			asctime_r(&utc, buffer + len);
+			ASCTIME_R(&utc, buffer + len, sizeof(buffer) - len - 1);
 		} else
 #endif
+		{
 			CTIME_R(&timeval, buffer + len, sizeof(buffer) - len - 1);
-		
+		}
+
 		s = strrchr(buffer, '\n');
 		if (s) {
 			s[0] = ' ';
 			s[1] = '\0';
 		}
 		
-		strcat(buffer, fr_int2str(levels, (lvl & ~L_CONS), ": "));
 		len = strlen(buffer);
+
+		if (len < sizeof(buffer)) {
+			len += strlcpy(buffer + len, fr_int2str(levels, (lvl & ~L_CONS), ": "), sizeof(buffer) - len);
+			if (len >= sizeof(buffer))
+				len = sizeof(buffer) - 1;
+		}
 	}
 	
 	if (request && request->module[0]) {
@@ -318,8 +325,10 @@ void radlog_request(int lvl, int priority, REQUEST *request, const char *msg, ..
 	if (!fp) {
 		radlog(lvl, "%s", buffer);
 	} else {
+		if (strlcat(buffer, "\n", sizeof(buffer)) >= sizeof(buffer)) {
+			buffer[sizeof(buffer) - 1] = '\n';
+		}
 		fputs(buffer, fp);
-		fputc('\n', fp);
 		fclose(fp);
 	}
 

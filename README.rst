@@ -1,12 +1,19 @@
 The FreeRADIUS server
 =====================
-
-0. BRANCH STATE
----------------
 |BuildStatus|_
 
-.. |BuildStatus| image:: https://travis-ci.org/FreeRADIUS/freeradius-server.png?branch=v2.x.x
-.. _BuildStatus: https://travis-ci.org/FreeRADIUS/freeradius-server
+0. VERSION 2 IS END OF LIFE
+---------------------------
+
+The version 2 branch of FreeRADIUS is officially end of life (EOL).
+We may push security fixes for safety reasons, but no more.
+
+i.e. **THERE WILL BE NO MORE RELEASES OF VERSION 2**.
+
+Anyone using version 2 is *strongly recommended* to ugprade to
+version 3.  Questions on the freeradius-users mailing list about
+version 2 will be answered with a recommendation to upgrade to
+version 3.
 
 1. INTRODUCTION
 ---------------
@@ -191,3 +198,6 @@ Support is available.  See http://networkradius.com/.
 Please submit bug reports, suggestions, or patches.  That feedback
 gives the developers a guide as to where they should focus their work.
 If you like the server, feel free to mail the list and say so.
+
+.. |BuildStatus| image:: https://travis-ci.org/FreeRADIUS/freeradius-server.png?branch=v2.x.x
+.. _BuildStatus: https://travis-ci.org/FreeRADIUS/freeradius-server

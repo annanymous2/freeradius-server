@@ -579,6 +579,38 @@ static int command_show_module_flags(rad_listen_t *listener, int argc, char *arg
 	return 1;		/* success */
 }
 
+extern const FR_NAME_NUMBER mod_rcode_table[];
+
+
+static int command_show_module_status(rad_listen_t *listener, int argc, char *argv[])
+{
+	CONF_SECTION *cs;
+	const module_instance_t *mi;
+
+	if (argc != 1) {
+		cprintf(listener, "ERROR: No module name was given\n");
+		return 0;
+	}
+
+	cs = cf_section_find("modules");
+	if (!cs) return 0;
+
+	mi = find_module_instance(cs, argv[0], 0);
+	if (!mi) {
+		cprintf(listener, "ERROR: No such module \"%s\"\n", argv[0]);
+		return 0;
+	}
+
+	if (mi->force == FALSE) {
+		cprintf(listener, "alive\n");
+	} else {
+		cprintf(listener, "%s\n", fr_int2str(mod_rcode_table, mi->code, "<invalid>"));
+	}
+
+	
+	return 1;		/* success */
+}
+
 
 /*
  *	Show all loaded modules
@@ -1342,6 +1374,9 @@ static fr_command_table_t command_table_show_module[] = {
 	{ "methods", FR_READ,
 	  "show module methods <module> - show sections where <module> may be used",
 	  command_show_module_methods, NULL },
+	{ "status", FR_READ,
+	  "show module status <module> - show the module status",
+	  command_show_module_status, NULL },
 
 	{ NULL, 0, NULL, NULL, NULL }
 };
@@ -1493,7 +1528,9 @@ static int command_set_module_config(rad_listen_t *listener, int argc, char *arg
 	return 1;		/* success */
 }
 
-static int command_set_module_state(rad_listen_t *listener, int argc, char *argv[])
+extern const FR_NAME_NUMBER mod_rcode_table[];
+
+static int command_set_module_status(rad_listen_t *listener, int argc, char *argv[])
 {
 	CONF_SECTION *cs;
 	module_instance_t *mi;
@@ -1514,14 +1551,23 @@ static int command_set_module_state(rad_listen_t *listener, int argc, char *argv
 
 
 	if (strcmp(argv[1], "alive") == 0) {
-		mi->dead = FALSE;
+		mi->force = FALSE;
 
 	} else if (strcmp(argv[1], "dead") == 0) {
-		mi->dead = TRUE;
+		mi->code = RLM_MODULE_FAIL;
+		mi->force = TRUE;
 
 	} else {
-		cprintf(listener, "ERROR: Unknown status \"%s\"\n", argv[2]);
-		return 0;
+		int rcode;
+
+		rcode = fr_str2int(mod_rcode_table, argv[1], -1);
+		if (rcode < 0) {
+			cprintf(listener, "ERROR: Unknown status \"%s\"\n", argv[1]);
+			return 0;
+		}
+
+		mi->code = rcode;
+		mi->force = TRUE;
 	}
 
 	return 1;		/* success */
@@ -1822,9 +1868,9 @@ static fr_command_table_t command_table_set_module[] = {
 	  "set module config <module> variable value - set configuration for <module>",
 	  command_set_module_config, NULL },
 
-	{ "state", FR_WRITE,
-	  "set module state NAME [alive|dead] - set the module NAME to be alive or dead (always return \"fail\")",
-	  command_set_module_state, NULL },
+	{ "status", FR_WRITE,
+	  "set module status <module> [alive|...] - set the module status to be alive (operating normally), or force a particular code (ok,fail, etc.)",
+	  command_set_module_status, NULL },
 
 	{ NULL, 0, NULL, NULL, NULL }
 };

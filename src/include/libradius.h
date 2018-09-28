@@ -36,6 +36,7 @@ RCSIDH(libradius_h, "$Id$")
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <signal.h>
 
 #include <freeradius-devel/threads.h>
 #include <freeradius-devel/radius.h>
@@ -68,6 +69,10 @@ RCSIDH(libradius_h, "$Id$")
 
 #ifdef __cplusplus
 extern "C" {
+#endif
+
+#ifndef HAVE_SIG_T
+typedef void (*sig_t)(int);
 #endif
 
 #define EAP_START               2
@@ -287,14 +292,12 @@ DICT_VENDOR	*dict_vendorbyvalue(int vendor);
 #endif
 
 /* get around diffrent ctime_r styles */
-#ifdef CTIMERSTYLE
-#if CTIMERSTYLE == SOLARISSTYLE
+#if defined(CTIMERSTYLE) && ( CTIMERSTYLE == SOLARISSTYLE)
 #define CTIME_R(a,b,c) ctime_r(a,b,c)
+#define ASCTIME_R(a,b,c) asctime_r(a,b,c)
 #else
 #define CTIME_R(a,b,c) ctime_r(a,b)
-#endif
-#else
-#define CTIME_R(a,b,c) ctime_r(a,b)
+#define ASCTIME_R(a,b,c) asctime_r(a,b)
 #endif
 
 /* md5.c */
@@ -404,6 +407,8 @@ void		fr_printf_log(const char *, ...)
 /*
  *	Several handy miscellaneous functions.
  */
+int		fr_fault_setup(char const *cmd, char const *program);
+int		fr_set_signal(int sig, sig_t func);
 const char *	ip_ntoa(char *, uint32_t);
 char		*ifid_ntoa(char *buffer, size_t size, uint8_t *ifid);
 uint8_t		*ifid_aton(const char *ifid_str, uint8_t *ifid);

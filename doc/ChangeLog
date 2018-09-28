@@ -1,4 +1,199 @@
-FreeRADIUS 2.2.1 Mon 10 Sep 2012 12:00:00 CEST, urgency=medium
+FreeRADIUS 2.2.11 Monday 17 Jul 2018 09:00:00 EDT, urgency=low
+	Feature improvements
+	* None.
+
+	Bug fixes
+	* For rlm_perl, document: perl_flags = "-T", and set all
+	  variables to "tainted".
+	* Use F_UNLCK when using fcntl() locks.
+	* use correct length when decoding invalid attributes
+	  in TTLS.
+	* Don't over-write packets when encoding Message-Authenticator.
+
+FreeRADIUS 2.2.10 Monday 17 Jul 2017 09:00:00 EDT, urgency=high
+	Feature improvements
+	* None.
+
+	Bug fixes
+	* Fix multiple security issues. See
+	  http://freeradius.org/security/fuzzer-2017.html
+	  Thanks to Guido Vranken for working with us to
+	  discover the issues and test the fixes.
+	* FR-GV-207 Avoid zero-length malloc() in data2vp()
+	* FR-GV-206 correct decoding of option 60
+	* FR-GV-205 check for "too long" WiMAX options
+	* FR-GV-204 free VP if decoding fails, so we don't leak memory.
+	* FR-GV-203 fix memory leak when using decode_tlv()
+	* FR-GV-202 check for "too long" attributes
+	* FR-GV-201 check input/output length in make_secret()
+	* FR-AD-001 Use strncmp() instead of memcmp() for bounded data.
+	* Disable in-memory TLS session caches due to OpenSSL API
+	  issues.
+	* Allow issuer_cert to be empty.
+	* Look for extensions using correct index
+	* Fix types
+	* Work around OpenSSL 1.0.2 problems, which cause failures
+	  in TLS-based EAP methods.
+	* Revert RedHat contributed bug which removes run-time checks
+	  for OpenSSL consistency.
+	* Allow OCSP responder URL to be later in the packet.
+	  Fix by Ean Pasternak.
+	* Catch empty subject and non-existent issuer cert in OCSP.
+	  Fix by Ean Pasternak.
+	* Allow non-FIPS for MD5.
+	  Fix by Ean Pasternak.
+
+FreeRADIUS 2.2.9 Wednesday 30 Sep 2015 17:00:00 EDT, urgency=medium
+	Feature improvements
+	* None.
+
+	Bug fixes
+	* Fix Tunnel-Password crash from home server.
+	  Found by Denis Andzakovic.
+	* Fix timer issue when proxying.
+	* Update EAP-TTLS so that MPPE keys are correctly
+	  calculated with TLSv1.2.
+	* Always delete MS-MPPE-* from the TTLS inner tunnel.
+	  This allows TTLS / EAP-MSCHAPv2 to work.
+	* Don't fall through in empty "case" statements.
+	  Fixes #1274.
+
+FreeRADIUS 2.2.8 Thursday 09 Jul 2015 11:00:00 EDT, urgency=medium
+	Feature improvements
+	* None.
+
+	Bug fixes
+	* Fixes for clients tied to virtual servers.  If there is
+	  no "listen" section there, clients use the main "listen"
+	  section.
+	* Remove compiler warnings
+	* Print out correct filenames in debug mode
+	* Allow post-auth section to return "reject".  This turns
+	  the response into Access-Reject.
+	* Set X509_V_FLAG_CRL_CHECK_ALL, and add "check_all_crl"
+	  to eap.conf.  Fixes oCert CVE-2015-4680.
+
+FreeRADIUS 2.2.7 Wednesday 22 Apr 2015 14:00:00 EST, urgency=medium
+	Feature improvements
+	* Allow "eap" to be listed in Post-Auth-Type Reject
+	  so that it sends EAP-Fail and Message-Authenticator.
+
+	Bug fixes
+	* Fix typo in code checking for blocked threads.
+	  Closes #880.
+	* Added more $(EXEEXT) to module utilities so that it
+	  builds on Cygwin.  Closes #875.
+	* Note that we don't need to generate ephemeral RSA keys.
+	* Port detail file fixes from v3.
+	* Use correct destination port for replies to DHCP relay.
+	* rlm_perl can store multiple tagged attributes of the
+	  same name.
+	* Update EAP-TLS methods for TLSv1.2
+	* Fix load-balance sections.  Closes #945
+
+FreeRADIUS 2.2.6 Tuesday 18 Nov 2014 15:00:00 EST, urgency=medium
+	Feature improvements
+	* When supported by OpenSSL, allow TLS 1.1 and TLS 1.2
+	  in EAP methods.
+
+	Bug fixes
+	* Fix redundant-load-balance blocks to try other modules in
+	  the group if one fails.
+	* Fix potential read into uninitialised memory in rlm_pap
+	  when normalising octet type attributes containing password
+	  hashes. This is very unlikely to happen in the wild.
+	* Don't stop decoding DHCP options if we find a padding
+	  option.
+	* Define sig_t on systems which don't have it.  Closes #765
+	* When clients are loaded from SQL, allow them to be tied
+	  to a virtual server.
+	* Prevent race conditions between fork and wait for child.
+	  Patch from James Rouzier.
+	* Allow UTF-8 characters in SQL.
+	* Back-port udpfromto fixes from v3
+
+FreeRADIUS 2.2.5 Monday 28 Apr 2014 15:20:00 EDT, urgency=medium
+	Feature improvements
+	* Update dictionary.terena.
+	* expose server version via %v.  Patch from Alan Buxey.
+	* Forbid running with vulnerable versions of OpenSSL.
+	  See "allow_vulnerable_openssl" in the "security"
+	  subsection of "radiusd.conf"
+	* Catch underlying "heartbleed" problem, so that nothing bad
+	  happens even when using a vulnerable version of OpenSSL.
+	* Add dictionary.zte
+
+	Bug fixes
+	* Minor changes to build on Sun.
+	* Print non-ASCII characters as octal in linelog.  Closes #578
+	* close stdout in daemon mode.
+	* Fix zombie period calculation.  Closes #579
+
+FreeRADIUS 2.2.4 Wednesday 19 Mar 2014 13:20:00 EDT, urgency=medium
+	Feature improvements
+	* A "panic_action" can be set to have the server dump a gdb
+	  log on SEGV or other fatal error.
+	* allow radmin command "set module status <module> <code>"
+	  which can be used to forcibly enable/disable modules.
+
+	Bug fixes
+	* If the server fails to bind() after fork(), that is now
+	  reported to the parent, which exits with an error.
+	* Session / delay times in MySQL are unsigned int.
+	* Use --tag=CC for libtool.  Closes #497.  Because libtool
+	  is too stupid to notice that compiling means compilation.
+	* Fix bug when copying attributes for vendors > 32767
+	* Fix behaviour on FreeBSD where sending packets from an interface
+	  bound to an IP address would fail when the server was built with
+	  udpfromto.
+	* Don't fail config check if were listening on an IP which is
+	  also a home server. Some deployments have valid reasons
+	  to loop packets back to another virtual server.
+	* Use correct port when DHCP relaying.
+	* Set source IP address for DHCP packets from DHCP-Server-IP-Address,
+	  or DHCP-DHCP-Server-Identifier, if we're unable to otherwise
+	  determine the source IP.
+
+FreeRADIUS 2.2.3 Wednesday 11 Dec 2013 15:00:00 EST, urgency=medium
+	Feature improvements
+	* Added dictionary.efficientip, dictionary.alcatel-lucent-aaa
+	* Allow zero length DN strings in rlm_ldap.
+	* If Password-With-Header has no header, assume it is
+	  Cleartext-Password.
+
+	Bug fixes
+	* Make the server build when DHCP is enabled
+	* Don't crash if there's no Post-Proxy-Type Reject.
+	* Use correct fields for X509 attributes in certificates
+	* Install threads.h making it possible to link against the
+	  installed headers again.
+	* Initialize SSL once in "main", instead of rlm_eap_tls.
+	  Some client libraries may need SSL.
+
+FreeRADIUS 2.2.2 Wednesday 30 Oct 2013 9:30:00 DST, urgency=medium
+	Feature improvements
+	* Add "timeout" to exec, and "ntlm_auth_timeout" to mschap.
+	  So that run-away child processes are caught earlier.
+	* Print out thread number for "unresponsive child".
+
+	Bug fixes
+	* Fix erroneous fall-through in "case" statements
+	* Fix priority handling in new module handling code
+	* Fix threading issue with Perl.  Closes #436
+	* Fix EAP-TLS check_cert_issuer when X509v2 extensions
+	  existed.  Patch from David Wood.
+	* Fix pointer references in rlm_python.
+	* Fix "unresponsive child" issue when proxying.
+	* Set log output correctly when using -l.
+	  Fix ported from 3.0.0.
+	* Buffer debug output when threaded, so that text from
+	  different threads isn't interspersed.
+	* Fix SEGV in rlm_perl when using dynamic expansions.
+	* Fix build for OSX Mavericks, which hid the header files
+	  in a magical place.
+	* Port DHCP fixes from 3.0.
+
+FreeRADIUS 2.2.1 Tuesday 17 Sep 2013 12:00:00 CEST, urgency=medium
 	Feature improvements
 	* Updated dictionaries for alcatel, broadsoft, bskyb, dlink, meru,
 	  telkom, trapeze, proxim, zeus, rfc6677, 6911, and rfc6930.
@@ -10,7 +205,7 @@ FreeRADIUS 2.2.1 Mon 10 Sep 2012 12:00:00 CEST, urgency=medium
 	* Added %{base64:...} for raw attribute data (e.g. 32-bit IP addr),
 	  and %{tobase64:...} for the printable string form (e.g. 1.2.3.4),
 	  and %{base64tohex:...} to convert a base64 string to a hex string.
-	* rlm_expr is now responsible for registering many of the xlat 
+	* rlm_expr is now responsible for registering many of the xlat
 	  expansions. This is cleaner than bundling them all in the server
 	  core. You should ensure 'expr' is listed in instantiate to ensure
 	  correct operation of xlat expansions.
@@ -87,6 +282,11 @@ FreeRADIUS 2.2.1 Mon 10 Sep 2012 12:00:00 CEST, urgency=medium
 	  I18n issues means that the character sets could be different.
 	* Don't use ephemeral thread states from PyGILState_Ensure(), use
 	  our own, generated one per thread and stored in TLS.
+	* Port module processing fixes from v3.  The code is simpler,
+	  and one or two esoteric bugs are now gone.
+	* update code handling max_requests_per_server.  It should now
+	  work correctly.
+	* wrap ASCTIME_R for systems not supporting the standard API.
 
 FreeRADIUS 2.2.0 Mon 10 Sep 2012 12:00:00 CEST, urgency=medium
 	Feature improvements

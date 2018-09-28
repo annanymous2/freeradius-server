@@ -34,48 +34,102 @@ RCSID("$Id$")
 
 static long ssl_built = OPENSSL_VERSION_NUMBER;
 
-/** Check build and linked versions of OpenSSL match
- *
- * Startup check for whether the linked version of OpenSSL matches the
- * version the server was built against.
- *
- * @return 0 if ok, else -1
- */
-int ssl_check_version(void)
-{
-	long ssl_linked;
-	
-	ssl_linked = SSLeay();
-	
-	if (ssl_linked != ssl_built) {
-		radlog(L_ERR, "libssl version mismatch."
-		       "  Built with: %lx\n  Linked: %lx",
-		       (unsigned long) ssl_built,
-		       (unsigned long) ssl_linked);
-	
-		return -1;
-	};
-	
-	return 0;
-}
-
 /** Print the current linked version of Openssl
  *
  * Print the currently linked version of the OpenSSL library.
  */
 const char *ssl_version(void)
 {
-	return SSLeay_version(SSLEAY_VERSION); 
+	return SSLeay_version(SSLEAY_VERSION);
 }
 #else
-int ssl_version_check(void) {
-	return 0;
-}
-
 const char *ssl_version()
 {
 	return "not linked";
 }
+#endif
+
+
+/** Check built and linked versions of OpenSSL match
+ *
+ * OpenSSL version number consists of:
+ * MNNFFPPS: major minor fix patch status
+ *
+ * Where status >= 0 && < 10 means beta, and status 10 means release.
+ *
+ * Startup check for whether the linked version of OpenSSL matches the
+ * version the server was built against.
+ *
+ * @return 0 if ok, else -1
+ */
+#ifdef HAVE_OPENSSL_CRYPTO_H
+int ssl_check_version()
+{
+	long ssl_linked;
+
+	ssl_linked = SSLeay();
+
+	/*
+	 *	Status mismatch always triggers error.
+	 */
+	if ((ssl_linked & 0x0000000f) != (ssl_built & 0x0000000f)) {
+	mismatch:
+		radlog(L_ERR, "libssl version mismatch.  built: %lx linked: %lx",
+		       (unsigned long) ssl_built, (unsigned long) ssl_linked);
+
+		return -1;
+	}
+
+	/*
+	 *	Use the OpenSSH approach and relax fix checks after version
+	 *	1.0.0 and only allow moving backwards within a patch
+	 *	series.
+	 */
+	if (ssl_built & 0xf0000000) {
+		if ((ssl_built & 0xfffff000) != (ssl_linked & 0xfffff000) ||
+		    (ssl_built & 0x00000ff0) > (ssl_linked & 0x00000ff0)) goto mismatch;
+	/*
+	 *	Before 1.0.0 we require the same major minor and fix version
+	 *	and ignore the patch number.
+	 */
+	} else if ((ssl_built & 0xfffff000) != (ssl_linked & 0xfffff000)) goto mismatch;
+
+	return 0;
+}
+
+/** Check OpenSSL version for known vulnerabilities.
+ *
+ * OpenSSL version number consists of:
+ * MNNFFPPS: major minor fix patch status
+ *
+ * Where status >= 0 && < 10 means beta, and status 10 means release.
+ *
+ * Startup check for whether the linked version of OpenSSL is a version known to
+ * have serious vulnerabilities impacting FreeRADIUS.
+ *
+ * @return 0 if ok, else -1
+ */
+#  ifdef ENABLE_OPENSSL_VERSION_CHECK
+int ssl_check_vulnerable()
+{
+	long ssl_linked;
+
+	ssl_linked = SSLeay();
+
+	/* Check for bad versions */
+	/* 1.0.1 - 1.0.1f CVE-2014-0160 http://heartbleed.com */
+	if ((ssl_linked >= 0x010001000) && (ssl_linked < 0x010001070)) {
+		radlog(L_ERR, "Refusing to start with libssl version %s (in range 1.0.1 - 1.0.1f).  "
+		      "Security advisory CVE-2014-0160 (Heartbleed)", ssl_version());
+		radlog(L_ERR, "For more information see http://heartbleed.com");
+
+		return -1;
+	}
+
+	return 0;
+}
+#  endif
+
 #endif
 
 /*
@@ -86,7 +140,7 @@ void version(void)
 
 	radlog(L_INFO, "%s: %s", progname, radiusd_version);
 	DEBUG3("Server was built with: ");
-		
+
 #ifdef WITH_ACCOUNTING
 	DEBUG3("  accounting");
 #endif
@@ -131,13 +185,13 @@ void version(void)
 	DEBUG3("Server core libs:");
 	DEBUG3("  ssl: %s", ssl_version());
 
-	radlog(L_INFO, "Copyright (C) 1999-2013 The FreeRADIUS server project and contributors.");
+	radlog(L_INFO, "Copyright (C) 1999-2015 The FreeRADIUS server project and contributors.");
 	radlog(L_INFO, "There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A");
 	radlog(L_INFO, "PARTICULAR PURPOSE.");
 	radlog(L_INFO, "You may redistribute copies of FreeRADIUS under the terms of the");
 	radlog(L_INFO, "GNU General Public License.");
 	radlog(L_INFO, "For more information about these matters, see the file named COPYRIGHT.");
-	
+
 	fflush(NULL);
 }
 

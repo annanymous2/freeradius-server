@@ -545,8 +545,8 @@ static int do_python(rlm_python_t *inst, REQUEST *request, PyObject *pFunc, char
 	}
 
 finish:
-	Py_DECREF(pArgs);
-	Py_DECREF(pRet);
+	Py_XDECREF(pArgs);
+	Py_XDECREF(pRet);
 
 #ifdef HAVE_PTHREAD_H
 	if (worker) {
@@ -755,7 +755,7 @@ A(send_coa)
 module_t rlm_python = {
 	RLM_MODULE_INIT,
 	"python",
-	RLM_TYPE_THREAD_SAFE,		/* type */
+	RLM_TYPE_THREAD_UNSAFE,		/* type */
 	python_instantiate,		/* instantiation */
 	python_detach,
 	{

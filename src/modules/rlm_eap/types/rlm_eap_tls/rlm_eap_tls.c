@@ -120,6 +120,8 @@ static CONF_PARSER module_config[] = {
 	  offsetof(EAP_TLS_CONF, include_length), NULL, "yes" },
 	{ "check_crl", PW_TYPE_BOOLEAN,
 	  offsetof(EAP_TLS_CONF, check_crl), NULL, "no"},
+	{ "check_all_crl", PW_TYPE_BOOLEAN,
+	  offsetof(EAP_TLS_CONF, check_all_crl), NULL, "no"},
 	{ "allow_expired_crl", PW_TYPE_BOOLEAN,
 	  offsetof(EAP_TLS_CONF, allow_expired_crl), NULL, NULL},
 	{ "check_cert_cn", PW_TYPE_STRING_PTR,
@@ -138,6 +140,15 @@ static CONF_PARSER module_config[] = {
 	{ "ecdh_curve", PW_TYPE_STRING_PTR,
 	  offsetof(EAP_TLS_CONF, ecdh_curve), NULL, "prime256v1"},
 #endif
+#endif
+
+#ifdef SSL_OP_NO_TLSv1_1
+	{ "disable_tlsv1_1", PW_TYPE_BOOLEAN,
+	  offsetof(EAP_TLS_CONF, disable_tlsv1_1), NULL, NULL },
+#endif
+#ifdef SSL_OP_NO_TLSv1_2
+	{ "disable_tlsv1_2", PW_TYPE_BOOLEAN,
+	  offsetof(EAP_TLS_CONF, disable_tlsv1_2), NULL, NULL },
 #endif
 
 	{ "cache", PW_TYPE_SUBSECTION, 0, NULL, (const void *) cache_config },
@@ -159,6 +170,8 @@ static int load_dh_params(SSL_CTX *ctx, char *file)
 {
 	DH *dh = NULL;
 	BIO *bio;
+
+	if (!ctx || !file) return 0;
 
 	if ((bio = BIO_new_file(file, "r")) == NULL) {
 		radlog(L_ERR, "rlm_eap_tls: Unable to open DH file - %s", file);
@@ -190,6 +203,8 @@ static int load_dh_params(SSL_CTX *ctx, char *file)
 static int generate_eph_rsa_key(SSL_CTX *ctx)
 {
 	RSA *rsa;
+
+	if (!SSL_CTX_need_tmp_RSA(ctx)) return 0;
 
 	rsa = RSA_generate_key(512, RSA_F4, NULL, NULL);
 
@@ -261,24 +276,24 @@ static SSL_SESSION *cbtls_get_session(UNUSED SSL *s,
 
 #ifdef HAVE_OPENSSL_OCSP_H
 /*
- * This function extracts the OCSP Responder URL 
+ * This function extracts the OCSP Responder URL
  * from an existing x509 certificate.
  */
 static int ocsp_parse_cert_url(X509 *cert, char **phost, char **pport,
 			       char **ppath, int *pssl)
 {
 	int i;
-	
+
 	AUTHORITY_INFO_ACCESS *aia;
 	ACCESS_DESCRIPTION *ad;
-	
+
 	aia = X509_get_ext_d2i(cert, NID_info_access, NULL, NULL);
 
 	for (i = 0; i < sk_ACCESS_DESCRIPTION_num(aia); i++) {
-		ad = sk_ACCESS_DESCRIPTION_value(aia, 0);
+		ad = sk_ACCESS_DESCRIPTION_value(aia, i);
 		if (OBJ_obj2nid(ad->method) == NID_ad_OCSP) {
 			if (ad->location->type == GEN_URI) {
-				if(OCSP_parse_url(ad->location->d.ia5->data, 
+				if(OCSP_parse_url(ad->location->d.ia5->data,
 					phost, pport, ppath, pssl))
 					return 1;
 			}
@@ -319,8 +334,8 @@ static int ocsp_check(X509_STORE *store, X509 *issuer_cert, X509 *client_cert,
 	struct timeval when;
 #endif
 
-	/* 
-	 * Create OCSP Request 
+	/*
+	 * Create OCSP Request
 	 */
 	certid = OCSP_cert_to_id(NULL, client_cert, issuer_cert);
 	req = OCSP_REQUEST_new();
@@ -328,12 +343,12 @@ static int ocsp_check(X509_STORE *store, X509 *issuer_cert, X509 *client_cert,
 	if(conf->ocsp_use_nonce){
 		OCSP_request_add1_nonce(req, NULL, 8);
 	}
-	
-	/* 
+
+	/*
 	 * Send OCSP Request and get OCSP Response
 	 */
 
-	/* Get OCSP responder URL */ 
+	/* Get OCSP responder URL */
 	if(conf->ocsp_override_url) {
 		OCSP_parse_url(conf->ocsp_url, &host, &port, &path, &use_ssl);
 	}
@@ -346,18 +361,26 @@ static int ocsp_check(X509_STORE *store, X509 *issuer_cert, X509 *client_cert,
 		ocsp_ok = 2;
 		goto ocsp_skip;
 	}
-	
+
 	DEBUG2("[ocsp] --> Responder URL = http://%s:%s%s", host, port, path);
 
 	/* Setup BIO socket to OCSP responder */
 	cbio = BIO_new_connect(host);
 
-	bio_out = BIO_new_fp(stdout, BIO_NOCLOSE);
+	/*
+	 *	Only print debugging information if we're in debugging
+	 *	mode.
+	 */
+	if (debug_flag) {
+		bio_out = BIO_new_fp(stdout, BIO_NOCLOSE);
+	} else {
+		bio_out = NULL;
+	}
 
 	BIO_set_conn_port(cbio, port);
 #if OPENSSL_VERSION_NUMBER < 0x1000003f
 	BIO_do_connect(cbio);
- 
+
 	/* Send OCSP request and wait for response */
 	resp = OCSP_sendreq_bio(cbio, path, req);
 	if (!resp) {
@@ -434,23 +457,28 @@ static int ocsp_check(X509_STORE *store, X509 *issuer_cert, X509 *client_cert,
 	}
 
 	if (!OCSP_check_validity(thisupd, nextupd, nsec, maxage)) {
-		BIO_puts(bio_out, "WARNING: Status times invalid.\n");
-		ERR_print_errors(bio_out);
+		if (bio_out) {
+			BIO_puts(bio_out, "WARNING: Status times invalid.\n");
+			ERR_print_errors(bio_out);
+		}
 		goto ocsp_end;
 	}
-	BIO_puts(bio_out, "\tThis Update: ");
-        ASN1_GENERALIZEDTIME_print(bio_out, thisupd);
-        BIO_puts(bio_out, "\n");
-	if (nextupd) {
-		BIO_puts(bio_out, "\tNext Update: ");
-		ASN1_GENERALIZEDTIME_print(bio_out, nextupd);
+
+	if (bio_out) {
+		BIO_puts(bio_out, "\tThis Update: ");
+		ASN1_GENERALIZEDTIME_print(bio_out, thisupd);
 		BIO_puts(bio_out, "\n");
+		if (nextupd) {
+			BIO_puts(bio_out, "\tNext Update: ");
+			ASN1_GENERALIZEDTIME_print(bio_out, nextupd);
+			BIO_puts(bio_out, "\n");
+		}
 	}
 
 	switch (status) {
 	case V_OCSP_CERTSTATUS_GOOD:
 		DEBUG2("[oscp] --> Cert status: good");
-		ocsp_ok = 1; 
+		ocsp_ok = 1;
 		break;
 
 	default:
@@ -458,9 +486,12 @@ static int ocsp_check(X509_STORE *store, X509 *issuer_cert, X509 *client_cert,
 		DEBUG2("[ocsp] --> Cert status: %s",OCSP_cert_status_str(status));
                 if (reason != -1)
 			DEBUG2("[ocsp] --> Reason: %s", OCSP_crl_reason_str(reason));
-                BIO_puts(bio_out, "\tRevocation Time: ");
-                ASN1_GENERALIZEDTIME_print(bio_out, rev);
-                BIO_puts(bio_out, "\n"); 
+
+		if (bio_out) {
+			BIO_puts(bio_out, "\tRevocation Time: ");
+			ASN1_GENERALIZEDTIME_print(bio_out, rev);
+			BIO_puts(bio_out, "\n");
+		}
 		break;
 	}
 
@@ -472,6 +503,7 @@ ocsp_end:
 	free(port);
 	free(path);
 	BIO_free_all(cbio);
+	if (bio_out) BIO_free(bio_out);
 	OCSP_BASICRESP_free(bresp);
 
 ocsp_skip:
@@ -546,6 +578,8 @@ static int cbtls_verify(int ok, X509_STORE_CTX *ctx)
 {
 	char subject[1024]; /* Used for the subject name */
 	char issuer[1024]; /* Used for the issuer name */
+	char attribute[1024];
+	char value[1024];
 	char common_name[1024];
 	char cn_str[1024];
 	char buf[64];
@@ -678,7 +712,7 @@ static int cbtls_verify(int ok, X509_STORE_CTX *ctx)
 
 					pairadd(&handler->certs,
 						pairmake(cert_attr_names[EAPTLS_SAN_EMAIL][lookup],
-							 ASN1_STRING_data(name->d.rfc822Name), T_OP_SET));
+							 (char *)ASN1_STRING_data(name->d.rfc822Name), T_OP_SET));
 					break;
 				default:
 					/* XXX TODO handle other SAN types */
@@ -687,7 +721,7 @@ static int cbtls_verify(int ok, X509_STORE_CTX *ctx)
 			}
 		}
 		if (names != NULL)
-			sk_GENERAL_NAME_free(names);
+			GENERAL_NAMES_free(names);
 	}
 #endif	/* GEN_EMAIL */
 
@@ -726,7 +760,7 @@ static int cbtls_verify(int ok, X509_STORE_CTX *ctx)
 		BIO *out;
 
 		out = BIO_new(BIO_s_mem());
-		strlcpy(subject, "TLS-Client-Cert-", sizeof(subject));
+		strlcpy(attribute, "TLS-Client-Cert-", sizeof(attribute));
 
 		for (i = 0; i < sk_X509_EXTENSION_num(ext_list); i++) {
 			ASN1_OBJECT *obj;
@@ -737,26 +771,26 @@ static int cbtls_verify(int ok, X509_STORE_CTX *ctx)
 
 			obj = X509_EXTENSION_get_object(ext);
 			i2a_ASN1_OBJECT(out, obj);
-			len = BIO_read(out, subject + 16 , sizeof(subject) - 16 - 1);
+			len = BIO_read(out, attribute + 16 , sizeof(attribute) - 16 - 1);
 			if (len <= 0) continue;
 
-			subject[16 + len] = '\0';
+			attribute[16 + len] = '\0';
 
 			X509V3_EXT_print(out, ext, 0, 0);
-			len = BIO_read(out, issuer , sizeof(issuer) - 1);
+			len = BIO_read(out, value, sizeof(value) - 1);
 			if (len <= 0) continue;
 
-			issuer[len] = '\0';
+			value[len] = '\0';
 
 			/*
 			 *	Mash the OpenSSL name to our name, and
 			 *	create the attribute.
 			 */
-			for (p = subject + 16; *p != '\0'; p++) {
+			for (p = attribute + 16; *p != '\0'; p++) {
 				if (*p == ' ') *p = '-';
 			}
 
-			vp = pairmake(subject, issuer, T_OP_ADD);
+			vp = pairmake(attribute, value, T_OP_ADD);
 			if (vp) {
 				pairadd(&handler->certs, vp);
 				debug_pair_list(vp);
@@ -826,10 +860,13 @@ static int cbtls_verify(int ok, X509_STORE_CTX *ctx)
 #ifdef HAVE_OPENSSL_OCSP_H
 		if (my_ok && conf->ocsp_enable){
 			RDEBUG2("--> Starting OCSP Request");
-			if(X509_STORE_CTX_get1_issuer(&issuer_cert, ctx, client_cert)!=1) {
+			if (X509_STORE_CTX_get1_issuer(&issuer_cert, ctx, client_cert) != 1) {
 				radlog(L_ERR, "Error: Couldn't get issuer_cert for %s", common_name);
+			} else if (!issuer_cert && !subject[0]) {
+				radlog(L_ERR, "Error: Missing issuer_cert and subject for %s", common_name);
+			} else {
+				my_ok = ocsp_check(ocsp_store, issuer_cert, client_cert, conf);
 			}
-			my_ok = ocsp_check(ocsp_store, issuer_cert, client_cert, conf);
 		}
 #endif
 
@@ -844,7 +881,7 @@ static int cbtls_verify(int ok, X509_STORE_CTX *ctx)
 			if (fd < 0) {
 				RDEBUG("Failed creating file in %s: %s",
 				       conf->verify_tmp_dir, strerror(errno));
-				break;				       
+				break;
 			}
 
 			fp = fdopen(fd, "w");
@@ -865,14 +902,15 @@ static int cbtls_verify(int ok, X509_STORE_CTX *ctx)
 					     "TLS-Client-Cert-Filename",
 					     filename, T_OP_SET)) {
 				RDEBUG("Failed creating TLS-Client-Cert-Filename");
-				
+
 				goto do_unlink;
 			}
 
 			RDEBUG("Verifying client certificate: %s",
 			       conf->verify_client_cert_cmd);
 			if (radius_exec_program(conf->verify_client_cert_cmd,
-						request, 1, NULL, 0, 
+						request, 1, NULL, 0,
+						EXEC_TIMEOUT,
 						request->packet->vps,
 						NULL, 1) != 0) {
 				radlog(L_AUTH, "rlm_eap_tls: Certificate CN (%s) fails external verification!", common_name);
@@ -927,7 +965,7 @@ static void eaptls_session_free(UNUSED void *parent, void *data_ptr,
 static X509_STORE *init_revocation_store(EAP_TLS_CONF *conf)
 {
 	X509_STORE *store = NULL;
-	
+
 	store = X509_STORE_new();
 
 	/* Load the CAs we trust */
@@ -939,8 +977,12 @@ static X509_STORE *init_revocation_store(EAP_TLS_CONF *conf)
 		}
 
 #ifdef X509_V_FLAG_CRL_CHECK
-	if (conf->check_crl) 
+	if (conf->check_crl)
 		X509_STORE_set_flags(store, X509_V_FLAG_CRL_CHECK);
+#endif
+#ifdef X509_V_FLAG_CRL_CHECK_ALL
+	if (conf->check_all_crl)
+		X509_STORE_set_flags(store, X509_V_FLAG_CRL_CHECK_ALL);
 #endif
 	return store;
 }
@@ -950,26 +992,26 @@ static X509_STORE *init_revocation_store(EAP_TLS_CONF *conf)
 #ifndef OPENSSL_NO_ECDH
 static int set_ecdh_curve(SSL_CTX *ctx, const char *ecdh_curve)
 {
-	int      nid; 
-	EC_KEY  *ecdh; 
+	int      nid;
+	EC_KEY  *ecdh;
 
 	if (!ecdh_curve || !*ecdh_curve) return 0;
 
-	nid = OBJ_sn2nid(ecdh_curve); 
-	if (!nid) { 
+	nid = OBJ_sn2nid(ecdh_curve);
+	if (!nid) {
 		radlog(L_ERR, "Unknown ecdh_curve \"%s\"", ecdh_curve);
 		return -1;
 	}
 
-	ecdh = EC_KEY_new_by_curve_name(nid); 
-	if (!ecdh) { 
+	ecdh = EC_KEY_new_by_curve_name(nid);
+	if (!ecdh) {
 		radlog(L_ERR, "Unable to create new curve \"%s\"", ecdh_curve);
 		return -1;
-	} 
+	}
 
-	SSL_CTX_set_tmp_ecdh(ctx, ecdh); 
+	SSL_CTX_set_tmp_ecdh(ctx, ecdh);
 
-	SSL_CTX_set_options(ctx, SSL_OP_SINGLE_ECDH_USE); 
+	SSL_CTX_set_options(ctx, SSL_OP_SINGLE_ECDH_USE);
 
 	EC_KEY_free(ecdh);
 
@@ -995,13 +1037,6 @@ static SSL_CTX *init_tls_ctx(EAP_TLS_CONF *conf)
 	int type;
 
 	/*
-	 *	Add all the default ciphers and message digests
-	 *	Create our context.
-	 */
-	SSL_library_init();
-	SSL_load_error_strings();
-
-	/*
 	 *	Bug fix
 	 *	http://old.nabble.com/Backward-compatibility-of-private-key-files--td27937046.html
 	 */
@@ -1016,7 +1051,7 @@ static SSL_CTX *init_tls_ctx(EAP_TLS_CONF *conf)
 	EVP_add_digest(EVP_sha256());
 #endif
 
-	meth = TLSv1_method();
+	meth = SSLv23_method();	/* which is really "all known SSL / TLS methods".  Idiots. */
 	ctx = SSL_CTX_new(meth);
 
 	/*
@@ -1036,7 +1071,7 @@ static SSL_CTX *init_tls_ctx(EAP_TLS_CONF *conf)
 		/*
 		 * We don't want to put the private key password in eap.conf, so  check
 		 * for our special string which indicates we should get the password
-		 * programmatically. 
+		 * programmatically.
 		 */
 		const char* special_string = "Apple:UseCertAdmin";
 		if (strncmp(conf->private_key_password,
@@ -1129,6 +1164,14 @@ static SSL_CTX *init_tls_ctx(EAP_TLS_CONF *conf)
 	 */
 	ctx_options |= SSL_OP_NO_SSLv2;
    	ctx_options |= SSL_OP_NO_SSLv3;
+
+#ifdef SSL_OP_NO_TLSv1_1
+	if (conf->disable_tlsv1_1) ctx_options |= SSL_OP_NO_TLSv1_1;
+#endif
+#ifdef SSL_OP_NO_TLSv1_2
+	if (conf->disable_tlsv1_2) ctx_options |= SSL_OP_NO_TLSv1_2;
+#endif
+
 #ifdef SSL_OP_NO_TICKET
 	ctx_options |= SSL_OP_NO_TICKET ;
 #endif
@@ -1184,13 +1227,18 @@ static SSL_CTX *init_tls_ctx(EAP_TLS_CONF *conf)
 
 	/*
 	 *	Callbacks, etc. for session resumption.
-	 */						      
+	 */
 	if (conf->session_cache_enable) {
+#if 1
+		DEBUG("WARNING: TLS Session cache is disabled");
+		conf->session_cache_enable = 0;
+#else
 		SSL_CTX_sess_set_new_cb(ctx, cbtls_new_session);
 		SSL_CTX_sess_set_get_cb(ctx, cbtls_get_session);
 		SSL_CTX_sess_set_remove_cb(ctx, cbtls_remove_session);
 
 		SSL_CTX_set_quiet_shutdown(ctx, 1);
+#endif
 	}
 
 	/*
@@ -1205,6 +1253,10 @@ static SSL_CTX *init_tls_ctx(EAP_TLS_CONF *conf)
 	    return NULL;
 	  }
 	  X509_STORE_set_flags(certstore, X509_V_FLAG_CRL_CHECK);
+
+	  if (conf->check_all_crl) {
+		  X509_STORE_set_flags(certstore, X509_V_FLAG_CRL_CHECK_ALL);
+	  }
 	}
 #endif
 
@@ -1244,6 +1296,11 @@ static SSL_CTX *init_tls_ctx(EAP_TLS_CONF *conf)
 	 *	Setup session caching
 	 */
 	if (conf->session_cache_enable) {
+#if 1
+		DEBUG("WARNING: TLS Session cache is disabled");
+		conf->session_cache_enable = 0;
+		SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_OFF);
+#else
 		/*
 		 *	Create a unique context Id per EAP-TLS configuration.
 		 */
@@ -1262,7 +1319,7 @@ static SSL_CTX *init_tls_ctx(EAP_TLS_CONF *conf)
 		 *	Cache it, and DON'T auto-clear it.
 		 */
 		SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_SERVER | SSL_SESS_CACHE_NO_AUTO_CLEAR);
-					       
+
 		SSL_CTX_set_session_id_context(ctx,
 					       (unsigned char *) conf->session_context_id,
 					       (unsigned int) strlen(conf->session_context_id));
@@ -1271,13 +1328,13 @@ static SSL_CTX *init_tls_ctx(EAP_TLS_CONF *conf)
 		 *	Our timeout is in hours, this is in seconds.
 		 */
 		SSL_CTX_set_timeout(ctx, conf->session_timeout * 3600);
-		
+
 		/*
 		 *	Set the maximum number of entries in the
 		 *	session cache.
 		 */
 		SSL_CTX_sess_set_cache_size(ctx, conf->session_cache_size);
-
+#endif
 	} else {
 		SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_OFF);
 	}
@@ -1292,7 +1349,7 @@ static SSL_CTX *init_tls_ctx(EAP_TLS_CONF *conf)
 		eaptls_handle_idx = SSL_get_ex_new_index(0, "eaptls_handle_idx",
 							  NULL, NULL, NULL);
 	}
-	
+
 	if (eaptls_conf_idx < 0) {
 		eaptls_conf_idx = SSL_get_ex_new_index(0, "eaptls_conf_idx",
 							  NULL, NULL, NULL);
@@ -1408,7 +1465,8 @@ static int eaptls_attach(CONF_SECTION *cs, void **instance)
 		    (stat(conf->certificate_file, &buf) < 0) &&
 		    (errno == ENOENT) &&
 		    (radius_exec_program(conf->make_cert_command, NULL, 1,
-					 NULL, 0, NULL, NULL, 0) != 0)) {
+					 NULL, 0, EXEC_TIMEOUT,
+					 NULL, NULL, 0) != 0)) {
 			eaptls_detach(inst);
 			return -1;
 		}
@@ -1501,6 +1559,7 @@ static int eaptls_initiate(void *type_arg, EAP_HANDLER *handler)
 	handler->tls = TRUE;
 	handler->finished = FALSE;
 
+#if 0
 	/*
 	 *	Manually flush the sessions every so often.  If HALF
 	 *	of the session lifetime has passed since we last
@@ -1516,6 +1575,7 @@ static int eaptls_initiate(void *type_arg, EAP_HANDLER *handler)
 		SSL_CTX_flush_sessions(inst->ctx, request->timestamp);
 		inst->conf.session_last_flushed = request->timestamp;
 	}
+#endif
 
 	/*
 	 *	If we're TTLS or PEAP, then do NOT require a client
@@ -1646,9 +1706,11 @@ static int eaptls_initiate(void *type_arg, EAP_HANDLER *handler)
 		break;
 	}
 
+#if 0
 	if (inst->conf.session_cache_enable) {
 		ssn->allow_session_resumption = 1; /* otherwise it's zero */
 	}
+#endif
 
 	/*
 	 *	TLS session initialization is over.  Now handle TLS
@@ -1720,7 +1782,7 @@ static int eaptls_authenticate(void *arg, EAP_HANDLER *handler)
 
 			/* reject if virtual server didn't return accept */
 			if (fake->reply->code != PW_AUTHENTICATION_ACK) {
-				RDEBUG2("Certifictes were rejected by the virtual server");
+				RDEBUG2("Certificates were rejected by the virtual server");
 				request_free(&fake);
 				eaptls_fail(handler, 0);
 				return 0;
@@ -1775,10 +1837,12 @@ static int eaptls_authenticate(void *arg, EAP_HANDLER *handler)
 		 *	the client can't re-use it.
 		 */
 	default:
-		if (inst->conf.session_cache_enable) {	
+#if 0
+		if (inst->conf.session_cache_enable) {
 			SSL_CTX_remove_session(inst->ctx,
 					       tls_session->ssl->session);
 		}
+#endif
 
 		return 0;
 	}
@@ -1792,7 +1856,7 @@ static int eaptls_authenticate(void *arg, EAP_HANDLER *handler)
 		 *	FIXME: Store miscellaneous data.
 		 */
 		RDEBUG2("Adding user data to cached session");
-		
+
 #if 0
 		SSL_SESSION_set_ex_data(tls_session->ssl->session,
 					ssl_session_idx_user_session, session_data);
@@ -1834,3 +1898,4 @@ EAP_TYPE rlm_eap_tls = {
 	eaptls_authenticate,		/* authentication */
 	eaptls_detach			/* detach */
 };
+

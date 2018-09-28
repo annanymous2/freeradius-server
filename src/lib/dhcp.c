@@ -141,7 +141,7 @@ static uint8_t *dhcp_get_option(dhcp_packet_t *packet, size_t packet_size,
 	int overload = 0;
 	int field = DHCP_OPTION_FIELD;
 	size_t where, size;
-	uint8_t *data = packet->options;
+	uint8_t *data;
 
 	where = 0;
 	size = packet_size - offsetof(dhcp_packet_t, options);
@@ -214,8 +214,9 @@ RADIUS_PACKET *fr_dhcp_recv(int sockfd)
 	socklen_t		sizeof_src;
 	socklen_t	        sizeof_dst;
 	RADIUS_PACKET		*packet;
-	int port;
+	int			port;
 	uint8_t			*code;
+	ssize_t			data_len;
 
 	packet = rad_alloc(0);
 	if (!packet) {
@@ -235,20 +236,21 @@ RADIUS_PACKET *fr_dhcp_recv(int sockfd)
 	sizeof_src = sizeof(src);
 #ifdef WITH_UDPFROMTO
 	sizeof_dst = sizeof(dst);
-	packet->data_len = recvfromto(sockfd, packet->data, MAX_PACKET_SIZE, 0,
-				      (struct sockaddr *)&src, &sizeof_src,
-				      (struct sockaddr *)&dst, &sizeof_dst);
+	data_len = recvfromto(sockfd, packet->data, MAX_PACKET_SIZE, 0,
+			      (struct sockaddr *)&src, &sizeof_src,
+			      (struct sockaddr *)&dst, &sizeof_dst);
 #else
-	packet->data_len = recvfrom(sockfd, packet->data, MAX_PACKET_SIZE, 0,
-				    (struct sockaddr *)&src, &sizeof_src);
+	data_len = recvfrom(sockfd, packet->data, MAX_PACKET_SIZE, 0,
+			    (struct sockaddr *)&src, &sizeof_src);
 #endif
 
-	if (packet->data_len <= 0) {
+	if (data_len <= 0) {
 		fr_strerror_printf("Failed reading DHCP socket: %s", strerror(errno));
 		rad_free(&packet);
 		return NULL;
 	}
 
+	packet->data_len = data_len;
 	if (packet->data_len < MIN_PACKET_SIZE) {
 		fr_strerror_printf("DHCP packet is too small (%d < %d)",
 		      		   packet->data_len, MIN_PACKET_SIZE);
@@ -337,7 +339,7 @@ RADIUS_PACKET *fr_dhcp_recv(int sockfd)
 	if (getsockname(sockfd, (struct sockaddr *) &dst, &sizeof_dst) < 0) {
 		fr_strerror_printf("getsockname failed: %s", strerror(errno));
 		rad_free(&packet);
-		return NULL;	
+		return NULL;
 	}
 #endif
 
@@ -476,12 +478,13 @@ static int decode_tlv(VALUE_PAIR *tlv, const uint8_t *data, size_t data_len)
 		}
 
 		if (fr_dhcp_attr2vp(vp, p + 2, p[1]) < 0) {
+			pairfree(&vp);
 			pairfree(&head);
 			goto make_tlv;
 		}
 
 		*tail = vp;
-		tail = &(vp->next);
+		while (*tail) tail = &((*tail)->next);
 		p += 2 + p[1];
 	}
 
@@ -492,19 +495,17 @@ static int decode_tlv(VALUE_PAIR *tlv, const uint8_t *data, size_t data_len)
 	if (head) {
 		memcpy(tlv, head, sizeof(*tlv));
 		head->next = NULL;
+		if (head->type == PW_TYPE_TLV) head->vp_tlv = NULL;
 		pairfree(&head);
 	}
 
 	return 0;
 
 make_tlv:
-	tlv->vp_tlv = malloc(data_len);
-	if (!tlv->vp_tlv) {
-		fr_strerror_printf("No memory");
-		return -1;
-	}
-	memcpy(tlv->vp_tlv, data, data_len);
+	if (data_len > sizeof(tlv->vp_octets)) data_len = sizeof(tlv->vp_octets);
+	memcpy(tlv->vp_octets, data, data_len);
 	tlv->length = data_len;
+	tlv->type = PW_TYPE_OCTETS;
 
 	return 0;
 }
@@ -580,11 +581,14 @@ ssize_t fr_dhcp_decode_options(uint8_t *data, size_t len, VALUE_PAIR **head)
 	while (next < (data + len)) {
 		int num_entries, alen;
 		DICT_ATTR *da;
-		
+
 		p = next;
 
-		if (*p == 0) break;
-		if (*p == 255) break; /* end of options signifier */
+		if (*p == 0) {		/* 0x00 - Padding option */
+			next++;
+			continue;
+		}
+		if (*p == 255) break;	/* 0xff - End of options signifier */
 		if ((p + 2) > (data + len)) break;
 
 		next = p + 2 + p[1];
@@ -594,6 +598,12 @@ ssize_t fr_dhcp_decode_options(uint8_t *data, size_t len, VALUE_PAIR **head)
 					   p[0], p[1]);
 			continue;
 		}
+
+		/*
+		 *	End of this attribute past the end of the
+		 *	packet: ignore it.
+		 */
+		if (next > (data + len)) break;
 
 		da = dict_attrbyvalue(DHCP2ATTR(p[0]));
 		if (!da) {
@@ -671,7 +681,7 @@ ssize_t fr_dhcp_decode_options(uint8_t *data, size_t len, VALUE_PAIR **head)
 			p += alen;
 		} /* loop over array entries */
 	} /* loop over the entire packet */
-	
+
 	return next - data;
 }
 
@@ -779,15 +789,16 @@ int fr_dhcp_decode(RADIUS_PACKET *packet)
 	/*
 	 *	Loop over the options.
 	 */
-	 
+
 	/*
-	 * 	Nothing uses tail after this call, if it does in the future 
+	 * 	Nothing uses tail after this call, if it does in the future
 	 *	it'll need to find the new tail...
 	 *	FIXME: This should also check sname && file fields.
 	 *	See the dhcp_get_option() function above.
 	 */
 	if (fr_dhcp_decode_options(packet->data + 240, packet->data_len - 240,
-				   tail) < 0) { 
+				   tail) < 0) {
+		pairfree(&head);
 		return -1;
 	}
 
@@ -809,7 +820,7 @@ int fr_dhcp_decode(RADIUS_PACKET *packet)
 			/*
 			 *	Vendor is "MSFT 98"
 			 */
-			vp = pairfind(head, DHCP2ATTR(63));
+			vp = pairfind(head, DHCP2ATTR(60));
 			if (vp && (strcmp(vp->vp_strvalue, "MSFT 98") == 0)) {
 				vp = pairfind(head, DHCP2ATTR(262));
 
@@ -1138,7 +1149,7 @@ int fr_dhcp_encode(RADIUS_PACKET *packet)
 	} else {
 		*p++ = 1;	/* client message */
 	}
-	
+
 	/* DHCP-Hardware-Type */
 	if ((vp = pairfind(packet->vps, DHCP2ATTR(257)))) {
 		*p++ = vp->vp_integer & 0xFF;
@@ -1199,9 +1210,6 @@ int fr_dhcp_encode(RADIUS_PACKET *packet)
 
 	/* DHCP-Server-IP-Address */
 	vp = pairfind(packet->vps, DHCP2ATTR(265));
-
-	/* DHCP-DHCP-Server-Identifier */
-	if (!vp) vp = pairfind(packet->vps, DHCP2ATTR(54));
 	if (vp) {
 		lvalue = vp->vp_ipaddr;
 	} else {
@@ -1251,7 +1259,7 @@ int fr_dhcp_encode(RADIUS_PACKET *packet)
 	 *	instead of being placed verbatim in the filename field.
 	 */
 
-	/* DHCP-Boot-Filename */	
+	/* DHCP-Boot-Filename */
 	if ((vp = pairfind(packet->vps, DHCP2ATTR(269)))) {
 		if (vp->length > DHCP_FILE_LEN) {
 			memcpy(p, vp->vp_strvalue, DHCP_FILE_LEN);
@@ -1450,6 +1458,7 @@ int fr_dhcp_encode(RADIUS_PACKET *packet)
 			 *	limitations: sizeof(vp->vp_octets) < 255
 			 */
 			if (length > 255) {
+				pairfree(&vp);
 				fr_strerror_printf("WARNING Ignoring too long attribute %s!", vp->name);
 				break;
 			}
@@ -1522,9 +1531,14 @@ int fr_dhcp_add_arp_entry(int fd, const char *interface,
 	struct sockaddr_in *sin;
 	struct arpreq req;
 
+	if (!interface) {
+		fr_strerror_printf("No interface specified.  Cannot update ARP table");
+		return -1;
+	}
+
 	if (macaddr->length > sizeof (req.arp_ha.sa_data)) {
-		fr_strerror_printf("ERROR: DHCP only supports up to %d octets for "
-				   "Client Hardware Address (got %d octets)\n",
+		fr_strerror_printf("ERROR: DHCP only supports up to %zu octets for "
+				   "Client Hardware Address (got %zu octets)\n",
 				   sizeof(req.arp_ha.sa_data),
 				   macaddr->length);
 		return -1;
@@ -1550,7 +1564,7 @@ int fr_dhcp_add_arp_entry(int fd, const char *interface,
 	interface = interface;
 	macaddr = macaddr;
 	ip = ip;
-	
+
 	fr_strerror_printf("Adding ARP entry is unsupported on this system");
 	return -1;
 #endif
