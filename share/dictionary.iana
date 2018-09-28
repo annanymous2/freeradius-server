@@ -1,5 +1,5 @@
 # -*- text -*-
-# Copyright (C) 2011 The FreeRADIUS Server project and contributors
+# Copyright (C) 2015 The FreeRADIUS Server project and contributors
 #
 #	Mostly values which have been allocated by IANA under
 #	"expert review", but which don't have an RFC associated with them.
@@ -33,12 +33,12 @@ VALUE	NAS-Port-Type			Wireless-UMTS		23
 VALUE	NAS-Port-Type			Wireless-1X-EV		24
 VALUE	NAS-Port-Type			IAPP			25
 
-VALUE   NAS-Port-Type                   FTTP                    26
-VALUE   NAS-Port-Type                   Wireless-802.16         27
-VALUE   NAS-Port-Type                   Wireless-802.20         28
-VALUE   NAS-Port-Type                   Wireless-802.22         29
+VALUE	NAS-Port-Type			FTTP			26
+VALUE	NAS-Port-Type			Wireless-802.16		27
+VALUE	NAS-Port-Type			Wireless-802.20		28
+VALUE	NAS-Port-Type			Wireless-802.22		29
 
-VALUE   NAS-Port-Type                   xPON                    35
-VALUE   NAS-Port-Type                   Wireless-XGP            36
+VALUE	NAS-Port-Type			xPON			35
+VALUE	NAS-Port-Type			Wireless-XGP		36
 
 VALUE	Framed-Protocol			PPTP			9

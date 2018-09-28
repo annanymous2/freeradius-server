@@ -47,6 +47,21 @@ listen {
 #  need to setup hints for the remote radius server
 authorize {
 	#
+	#  Take a User-Name, and perform some checks on it, for spaces and other
+	#  invalid characters.  If the User-Name appears invalid, reject the
+	#  request.
+	#
+	#  See policy.d/filter for the definition of the filter_username policy.
+	#
+	filter_username
+
+	#
+	#  Do checks on outer / inner User-Name, so that users
+	#  can't spoof us by using incompatible identities
+	#
+#	filter_inner_identity
+
+	#
 	#  The chap module will set 'Auth-Type := CHAP' if we are
 	#  handling a CHAP request and Auth-Type has not already been set
 	chap
@@ -101,7 +116,7 @@ authorize {
 	#  the next few lines.
 	#
 	update control {
-	       Proxy-To-Realm := LOCAL
+		&Proxy-To-Realm := LOCAL
 	}
 
 	#
@@ -134,8 +149,8 @@ authorize {
 	#
 	#  If you are using /etc/smbpasswd, and are also doing
 	#  mschap authentication, the un-comment this line, and
-	#  configure the 'etc_smbpasswd' module, above.
-#	etc_smbpasswd
+	#  enable the "smbpasswd" module.
+#	smbpasswd
 
 	#
 	#  The ldap module reads passwords from the LDAP database.
@@ -207,6 +222,11 @@ authenticate {
 	}
 
 	#
+	#  For old names, too.
+	#
+	mschap
+
+	#
 	#  Pluggable Authentication Modules.
 #	pam
 
@@ -253,6 +273,16 @@ session {
 #  Post-Authentication
 #  Once we KNOW that the user has been authenticated, there are
 #  additional steps we can take.
+#
+#  Note that the last packet of the inner-tunnel authentication
+#  MAY NOT BE the last packet of the outer session.  So updating
+#  the outer reply MIGHT work, and sometimes MIGHT NOT.  The
+#  exact functionality depends on both the inner and outer
+#  authentication methods.
+#
+#  If you need to send a reply attribute in the outer session,
+#  the ONLY safe way is to set "use_tunneled_reply = yes", and
+#  then update the inner-tunnel reply.
 post-auth {
 	#  If you want privacy to remain, see the
 	#  Chargeable-User-Identity attribute from RFC 4372.
@@ -272,17 +302,58 @@ post-auth {
 	-sql
 
 	#
-	#  Instead of sending the query to the SQL server,
-	#  write it into a log file.
-	#
-#	sql_log
-
-	#
 	#  Un-comment the following if you have set
 	#  'edir_account_policy_check = yes' in the ldap module sub-section of
 	#  the 'modules' section.
 	#
 #	ldap
+
+
+	#
+	#  Un-comment the following if you want to generate Moonshot (ABFAB) TargetedIds
+	#
+	#  IMPORTANT: This requires the UUID package to be installed, and a targeted_id_salt
+	#             to be configured.
+	#
+	#  This functionality also supports SQL backing. To use this functionality, enable
+	#  and configure the moonshot-targeted-ids SQL module in the mods-enabled directory.
+	#  Then remove the comments from the appropriate lines in each of the below
+	#  policies in the policy.d/moonshot-targeted-ids file.
+	#
+#	moonshot_host_tid
+#	moonshot_realm_tid
+#	moonshot_coi_tid
+
+	#
+	#  Instead of "use_tunneled_reply", change this "if (0)" to an
+	#  "if (1)".
+	#
+	if (0) {
+		#
+		#  These attributes are for the inner-tunnel only,
+		#  and MUST NOT be copied to the outer reply.
+		#
+		update reply {
+			User-Name !* ANY
+			Message-Authenticator !* ANY
+			EAP-Message !* ANY
+			Proxy-State !* ANY
+			MS-MPPE-Encryption-Types !* ANY
+			MS-MPPE-Encryption-Policy !* ANY
+			MS-MPPE-Send-Key !* ANY
+			MS-MPPE-Recv-Key !* ANY
+		}
+
+		#
+		#  Copy the inner reply attributes to the outer
+		#  session-state list.  The post-auth policy will take
+		#  care of copying the outer session-state list to the
+		#  outer reply.
+		#
+		update {
+			&outer.session-state: += &reply:
+		}
+	}
 
 	#
 	#  Access-Reject packets are sent through the REJECT sub-section of the
@@ -295,38 +366,14 @@ post-auth {
 		# log failed authentications in SQL, too.
 		-sql
 		attr_filter.access_reject
-	}
 
-	#
-	#  The example policy below updates the outer tunnel reply
-	#  (usually Access-Accept) with the User-Name from the inner
-	#  tunnel User-Name.  Since this section is processed in the
-	#  context of the inner tunnel, "request" here means "inner
-	#  tunnel request", and "outer.reply" means "outer tunnel
-	#  reply attributes".
-	#
-	#  This example is most useful when the outer session contains
-	#  a User-Name of "anonymous@....", or a MAC address.  If it
-	#  is enabled, the NAS SHOULD use the inner tunnel User-Name
-	#  in subsequent accounting packets.  This makes it easier to
-	#  track user sessions, as they will all be based on the real
-	#  name, and not on "anonymous".
-	#
-	#  The problem with doing this is that it ALSO exposes the
-	#  real user name to any intermediate proxies.  People use
-	#  "anonymous" identifiers outside of the tunnel for a very
-	#  good reason: it gives them more privacy.  Setting the reply
-	#  to contain the real user name removes ALL privacy from
-	#  their session.
-	#
-	#  If you still want to use the inner tunnel User-Name then
-	#  uncomment the section below, otherwise you may want
-	#  to use  Chargeable-User-Identity attribute from RFC 4372.
-	#  See further on.
-    	#update outer.reply {
-	#  User-Name = "%{request:User-Name}"
-	#}
-	#
+		#
+		#  Let the outer session know which module failed, and why.
+		#
+		update outer.session-state {
+			&Module-Failure-Message := &request:Module-Failure-Message
+		}
+	}
 }
 
 #
@@ -381,28 +428,6 @@ post-proxy {
 	#  reject the EAP request.
 	#
 	eap
-
-	#
-	#  If the server tries to proxy a request and fails, then the
-	#  request is processed through the modules in this section.
-	#
-	#  The main use of this section is to permit robust proxying
-	#  of accounting packets.  The server can be configured to
-	#  proxy accounting packets as part of normal processing.
-	#  Then, if the home server goes down, accounting packets can
-	#  be logged to a local "detail" file, for processing with
-	#  radrelay.  When the home server comes back up, radrelay
-	#  will read the detail file, and send the packets to the
-	#  home server.
-	#
-	#  With this configuration, the server always responds to
-	#  Accounting-Requests from the NAS, but only writes
-	#  accounting packets to disk if the home server is down.
-	#
-#	Post-Proxy-Type Fail {
-#			detail
-#	}
-
 }
 
 } # inner-tunnel server block

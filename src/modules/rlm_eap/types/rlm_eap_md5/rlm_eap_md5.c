@@ -29,14 +29,16 @@ RCSID("$Id$")
 #include "eap_md5.h"
 
 #include <freeradius-devel/rad_assert.h>
+#include <freeradius-devel/md5.h>
 
 /*
  *	Initiate the EAP-MD5 session by sending a challenge to the peer.
  */
-static int md5_initiate(UNUSED void *instance, eap_handler_t *handler)
+static int mod_session_init(UNUSED void *instance, eap_handler_t *handler)
 {
 	int		i;
 	MD5_PACKET	*reply;
+	REQUEST		*request = handler->request;
 
 	/*
 	 *	Allocate an EAP-MD5 packet.
@@ -68,7 +70,7 @@ static int md5_initiate(UNUSED void *instance, eap_handler_t *handler)
 	for (i = 0; i < reply->value_size; i++) {
 		reply->value[i] = fr_rand();
 	}
-	DEBUG2("rlm_eap_md5: Issuing Challenge");
+	RDEBUG2("Issuing MD5 Challenge");
 
 	/*
 	 *	Keep track of the challenge.
@@ -91,30 +93,30 @@ static int md5_initiate(UNUSED void *instance, eap_handler_t *handler)
 	 *	stored in 'handler->eap_ds', which will be given back
 	 *	to us...
 	 */
-	handler->stage = AUTHENTICATE;
+	handler->stage = PROCESS;
 
 	return 1;
 }
 
-
 /*
  *	Authenticate a previously sent challenge.
  */
-static int md5_authenticate(UNUSED void *arg, eap_handler_t *handler)
+static int mod_process(UNUSED void *arg, eap_handler_t *handler)
 {
 	MD5_PACKET	*packet;
 	MD5_PACKET	*reply;
 	VALUE_PAIR	*password;
+	REQUEST		*request = handler->request;
 
 	/*
 	 *	Get the Cleartext-Password for this user.
 	 */
 	rad_assert(handler->request != NULL);
-	rad_assert(handler->stage == AUTHENTICATE);
+	rad_assert(handler->stage == PROCESS);
 
-	password = pairfind(handler->request->config_items, PW_CLEARTEXT_PASSWORD, 0, TAG_ANY);
+	password = fr_pair_find_by_num(handler->request->config, PW_CLEARTEXT_PASSWORD, 0, TAG_ANY);
 	if (!password) {
-		DEBUG2("rlm_eap_md5: Cleartext-Password is required for EAP-MD5 authentication");
+		REDEBUG2("Cleartext-Password is required for EAP-MD5 authentication");
 		return 0;
 	}
 
@@ -158,11 +160,9 @@ static int md5_authenticate(UNUSED void *arg, eap_handler_t *handler)
  *	The module name should be the only globally exported symbol.
  *	That is, everything else should be 'static'.
  */
+extern rlm_eap_module_t rlm_eap_md5;
 rlm_eap_module_t rlm_eap_md5 = {
-	"eap_md5",
-	NULL,				/* attach */
-	md5_initiate,			/* Start the initial request */
-	NULL,				/* authorization */
-	md5_authenticate,		/* authentication */
-	NULL				/* detach */
+	.name		= "eap_md5",
+	.session_init	= mod_session_init,	/* Initialise a new EAP session */
+	.process	= mod_process		/* Process next round of EAP method */
 };

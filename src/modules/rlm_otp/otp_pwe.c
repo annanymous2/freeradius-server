@@ -100,14 +100,14 @@ otp_pwe_init(void)
 	/* MS-CHAPv2 */
 	da = dict_attrbyname("MS-CHAP-Challenge");
 	if (da) {
-    		pwattr[6] = da;
+		pwattr[6] = da;
 
-    		da = dict_attrbyname("MS-CHAP2-Response");
-    		if (da) {
+		da = dict_attrbyname("MS-CHAP2-Response");
+		if (da) {
 			pwattr[7] = da;
-    		} else {
-      			pwattr[6] = NULL;
-      		}
+		} else {
+			pwattr[6] = NULL;
+		}
 	}
 }
 
@@ -126,9 +126,9 @@ otp_pwe_t otp_pwe_present(REQUEST const *request)
 			continue;
 		}
 
-		if (pairfind(request->packet->vps, pwattr[i]->attr,
+		if (fr_pair_find_by_num(request->packet->vps, pwattr[i]->attr,
 			     pwattr[i]->vendor, TAG_ANY) &&
-		    pairfind(request->packet->vps, pwattr[i + 1]->attr,
+		    fr_pair_find_by_num(request->packet->vps, pwattr[i + 1]->attr,
 			     pwattr[i + 1]->vendor, TAG_ANY)) {
 			DEBUG("rlm_otp: %s: password attributes %s, %s",
 			      __func__, pwattr[i]->name, pwattr[i + 1]->name);
@@ -138,5 +138,5 @@ otp_pwe_t otp_pwe_present(REQUEST const *request)
 	}
 
 	DEBUG("rlm_otp: %s: no password attributes present", __func__);
-	return 0;
+	return PWE_NONE;
 }

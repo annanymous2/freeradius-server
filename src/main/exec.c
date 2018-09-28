@@ -32,7 +32,6 @@ RCSID("$Id$")
 
 #include <fcntl.h>
 #include <ctype.h>
-#include <signal.h>
 
 #ifdef HAVE_SYS_WAIT_H
 #	include <sys/wait.h>
@@ -82,40 +81,45 @@ static void tv_sub(struct timeval *end, struct timeval *start,
  * @param shell_escape values before passing them as arguments.
  * @return PID of the child process, -1 on error.
  */
-pid_t radius_start_program(char const *cmd, REQUEST *request,
-			int exec_wait,
-			int *input_fd,
-			int *output_fd,
-			VALUE_PAIR *input_pairs,
-			int shell_escape)
+pid_t radius_start_program(char const *cmd, REQUEST *request, bool exec_wait,
+			   int *input_fd, int *output_fd,
+			   VALUE_PAIR *input_pairs, bool shell_escape)
 {
 #ifndef __MINGW32__
-	char *p;
 	VALUE_PAIR *vp;
 	int n;
 	int to_child[2] = {-1, -1};
 	int from_child[2] = {-1, -1};
 	pid_t pid;
 #endif
-	int argc;
-	int i;
-	char *argv[MAX_ARGV];
-	char argv_buf[4096];
+	int		argc;
+	int		i;
+	char const	**argv_p;
+	char		*argv[MAX_ARGV], **argv_start = argv;
+	char		argv_buf[4096];
 #define MAX_ENVP 1024
 	char *envp[MAX_ENVP];
+	int envlen = 0;
 
-	argc = rad_expand_xlat(request, cmd, MAX_ARGV, argv, true, sizeof(argv_buf), argv_buf);
+	/*
+	 *	Stupid array decomposition...
+	 *
+	 *	If we do memcpy(&argv_p, &argv, sizeof(argv_p)) src ends up being a char **
+	 *	pointing to the value of the first element.
+	 */
+	memcpy(&argv_p, &argv_start, sizeof(argv_p));
+	argc = rad_expand_xlat(request, cmd, MAX_ARGV, argv_p, true, sizeof(argv_buf), argv_buf);
 	if (argc <= 0) {
-		RDEBUG("invalid command line '%s'.", cmd);
+		DEBUG("invalid command line '%s'.", cmd);
 		return -1;
 	}
 
 
 #ifndef NDEBUG
-	if (debug_flag > 2) {
-		RDEBUG3("executing cmd %s", cmd);
+	if (rad_debug_lvl > 2) {
+		DEBUG3("executing cmd %s", cmd);
 		for (i = 0; i < argc; i++) {
-			RDEBUG3("\t[%d] %s", i, argv[i]);
+			DEBUG3("\t[%d] %s", i, argv[i]);
 		}
 	}
 #endif
@@ -127,13 +131,13 @@ pid_t radius_start_program(char const *cmd, REQUEST *request,
 	if (exec_wait) {
 		if (input_fd) {
 			if (pipe(to_child) != 0) {
-				RDEBUG("Couldn't open pipe to child: %s", strerror(errno));
+				DEBUG("Couldn't open pipe to child: %s", fr_syserror(errno));
 				return -1;
 			}
 		}
 		if (output_fd) {
 			if (pipe(from_child) != 0) {
-				RDEBUG("Couldn't open pipe from child: %s", strerror(errno));
+				DEBUG("Couldn't open pipe from child: %s", fr_syserror(errno));
 				/* safe because these either need closing or are == -1 */
 				close(to_child[0]);
 				close(to_child[1]);
@@ -146,7 +150,6 @@ pid_t radius_start_program(char const *cmd, REQUEST *request,
 
 	if (input_pairs) {
 		vp_cursor_t cursor;
-		int envlen;
 		char buffer[1024];
 
 		/*
@@ -155,9 +158,9 @@ pid_t radius_start_program(char const *cmd, REQUEST *request,
 		 *	hold mutexes.  They might be locked when we fork,
 		 *	and will remain locked in the child.
 		 */
-		envlen = 0;
-
-		for (vp = paircursor(&cursor, &input_pairs); vp; vp = pairnext(&cursor)) {
+		for (vp = fr_cursor_init(&cursor, &input_pairs);
+		     vp;
+		     vp = fr_cursor_next(&cursor)) {
 			/*
 			 *	Hmm... maybe we shouldn't pass the
 			 *	user's password in an environment
@@ -165,6 +168,8 @@ pid_t radius_start_program(char const *cmd, REQUEST *request,
 			 */
 			snprintf(buffer, sizeof(buffer), "%s=", vp->da->name);
 			if (shell_escape) {
+				char *p;
+
 				for (p = buffer; *p != '='; p++) {
 					if (*p == '-') {
 						*p = '_';
@@ -175,7 +180,7 @@ pid_t radius_start_program(char const *cmd, REQUEST *request,
 			}
 
 			n = strlen(buffer);
-			vp_prints_value(buffer+n, sizeof(buffer) - n, vp, shell_escape ? '"' : 0);
+			vp_prints_value(buffer + n, sizeof(buffer) - n, vp, shell_escape ? '"' : 0);
 
 			envp[envlen++] = strdup(buffer);
 
@@ -183,8 +188,12 @@ pid_t radius_start_program(char const *cmd, REQUEST *request,
 			 *	Don't add too many attributes.
 			 */
 			if (envlen == (MAX_ENVP - 1)) break;
+
+			/*
+			 *	NULL terminate for execve
+			 */
+			envp[envlen] = NULL;
 		}
-		envp[envlen] = NULL;
 	}
 
 	if (exec_wait) {
@@ -208,7 +217,7 @@ pid_t radius_start_program(char const *cmd, REQUEST *request,
 		 */
 		devnull = open("/dev/null", O_RDWR);
 		if (devnull < 0) {
-			RDEBUG("Failed opening /dev/null: %s\n", strerror(errno));
+			DEBUG("Failed opening /dev/null: %s\n", fr_syserror(errno));
 
 			/*
 			 *	Where the status code is interpreted as a module rcode
@@ -224,7 +233,6 @@ pid_t radius_start_program(char const *cmd, REQUEST *request,
 		 *	has created them.
 		 */
 		if (exec_wait) {
-
 			if (input_fd) {
 				close(to_child[1]);
 				dup2(to_child[0], STDIN_FILENO);
@@ -252,7 +260,7 @@ pid_t radius_start_program(char const *cmd, REQUEST *request,
 		 *	If we are debugging, then we want the error
 		 *	messages to go to the STDERR of the server.
 		 */
-		if (debug_flag == 0) {
+		if (rad_debug_lvl == 0) {
 			dup2(devnull, STDERR_FILENO);
 		}
 		close(devnull);
@@ -265,10 +273,15 @@ pid_t radius_start_program(char const *cmd, REQUEST *request,
 		closefrom(3);
 
 		/*
-		 *	I swear the signature for execve is wrong and should take 'char const * const argv[]'.
+		 *	I swear the signature for execve is wrong and should
+		 *	take 'char const * const argv[]'.
+		 *
+		 *	Note: execve(), unlike system(), treats all the space
+		 *	delimited arguments as literals, so there's no need
+		 *	to perform additional escaping.
 		 */
 		execve(argv[0], argv, envp);
-		printf("Failed to execute \"%s\": %s", argv[0], strerror(errno)); /* fork output will be captured */
+		printf("Failed to execute \"%s\": %s", argv[0], fr_syserror(errno)); /* fork output will be captured */
 
 		/*
 		 *	Where the status code is interpreted as a module rcode
@@ -282,7 +295,7 @@ pid_t radius_start_program(char const *cmd, REQUEST *request,
 	/*
 	 *	Free child environment variables
 	 */
-	for (i = 0; envp[i] != NULL; i++) {
+	for (i = 0; i < envlen; i++) {
 		free(envp[i]);
 	}
 
@@ -290,13 +303,13 @@ pid_t radius_start_program(char const *cmd, REQUEST *request,
 	 *	Parent process.
 	 */
 	if (pid < 0) {
-		RDEBUG("Couldn't fork %s: %s", argv[0], strerror(errno));
+		DEBUG("Couldn't fork %s: %s", argv[0], fr_syserror(errno));
 		if (exec_wait) {
 			/* safe because these either need closing or are == -1 */
 			close(to_child[0]);
 			close(to_child[1]);
 			close(from_child[0]);
-			close(from_child[0]);
+			close(from_child[1]);
 		}
 		return -1;
 	}
@@ -323,7 +336,7 @@ pid_t radius_start_program(char const *cmd, REQUEST *request,
 	return pid;
 #else
 	if (exec_wait) {
-		RDEBUG("Wait is not supported");
+		DEBUG("Wait is not supported");
 		return -1;
 	}
 
@@ -361,7 +374,6 @@ pid_t radius_start_program(char const *cmd, REQUEST *request,
 
 /** Read from the child process.
  *
- * @param request The current request.
  * @param fd file descriptor to read from.
  * @param pid pid of child, will be reaped if it dies.
  * @param timeout amount of time to wait, in seconds.
@@ -369,7 +381,7 @@ pid_t radius_start_program(char const *cmd, REQUEST *request,
  * @param left length of buffer.
  * @return -1 on error, or length of output.
  */
-int radius_readfrom_program(REQUEST *request, int fd, pid_t pid, int timeout,
+int radius_readfrom_program(int fd, pid_t pid, int timeout,
 			    char *answer, int left)
 {
 	int done = 0;
@@ -377,7 +389,7 @@ int radius_readfrom_program(REQUEST *request, int fd, pid_t pid, int timeout,
 	int status;
 	struct timeval start;
 #ifdef O_NONBLOCK
-	int nonblock = true;
+	bool nonblock = true;
 #endif
 
 #ifdef O_NONBLOCK
@@ -425,7 +437,7 @@ int radius_readfrom_program(REQUEST *request, int fd, pid_t pid, int timeout,
 		rcode = select(fd + 1, &fds, NULL, NULL, &wake);
 		if (rcode == 0) {
 		too_long:
-			RDEBUG("Child PID %u is taking too much time: forcing failure and killing child.", pid);
+			DEBUG("Child PID %u is taking too much time: forcing failure and killing child.", (unsigned int) pid);
 			kill(pid, SIGTERM);
 			close(fd); /* should give SIGPIPE to child, too */
 
@@ -485,42 +497,51 @@ int radius_readfrom_program(REQUEST *request, int fd, pid_t pid, int timeout,
 		if (left <= 0) break;
 	}
 #endif	/* __MINGW32__ */
+
+	/* Strip trailing new lines */
+	while ((done > 0) && (answer[done - 1] == '\n')) {
+		answer[--done] = '\0';
+	}
+
 	return done;
 }
 
 /** Execute a program.
  *
- * @param[in] request Current request.
- * @param[in] cmd Command to execute. This is parsed into argv[] parts, then each individual argv part
- *	is xlat'ed.
- * @param[in] exec_wait set to 1 if you want to read from or write to child.
- * @param[in] shell_escape values before passing them as arguments.
- * @param[in] user_msg buffer to append plaintext (non valuepair) output.
- * @param[in] msg_len length of user_msg buffer.
- * @param[in] input_pairs list of value pairs - these will be available in the environment of the child.
+ * @param[in,out] ctx to allocate new VALUE_PAIR (s) in.
+ * @param[out] out buffer to append plaintext (non valuepair) output.
+ * @param[in] outlen length of out buffer.
  * @param[out] output_pairs list of value pairs - child stdout will be parsed and added into this list
  *	of value pairs.
+ * @param[in] request Current request (may be NULL).
+ * @param[in] cmd Command to execute. This is parsed into argv[] parts, then each individual argv part
+ *	is xlat'ed.
+ * @param[in] input_pairs list of value pairs - these will be available in the environment of the child.
+ * @param[in] exec_wait set to 1 if you want to read from or write to child.
+ * @param[in] shell_escape values before passing them as arguments.
+ * @param[in] timeout amount of time to wait, in seconds.
+
  * @return 0 if exec_wait==0, exit code if exec_wait!=0, -1 on error.
  */
-int radius_exec_program(REQUEST *request, char const *cmd, bool exec_wait, bool shell_escape,
-			char *user_msg, size_t msg_len,
-			VALUE_PAIR *input_pairs, VALUE_PAIR **output_pairs)
+int radius_exec_program(TALLOC_CTX *ctx, char *out, size_t outlen, VALUE_PAIR **output_pairs,
+			REQUEST *request, char const *cmd, VALUE_PAIR *input_pairs,
+			bool exec_wait, bool shell_escape, int timeout)
 
 {
 	pid_t pid;
 	int from_child;
 #ifndef __MINGW32__
-	VALUE_PAIR *vp;
 	char *p;
 	pid_t child_pid;
 	int comma = 0;
-	int status;
-	int n, done;
+	int status, ret = 0;
+	ssize_t len;
 	char answer[4096];
 #endif
-	RDEBUG2("Executing: \"%s\"", cmd);
 
-	if (user_msg) *user_msg = '\0';
+	RDEBUG2("Executing: %s:", cmd);
+
+	if (out) *out = '\0';
 
 	pid = radius_start_program(cmd, request, exec_wait, NULL, &from_child, input_pairs, shell_escape);
 	if (pid < 0) {
@@ -532,17 +553,17 @@ int radius_exec_program(REQUEST *request, char const *cmd, bool exec_wait, bool 
 	}
 
 #ifndef __MINGW32__
-	done = radius_readfrom_program(request, from_child, pid, 10, answer, sizeof(answer));
-	if (done < 0) {
+	len = radius_readfrom_program(from_child, pid, timeout, answer, sizeof(answer));
+	if (len < 0) {
 		/*
-		 * failure - radius_readfrom_program will
-		 * have called close(from_child) for us
+		 *	Failure - radius_readfrom_program will
+		 *	have called close(from_child) for us
 		 */
-		DEBUG("Failed to read from child output");
+		RERROR("Failed to read from child output");
 		return -1;
 
 	}
-	answer[done] = '\0';
+	answer[len] = '\0';
 
 	/*
 	 *	Make sure that the writer can't block while writing to
@@ -550,71 +571,61 @@ int radius_exec_program(REQUEST *request, char const *cmd, bool exec_wait, bool 
 	 */
 	close(from_child);
 
+	if (len == 0) {
+		goto wait;
+	}
+
 	/*
 	 *	Parse the output, if any.
 	 */
-	if (done) {
-		n = T_OP_INVALID;
-		if (output_pairs) {
-			/*
-			 *	For backwards compatibility, first check
-			 *	for plain text (user_msg).
-			 */
-			vp = NULL;
-			n = userparse(request, answer, &vp);
-			if (vp) {
-				pairfree(&vp);
+	if (output_pairs) {
+		/*
+		 *	HACK: Replace '\n' with ',' so that
+		 *	fr_pair_list_afrom_str() can parse the buffer in
+		 *	one go (the proper way would be to
+		 *	fix fr_pair_list_afrom_str(), but oh well).
+		 */
+		for (p = answer; *p; p++) {
+			if (*p == '\n') {
+				*p = comma ? ' ' : ',';
+				p++;
+				comma = 0;
+			}
+			if (*p == ',') {
+				comma++;
 			}
 		}
 
-		if (n == T_OP_INVALID) {
-			if (user_msg) {
-				strlcpy(user_msg, answer, msg_len);
-			}
-		} else {
-			/*
-			 *	HACK: Replace '\n' with ',' so that
-			 *	userparse() can parse the buffer in
-			 *	one go (the proper way would be to
-			 *	fix userparse(), but oh well).
-			 */
-			for (p = answer; *p; p++) {
-				if (*p == '\n') {
-					*p = comma ? ' ' : ',';
-					p++;
-					comma = 0;
-				}
-				if (*p == ',') comma++;
-			}
+		/*
+		 *	Replace any trailing comma by a NUL.
+		 */
+		if (answer[len - 1] == ',') {
+			answer[--len] = '\0';
+		}
 
-			/*
-			 *	Replace any trailing comma by a NUL.
-			 */
-			if (answer[strlen(answer) - 1] == ',') {
-				answer[strlen(answer) - 1] = '\0';
-			}
+		if (fr_pair_list_afrom_str(ctx, answer, output_pairs) == T_INVALID) {
+			RERROR("Failed parsing output from: %s: %s", cmd, fr_strerror());
+			strlcpy(out, answer, len);
+			ret = -1;
+		}
+	/*
+	 *	We've not been told to extract output pairs,
+	 *	just copy the programs output to the out
+	 *	buffer.
+	 */
 
-			if (userparse(request, answer, &vp) == T_OP_INVALID) {
-				REDEBUG("Unparsable reply from '%s'", cmd);
-
-				return -1;
-			} else {
-				/*
-				 *	Tell the caller about the value
-				 *	pairs.
-				 */
-				*output_pairs = vp;
-			}
-		} /* else the answer was a set of VP's, not a text message */
-	} /* else we didn't read anything from the child */
+	} else if (out) {
+		strlcpy(out, answer, outlen);
+	}
 
 	/*
 	 *	Call rad_waitpid (should map to waitpid on non-threaded
 	 *	or single-server systems).
 	 */
+wait:
 	child_pid = rad_waitpid(pid, &status);
 	if (child_pid == 0) {
-		REDEBUG("Timeout waiting for child");
+		RERROR("Timeout waiting for child");
 
 		return -2;
 	}
@@ -622,14 +633,17 @@ int radius_exec_program(REQUEST *request, char const *cmd, bool exec_wait, bool 
 	if (child_pid == pid) {
 		if (WIFEXITED(status)) {
 			status = WEXITSTATUS(status);
+			if ((status != 0) || (ret < 0)) {
+				RERROR("Program returned code (%d) and output '%s'", status, answer);
+			} else {
+				RDEBUG2("Program returned code (%d) and output '%s'", status, answer);
+			}
 
-			RDEBUG("Program returned code (%d): %s", status, answer);
-
-			return status;
+			return ret < 0 ? ret : status;
 		}
 	}
 
-	REDEBUG("Abnormal child exit: %s", strerror(errno));
+	RERROR("Abnormal child exit: %s", fr_syserror(errno));
 #endif	/* __MINGW32__ */
 
 	return -1;

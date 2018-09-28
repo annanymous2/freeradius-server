@@ -27,12 +27,16 @@ rlm_preprocess
 rlm_python
 rlm_radutmp
 rlm_realm
+rlm_rest
 rlm_replicate
 rlm_soh
 rlm_sql
 rlm_sqlcounter
 rlm_sqlippool
+rlm_test
 rlm_unix
 rlm_sometimes
 rlm_wimax
 rlm_yubikey
+rlm_redis
+rlm_rediswho

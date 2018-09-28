@@ -43,7 +43,7 @@
  * with SIM-Type/SIM-Length/Value... repeating. SIM-Length is in units
  * of 32 bits, and includes the Sim-Type/Sim-Length fields.
  *
- * The SIM-Type's are mapped to ATTRIBUTE_EAP_SIM_BASE+Sim-type and
+ * The SIM-Type's are mapped to PW_EAP_SIM_BASE+Sim-type and
  * unmapped by these functions.
  *
  */
@@ -56,7 +56,7 @@ RCSID("$Id$")
 #include <freeradius-devel/sha1.h>
 
 /*
- * given a radius request with many attribues in the EAP-SIM range, build
+ * given a radius request with many attributes in the EAP-SIM range, build
  * them all into a single EAP-SIM body.
  *
  */
@@ -81,13 +81,13 @@ int map_eapsim_basictypes(RADIUS_PACKET *r, eap_packet_t *ep)
 	 * it might be too big for putting into an EAP-Type-SIM
 	 *
 	 */
-	subtype = (vp = pairfind(r->vps, ATTRIBUTE_EAP_SIM_SUBTYPE, 0, TAG_ANY)) ?
-		vp->vp_integer : eapsim_start;
+	subtype = (vp = fr_pair_find_by_num(r->vps, PW_EAP_SIM_SUBTYPE, 0, TAG_ANY)) ?
+		vp->vp_integer : EAPSIM_START;
 
-	id = (vp = pairfind(r->vps, ATTRIBUTE_EAP_ID, 0, TAG_ANY)) ?
+	id = (vp = fr_pair_find_by_num(r->vps, PW_EAP_ID, 0, TAG_ANY)) ?
 		vp->vp_integer : ((int)getpid() & 0xff);
 
-	eapcode = (vp = pairfind(r->vps, ATTRIBUTE_EAP_CODE, 0, TAG_ANY)) ?
+	eapcode = (vp = fr_pair_find_by_num(r->vps, PW_EAP_CODE, 0, TAG_ANY)) ?
 		vp->vp_integer : PW_EAP_REQUEST;
 
 	/*
@@ -95,26 +95,26 @@ int map_eapsim_basictypes(RADIUS_PACKET *r, eap_packet_t *ep)
 	 * that we need to encode all of this.
 	 */
 	encoded_size = 0;
-	for (vp = paircursor(&cursor, &r->vps);
+	for (vp = fr_cursor_init(&cursor, &r->vps);
 	     vp;
-	     vp = pairnext(&cursor)) {
+	     vp = fr_cursor_next(&cursor)) {
 		int roundedlen;
 		int vplen;
 
-		if ((vp->da->attr < ATTRIBUTE_EAP_SIM_BASE) || (vp->da->attr >= (ATTRIBUTE_EAP_SIM_BASE + 256))) {
+		if ((vp->da->attr < PW_EAP_SIM_BASE) || (vp->da->attr >= (PW_EAP_SIM_BASE + 256))) {
 			continue;
 		}
 
-		vplen = vp->length;
+		vplen = vp->vp_length;
 
 		/*
 		 * the AT_MAC attribute is a bit different, when we get to this
 		 * attribute, we pull the contents out, save it for later
 		 * processing, set the size to 16 bytes (plus 2 bytes padding).
 		 *
- 		 * At this point, we only care about the size.
+		 * At this point, we only care about the size.
 		 */
-		if(vp->da->attr == ATTRIBUTE_EAP_SIM_BASE + PW_EAP_SIM_MAC) {
+		if(vp->da->attr == PW_EAP_SIM_MAC) {
 			vplen = 18;
 		}
 
@@ -147,7 +147,7 @@ int map_eapsim_basictypes(RADIUS_PACKET *r, eap_packet_t *ep)
 		ep->type.length = 3;
 		ep->type.data = encodedmsg;
 
-		return 0;
+		return 1;
 	}
 
 
@@ -179,11 +179,11 @@ int map_eapsim_basictypes(RADIUS_PACKET *r, eap_packet_t *ep)
 	 */
 	attr = encodedmsg+3;
 
-	for (vp = pairfirst(&cursor); vp; vp = pairnext(&cursor)) {
+	for (vp = fr_cursor_first(&cursor); vp; vp = fr_cursor_next(&cursor)) {
 		int roundedlen;
 
-		if(vp->da->attr < ATTRIBUTE_EAP_SIM_BASE ||
-		   vp->da->attr >= ATTRIBUTE_EAP_SIM_BASE + 256) {
+		if(vp->da->attr < PW_EAP_SIM_BASE ||
+		   vp->da->attr >= PW_EAP_SIM_BASE + 256) {
 			continue;
 		}
 
@@ -192,21 +192,21 @@ int map_eapsim_basictypes(RADIUS_PACKET *r, eap_packet_t *ep)
 		 * attribute, we pull the contents out, save it for later
 		 * processing, set the size to 16 bytes (plus 2 bytes padding).
 		 *
- 		 * At this point, we put in zeros, and remember where the
+		 * At this point, we put in zeros, and remember where the
 		 * sixteen bytes go.
 		 */
-		if(vp->da->attr == ATTRIBUTE_EAP_SIM_BASE+PW_EAP_SIM_MAC) {
+		if(vp->da->attr == PW_EAP_SIM_MAC) {
 			roundedlen = 20;
 			memset(&attr[2], 0, 18);
 			macspace = &attr[4];
 			append = vp->vp_octets;
-			appendlen = vp->length;
+			appendlen = vp->vp_length;
 		} else {
-			roundedlen = (vp->length + 2 + 3) & ~3;
+			roundedlen = (vp->vp_length + 2 + 3) & ~3;
 			memset(attr, 0, roundedlen);
-			memcpy(&attr[2], vp->vp_strvalue, vp->length);
+			memcpy(&attr[2], vp->vp_strvalue, vp->vp_length);
 		}
-		attr[0] = vp->da->attr - ATTRIBUTE_EAP_SIM_BASE;
+		attr[0] = vp->da->attr - PW_EAP_SIM_BASE;
 		attr[1] = roundedlen >> 2;
 
 		attr += roundedlen;
@@ -222,7 +222,7 @@ int map_eapsim_basictypes(RADIUS_PACKET *r, eap_packet_t *ep)
 	 * then we should calculate the HMAC-SHA1 of the resulting EAP-SIM
 	 * packet, appended with the value of append.
 	 */
-	vp = pairfind(r->vps, ATTRIBUTE_EAP_SIM_KEY, 0, TAG_ANY);
+	vp = fr_pair_find_by_num(r->vps, PW_EAP_SIM_KEY, 0, TAG_ANY);
 	if(macspace != NULL && vp != NULL) {
 		unsigned char		*buffer;
 		eap_packet_raw_t	*hdr;
@@ -252,10 +252,10 @@ int map_eapsim_basictypes(RADIUS_PACKET *r, eap_packet_t *ep)
 		memcpy(&hdr->data[encoded_size+1], append, appendlen);
 
 		/* HMAC it! */
-		fr_hmac_sha1(buffer, hmaclen, vp->vp_octets, vp->length, sha1digest);
+		fr_hmac_sha1(sha1digest, buffer, hmaclen, vp->vp_octets, vp->vp_length);
 
 		/* done with the buffer, free it */
-		free(buffer);
+		talloc_free(buffer);
 
 		/* now copy the digest to where it belongs in the AT_MAC */
 		/* note that it is truncated to 128-bits */
@@ -293,18 +293,19 @@ int unmap_eapsim_basictypes(RADIUS_PACKET *r,
 
 	/* big enough to have even a single attribute */
 	if (attrlen < 5) {
-		ERROR("eap: EAP-Sim attribute too short: %d < 2", attrlen);
+		fr_strerror_printf("EAP-Sim attribute too short: %d < 5", attrlen);
 		return 0;
 	}
 
-	newvp = paircreate(r, ATTRIBUTE_EAP_SIM_SUBTYPE, 0);
+	newvp = fr_pair_afrom_num(r, PW_EAP_SIM_SUBTYPE, 0);
 	if (!newvp) {
+		fr_strerror_printf("Failed creating EAP-SIM-Subtype");
 		return 0;
 	}
 
 	newvp->vp_integer = attr[0];
-	newvp->length = 1;
-	pairadd(&(r->vps), newvp);
+	newvp->vp_length = 1;
+	fr_pair_add(&(r->vps), newvp);
 
 	attr     += 3;
 	attrlen  -= 3;
@@ -314,7 +315,7 @@ int unmap_eapsim_basictypes(RADIUS_PACKET *r,
 		uint8_t *p;
 
 		if(attrlen < 2) {
-			ERROR("eap: EAP-Sim attribute %d too short: %d < 2", es_attribute_count, attrlen);
+			fr_strerror_printf("EAP-Sim attribute %d too short: %d < 2", es_attribute_count, attrlen);
 			return 0;
 		}
 
@@ -322,9 +323,8 @@ int unmap_eapsim_basictypes(RADIUS_PACKET *r,
 		eapsim_len = attr[1] * 4;
 
 		if (eapsim_len > attrlen) {
-			ERROR("eap: EAP-Sim attribute %d (no.%d) has length longer than data (%d > %d)",
-			      eapsim_attribute, es_attribute_count, eapsim_len, attrlen);
-
+			fr_strerror_printf("EAP-Sim attribute %d (no.%d) has length longer than data (%d > %d)",
+					   eapsim_attribute, es_attribute_count, eapsim_len, attrlen);
 			return 0;
 		}
 
@@ -332,16 +332,16 @@ int unmap_eapsim_basictypes(RADIUS_PACKET *r,
 			eapsim_len = MAX_STRING_LEN;
 		}
 		if (eapsim_len < 2) {
-			ERROR("eap: EAP-Sim attribute %d (no.%d) has length too small", eapsim_attribute,
-			      es_attribute_count);
-			       return 0;
+			fr_strerror_printf("EAP-Sim attribute %d (no.%d) has length too small", eapsim_attribute,
+					   es_attribute_count);
+			return 0;
 		}
 
-		newvp = paircreate(r, eapsim_attribute+ATTRIBUTE_EAP_SIM_BASE, 0);
-		newvp->length = eapsim_len-2;
-		newvp->vp_octets = p = talloc_array(newvp, uint8_t, newvp->length);
+		newvp = fr_pair_afrom_num(r, eapsim_attribute+PW_EAP_SIM_BASE, 0);
+		newvp->vp_length = eapsim_len-2;
+		newvp->vp_octets = p = talloc_array(newvp, uint8_t, newvp->vp_length);
 		memcpy(p, &attr[2], eapsim_len-2);
-		pairadd(&(r->vps), newvp);
+		fr_pair_add(&(r->vps), newvp);
 		newvp = NULL;
 
 		/* advance pointers, decrement length */
@@ -349,6 +349,7 @@ int unmap_eapsim_basictypes(RADIUS_PACKET *r,
 		attrlen -= eapsim_len;
 		es_attribute_count++;
 	}
+
 	return 1;
 }
 
@@ -367,9 +368,9 @@ int eapsim_checkmac(TALLOC_CTX *ctx, VALUE_PAIR *rvps, uint8_t key[EAPSIM_AUTH_S
 	int elen,len;
 	VALUE_PAIR *mac;
 
-	mac = pairfind(rvps, ATTRIBUTE_EAP_SIM_BASE+PW_EAP_SIM_MAC, 0, TAG_ANY);
+	mac = fr_pair_find_by_num(rvps, PW_EAP_SIM_MAC, 0, TAG_ANY);
 
-	if(!mac || mac->length != 18) {
+	if(!mac || mac->vp_length != 18) {
 		/* can't check a packet with no AT_MAC attribute */
 		return 0;
 	}
@@ -378,9 +379,7 @@ int eapsim_checkmac(TALLOC_CTX *ctx, VALUE_PAIR *rvps, uint8_t key[EAPSIM_AUTH_S
 	 * to have a valid length, which we depend upon.
 	 */
 	e = eap_vp2packet(ctx, rvps);
-	if (!e) {
-		return 0;
-	}
+	if (!e) return 0;
 
 	/* make copy big enough for everything */
 	elen = (e->length[0] * 256) + e->length[1];
@@ -408,7 +407,7 @@ int eapsim_checkmac(TALLOC_CTX *ctx, VALUE_PAIR *rvps, uint8_t key[EAPSIM_AUTH_S
 		 */
 		attr = buffer+8;
 		while(attr < (buffer+elen)) {
-			if(attr[0] == PW_EAP_SIM_MAC) {
+			if (attr[0] == (PW_EAP_SIM_MAC - PW_EAP_SIM_BASE)) {
 				/* zero the data portion, after making sure
 				 * the size is >=5. Maybe future versions.
 				 * will use more bytes, so be liberal.
@@ -425,7 +424,7 @@ int eapsim_checkmac(TALLOC_CTX *ctx, VALUE_PAIR *rvps, uint8_t key[EAPSIM_AUTH_S
 	}
 
 	/* now, HMAC-SHA1 it with the key. */
-	fr_hmac_sha1(buffer, len, key, 16, calcmac);
+	fr_hmac_sha1(calcmac, buffer, len, key, 16);
 
 	ret = memcmp(&mac->vp_strvalue[2], calcmac, 16) == 0 ? 1 : 0;
  done:
@@ -438,13 +437,13 @@ int eapsim_checkmac(TALLOC_CTX *ctx, VALUE_PAIR *rvps, uint8_t key[EAPSIM_AUTH_S
  * definitions changed to take a buffer for unknowns
  * as this is more thread safe.
  */
-char const *simstates[]={ "init", "start", NULL };
+static char const *simstates[] = { "init", "start", NULL };
 
 char const *sim_state2name(enum eapsim_clientstates state,
 			   char *statenamebuf,
 			   int   statenamebuflen)
 {
-	if(state >= eapsim_client_maxstates) {
+	if(state >= EAPSIM_CLIENT_MAXSTATES) {
 		snprintf(statenamebuf, statenamebuflen, "eapstate:%d", state);
 		return statenamebuf;
 	}
@@ -452,19 +451,19 @@ char const *sim_state2name(enum eapsim_clientstates state,
 	return simstates[state];
 }
 
-char const *subtypes[]={ "subtype0", "subtype1", "subtype2", "subtype3",
-			 "subtype4", "subtype5", "subtype6", "subtype7",
-			 "subtype8", "subtype9",
-			 "start",
-			 "challenge",
-			 "notification",
-			 "reauth",
-			 "client-error",
-			 NULL };
+static char const *subtypes[] = { "subtype0", "subtype1", "subtype2", "subtype3",
+				  "subtype4", "subtype5", "subtype6", "subtype7",
+				  "subtype8", "subtype9",
+				  "start",
+				  "challenge",
+				  "notification",
+				  "reauth",
+				  "client-error",
+				  NULL };
 
 char const *sim_subtype2name(enum eapsim_subtype subtype, char *subtypenamebuf, int subtypenamebuflen)
 {
-	if (subtype >= eapsim_max_subtype) {
+	if (subtype >= EAPSIM_MAX_SUBTYPE) {
 		snprintf(subtypenamebuf, subtypenamebuflen, "illegal-subtype:%d", subtype);
 
 		return subtypenamebuf;

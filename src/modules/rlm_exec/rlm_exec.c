@@ -1,7 +1,8 @@
 /*
  *   This program is is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License, version 2 if the
- *   License as published by the Free Software Foundation.
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation; either version 2 of the License, or (at
+ *   your option) any later version.
  *
  *   This program is distributed in the hope that it will be useful,
  *   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -34,14 +35,15 @@ typedef struct rlm_exec_t {
 	char const	*xlat_name;
 	int		bare;
 	bool		wait;
-	char		*program;
-	char		*input;
-	char		*output;
+	char const	*program;
+	char const	*input;
+	char const	*output;
 	pair_lists_t	input_list;
 	pair_lists_t	output_list;
-	char		*packet_type;
+	char const	*packet_type;
 	unsigned int	packet_code;
-	int		shell_escape;
+	bool		shell_escape;
+	uint32_t	timeout;
 } rlm_exec_t;
 
 /*
@@ -54,14 +56,14 @@ typedef struct rlm_exec_t {
  *	buffer over-flows.
  */
 static const CONF_PARSER module_config[] = {
-	{ "wait", PW_TYPE_BOOLEAN, offsetof(rlm_exec_t,wait), NULL, "yes" },
-	{ "program",  PW_TYPE_STRING_PTR, offsetof(rlm_exec_t,program), NULL, NULL },
-	{ "input_pairs", PW_TYPE_STRING_PTR, offsetof(rlm_exec_t,input), NULL, NULL },
-	{ "output_pairs",  PW_TYPE_STRING_PTR, offsetof(rlm_exec_t,output), NULL, NULL },
-	{ "packet_type", PW_TYPE_STRING_PTR, offsetof(rlm_exec_t,packet_type), NULL, NULL },
-	{ "shell_escape", PW_TYPE_BOOLEAN,  offsetof(rlm_exec_t,shell_escape), NULL, "yes" },
-
-	{ NULL, -1, 0, NULL, NULL }		/* end the list */
+	{ "wait", FR_CONF_OFFSET(PW_TYPE_BOOLEAN, rlm_exec_t, wait), "yes" },
+	{ "program", FR_CONF_OFFSET(PW_TYPE_STRING | PW_TYPE_XLAT, rlm_exec_t, program), NULL },
+	{ "input_pairs", FR_CONF_OFFSET(PW_TYPE_STRING, rlm_exec_t, input), NULL },
+	{ "output_pairs", FR_CONF_OFFSET(PW_TYPE_STRING, rlm_exec_t, output), NULL },
+	{ "packet_type", FR_CONF_OFFSET(PW_TYPE_STRING, rlm_exec_t, packet_type), NULL },
+	{ "shell_escape", FR_CONF_OFFSET(PW_TYPE_BOOLEAN, rlm_exec_t, shell_escape), "yes" },
+	{ "timeout", FR_CONF_OFFSET(PW_TYPE_INTEGER, rlm_exec_t, timeout), NULL },
+	CONF_PARSER_TERMINATOR
 };
 
 static char const special[] = "\\'\"`<>|; \t\r\n()[]?#$^&*=";
@@ -122,8 +124,6 @@ static rlm_rcode_t rlm_exec_status2rcode(REQUEST *request, char *answer, size_t 
 		REDEBUG("Program returned invalid code (greater than max rcode) (%i > %i): %s",
 			status, RLM_MODULE_NUMCODES, answer);
 		goto fail;
-
-		return RLM_MODULE_FAIL;
 	}
 
 	status--;	/* Lets hope no one ever re-enumerates RLM_MODULE_* */
@@ -176,10 +176,11 @@ static ssize_t exec_xlat(void *instance, REQUEST *request, char const *fmt, char
 	}
 
 	/*
-	 *	FIXME: Do xlat of program name?
+	 *	This function does it's own xlat of the input program
+	 *	to execute.
 	 */
-	result = radius_exec_program(request, fmt, inst->wait, inst->shell_escape,
-				     out, outlen, input_pairs ? *input_pairs : NULL, NULL);
+	result = radius_exec_program(request, out, outlen, NULL, request, fmt,  input_pairs ? *input_pairs : NULL,
+				     inst->wait, inst->shell_escape, inst->timeout);
 	if (result != 0) {
 		out[0] = '\0';
 		return -1;
@@ -202,7 +203,7 @@ static ssize_t exec_xlat(void *instance, REQUEST *request, char const *fmt, char
  *	that must be referenced in later calls, store a handle to it
  *	in *instance otherwise put a null pointer there.
  */
-static int mod_instantiate(CONF_SECTION *conf, void *instance)
+static int mod_bootstrap(CONF_SECTION *conf, void *instance)
 {
 	char const *p;
 	rlm_exec_t	*inst = instance;
@@ -215,13 +216,9 @@ static int mod_instantiate(CONF_SECTION *conf, void *instance)
 
 	xlat_register(inst->xlat_name, exec_xlat, rlm_exec_shell_escape, inst);
 
-	/*
-	 *	Check whether program actually exists
-	 */
-
 	if (inst->input) {
 		p = inst->input;
-		inst->input_list = radius_list_name(&p, PAIR_LIST_UNKNOWN);
+		p += radius_list_name(&inst->input_list, p, PAIR_LIST_UNKNOWN);
 		if ((inst->input_list == PAIR_LIST_UNKNOWN) || (*p != '\0')) {
 			cf_log_err_cs(conf, "Invalid input list '%s'", inst->input);
 			return -1;
@@ -230,7 +227,7 @@ static int mod_instantiate(CONF_SECTION *conf, void *instance)
 
 	if (inst->output) {
 		p = inst->output;
-		inst->output_list = radius_list_name(&p, PAIR_LIST_UNKNOWN);
+		p += radius_list_name(&inst->output_list, p, PAIR_LIST_UNKNOWN);
 		if ((inst->output_list == PAIR_LIST_UNKNOWN) || (*p != '\0')) {
 			cf_log_err_cs(conf, "Invalid output list '%s'", inst->output);
 			return -1;
@@ -241,8 +238,7 @@ static int mod_instantiate(CONF_SECTION *conf, void *instance)
 	 *	Sanity check the config.  If we're told to NOT wait,
 	 *	then the output pairs must not be defined.
 	 */
-	if (!inst->wait &&
-	    (inst->output != NULL)) {
+	if (!inst->wait && (inst->output != NULL)) {
 		cf_log_err_cs(conf, "Cannot read output pairs if wait = no");
 		return -1;
 	}
@@ -264,6 +260,24 @@ static int mod_instantiate(CONF_SECTION *conf, void *instance)
 		inst->packet_code = dval->value;
 	}
 
+	/*
+	 *	Get the time to wait before killing the child
+	 */
+	if (!inst->timeout) {
+		inst->timeout = EXEC_TIMEOUT;
+	}
+	if (inst->timeout < 1) {
+		cf_log_err_cs(conf, "Timeout '%d' is too small (minimum: 1)", inst->timeout);
+		return -1;
+	}
+	/*
+	 *	Blocking a request longer than max_request_time isn't going to help anyone.
+	 */
+	if (inst->timeout > main_config.max_request_time) {
+		cf_log_err_cs(conf, "Timeout '%d' is too large (maximum: %d)", inst->timeout, main_config.max_request_time);
+		return -1;
+	}
+
 	return 0;
 }
 
@@ -271,7 +285,7 @@ static int mod_instantiate(CONF_SECTION *conf, void *instance)
 /*
  *  Dispatch an exec method
  */
-static rlm_rcode_t exec_dispatch(void *instance, REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_exec_dispatch(void *instance, REQUEST *request)
 {
 	rlm_exec_t	*inst = (rlm_exec_t *)instance;
 	rlm_rcode_t	rcode;
@@ -279,6 +293,7 @@ static rlm_rcode_t exec_dispatch(void *instance, REQUEST *request)
 
 	VALUE_PAIR	**input_pairs = NULL, **output_pairs = NULL;
 	VALUE_PAIR	*answer = NULL;
+	TALLOC_CTX	*ctx = NULL;
 	char		out[1024];
 
 	/*
@@ -319,22 +334,17 @@ static rlm_rcode_t exec_dispatch(void *instance, REQUEST *request)
 		if (!output_pairs) {
 			return RLM_MODULE_INVALID;
 		}
+
+		ctx = radius_list_ctx(request, inst->output_list);
 	}
 
 	/*
 	 *	This function does it's own xlat of the input program
 	 *	to execute.
-	 *
-	 *	FIXME: if inst->program starts with %{, then
-	 *	do an xlat ourselves.  This will allow us to do
-	 *	program = %{Exec-Program}, which this module
-	 *	xlat's into it's string value, and then the
-	 *	exec program function xlat's it's string value
-	 *	into something else.
 	 */
-	status = radius_exec_program(request, inst->program, inst->wait, inst->shell_escape,
-				     out, sizeof(out),
-				     input_pairs ? *input_pairs : NULL, &answer);
+	status = radius_exec_program(ctx, out, sizeof(out), inst->output ? &answer : NULL, request,
+				     inst->program, inst->input ? *input_pairs : NULL,
+				     inst->wait, inst->shell_escape, inst->timeout);
 	rcode = rlm_exec_status2rcode(request, out, strlen(out), status);
 
 	/*
@@ -342,10 +352,10 @@ static rlm_rcode_t exec_dispatch(void *instance, REQUEST *request)
 	 *
 	 *	If we're not waiting, then there are no output pairs.
 	 */
-	if (output_pairs) {
-		pairmove(request, output_pairs, &answer);
+	if (inst->output) {
+		fr_pair_list_move(request, output_pairs, &answer);
 	}
-	pairfree(&answer);
+	fr_pair_list_free(&answer);
 
 	return rcode;
 }
@@ -356,7 +366,7 @@ static rlm_rcode_t exec_dispatch(void *instance, REQUEST *request)
  *
  *	Then, call exec_dispatch.
  */
-static rlm_rcode_t mod_post_auth(void *instance, REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_post_auth(void *instance, REQUEST *request)
 {
 	rlm_exec_t	*inst = (rlm_exec_t *) instance;
 	rlm_rcode_t 	rcode;
@@ -366,10 +376,10 @@ static rlm_rcode_t mod_post_auth(void *instance, REQUEST *request)
 	bool		we_wait = false;
 	VALUE_PAIR	*vp, *tmp;
 
-	vp = pairfind(request->reply->vps, PW_EXEC_PROGRAM, 0, TAG_ANY);
+	vp = fr_pair_find_by_num(request->reply->vps, PW_EXEC_PROGRAM, 0, TAG_ANY);
 	if (vp) {
 		we_wait = false;
-	} else if ((vp = pairfind(request->reply->vps, PW_EXEC_PROGRAM_WAIT, 0, TAG_ANY)) != NULL) {
+	} else if ((vp = fr_pair_find_by_num(request->reply->vps, PW_EXEC_PROGRAM_WAIT, 0, TAG_ANY)) != NULL) {
 		we_wait = true;
 	}
 	if (!vp) {
@@ -377,31 +387,31 @@ static rlm_rcode_t mod_post_auth(void *instance, REQUEST *request)
 			return RLM_MODULE_NOOP;
 		}
 
-		rcode = exec_dispatch(instance, request);
+		rcode = mod_exec_dispatch(instance, request);
 		goto finish;
 	}
 
 	tmp = NULL;
-	status = radius_exec_program(request, vp->vp_strvalue, we_wait, inst->shell_escape,
-				     out, sizeof(out),
-				     request->packet->vps, &tmp);
+	status = radius_exec_program(request, out, sizeof(out), &tmp, request, vp->vp_strvalue, request->packet->vps,
+				     we_wait, inst->shell_escape, inst->timeout);
 	rcode = rlm_exec_status2rcode(request, out, strlen(out), status);
 
 	/*
 	 *	Always add the value-pairs to the reply.
 	 */
-	pairmove(request->reply, &request->reply->vps, &tmp);
-	pairfree(&tmp);
+	fr_pair_list_move(request->reply, &request->reply->vps, &tmp);
+	fr_pair_list_free(&tmp);
 
 	finish:
 	switch (rcode) {
-		case RLM_MODULE_FAIL:
-		case RLM_MODULE_INVALID:
-		case RLM_MODULE_REJECT:
-			request->reply->code = PW_AUTHENTICATION_REJECT;
-			break;
-		default:
-			break;
+	case RLM_MODULE_FAIL:
+	case RLM_MODULE_INVALID:
+	case RLM_MODULE_REJECT:
+		request->reply->code = PW_CODE_ACCESS_REJECT;
+		break;
+
+	default:
+		break;
 	}
 
 	return rcode;
@@ -412,7 +422,7 @@ static rlm_rcode_t mod_post_auth(void *instance, REQUEST *request)
  *
  *	Then, call exec_dispatch.
  */
-static  rlm_rcode_t mod_accounting(void *instance, REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_accounting(void *instance, REQUEST *request)
 {
 	rlm_exec_t	*inst = (rlm_exec_t *) instance;
 	int		status;
@@ -426,22 +436,21 @@ static  rlm_rcode_t mod_accounting(void *instance, REQUEST *request)
 	 *	Exec-Program and Exec-Program-Wait.
 	 */
 	if (!inst->bare) {
-		return exec_dispatch(instance, request);
+		return mod_exec_dispatch(instance, request);
 	}
 
-	vp = pairfind(request->reply->vps, PW_EXEC_PROGRAM, 0, TAG_ANY);
+	vp = fr_pair_find_by_num(request->reply->vps, PW_EXEC_PROGRAM, 0, TAG_ANY);
 	if (vp) {
 		we_wait = true;
-	} else if ((vp = pairfind(request->reply->vps, PW_EXEC_PROGRAM_WAIT, 0, TAG_ANY)) != NULL) {
+	} else if ((vp = fr_pair_find_by_num(request->reply->vps, PW_EXEC_PROGRAM_WAIT, 0, TAG_ANY)) != NULL) {
 		we_wait = false;
 	}
 	if (!vp) {
 		return RLM_MODULE_NOOP;
 	}
 
-	status = radius_exec_program(request, vp->vp_strvalue, we_wait, inst->shell_escape,
-				     out, sizeof(out),
-				     request->packet->vps, NULL);
+	status = radius_exec_program(request, out, sizeof(out), NULL, request, vp->vp_strvalue, request->packet->vps,
+				     we_wait, inst->shell_escape, inst->timeout);
 	return rlm_exec_status2rcode(request, out, strlen(out), status);
 }
 
@@ -454,26 +463,25 @@ static  rlm_rcode_t mod_accounting(void *instance, REQUEST *request)
  *	The server will then take care of ensuring that the module
  *	is single-threaded.
  */
+extern module_t rlm_exec;
 module_t rlm_exec = {
-	RLM_MODULE_INIT,
-	"exec",				/* Name */
-	RLM_TYPE_CHECK_CONFIG_SAFE,   	/* type */
-	sizeof(rlm_exec_t),
-	module_config,
-	mod_instantiate,		/* instantiation */
-	NULL,				/* detach */
-	{
-		exec_dispatch,		/* authentication */
-		exec_dispatch,		/* authorization */
-		exec_dispatch,		/* pre-accounting */
-		mod_accounting,		/* accounting */
-		NULL,			/* check simul */
-		exec_dispatch,		/* pre-proxy */
-		exec_dispatch,		/* post-proxy */
-		mod_post_auth		/* post-auth */
+	.magic		= RLM_MODULE_INIT,
+	.name		= "exec",
+	.type		= RLM_TYPE_THREAD_SAFE,
+	.inst_size	= sizeof(rlm_exec_t),
+	.config		= module_config,
+	.bootstrap	= mod_bootstrap,
+	.methods = {
+		[MOD_AUTHENTICATE]	= mod_exec_dispatch,
+		[MOD_AUTHORIZE]		= mod_exec_dispatch,
+		[MOD_PREACCT]		= mod_exec_dispatch,
+		[MOD_ACCOUNTING]	= mod_accounting,
+		[MOD_PRE_PROXY]		= mod_exec_dispatch,
+		[MOD_POST_PROXY]	= mod_exec_dispatch,
+		[MOD_POST_AUTH]		= mod_post_auth,
 #ifdef WITH_COA
-		, exec_dispatch,
-		exec_dispatch
+		[MOD_RECV_COA]		= mod_exec_dispatch,
+		[MOD_SEND_COA]		= mod_exec_dispatch
 #endif
 	},
 };

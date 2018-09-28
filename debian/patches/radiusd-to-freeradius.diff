@@ -1,6 +1,8 @@
---- a/Make.inc.in
-+++ b/Make.inc.in
-@@ -50,7 +50,7 @@ LDFLAGS		= @LDFLAGS@
+Index: freeradius-server/Make.inc.in
+===================================================================
+--- freeradius-server.orig/Make.inc.in
++++ freeradius-server/Make.inc.in
+@@ -95,7 +95,7 @@ LDFLAGS		= $(OPENSSL_LDFLAGS) $(TALLOC_L
  
  LOGDIR		= ${logdir}
  RADDBDIR	= ${raddbdir}
@@ -8,10 +10,12 @@
 +RUNDIR		= ${localstatedir}/run/freeradius
  SBINDIR		= ${sbindir}
  RADIR		= ${radacctdir}
- LIBRADIUS	= $(top_builddir)/src/lib/$(LIBPREFIX)freeradius-radius.la
---- a/raddb/radiusd.conf.in
-+++ b/raddb/radiusd.conf.in
-@@ -62,7 +62,7 @@ radacctdir = @radacctdir@
+ LIBRADIUS	= $(top_builddir)/src/lib/$(LIBPREFIX)freeradius-radius.la $(TALLOC_LIBS)
+Index: freeradius-server/raddb/radiusd.conf.in
+===================================================================
+--- freeradius-server.orig/raddb/radiusd.conf.in
++++ freeradius-server/raddb/radiusd.conf.in
+@@ -61,7 +61,7 @@ radacctdir = @radacctdir@
  
  #
  #  name of the running server.  See also the "-n" command-line option.
@@ -20,7 +24,7 @@
  
  #  Location of config and logfiles.
  confdir = ${raddbdir}
-@@ -463,8 +463,8 @@ security {
+@@ -398,8 +398,8 @@ security {
  	#  member.  This can allow for some finer-grained access
  	#  controls.
  	#
@@ -31,10 +35,12 @@
  
  	#  Core dumps are a bad thing.  This should only be set to
  	#  'yes' if you're debugging a problem with the server.
---- a/scripts/freeradius.monitrc
-+++ b/scripts/freeradius.monitrc
+Index: freeradius-server/scripts/monit/freeradius.monitrc
+===================================================================
+--- freeradius-server.orig/scripts/monit/freeradius.monitrc
++++ freeradius-server/scripts/monit/freeradius.monitrc
 @@ -8,9 +8,9 @@
- #  Totalmem limit should be lowered to 200.0 if none of the 
+ #  Totalmem limit should be lowered to 200.0 if none of the
  #  interpreted language modules or rlm_cache are being used.
  #
 -check process radiusd with pidfile /var/run/radiusd/radiusd.pid
@@ -46,4 +52,49 @@
     if failed host 127.0.0.1 port 1812 type udp protocol radius secret testing123 then alert
     if failed host 127.0.0.1 port 1813 type udp protocol radius secret testing123 then alert
     if cpu > 95% for 2 cycles then alert
-
+Index: freeradius-server/raddb/sites-available/control-socket
+===================================================================
+--- freeradius-server.orig/raddb/sites-available/control-socket
++++ freeradius-server/raddb/sites-available/control-socket
+@@ -72,12 +72,12 @@ listen {
+ 	#
+ 	#  Name of user that is allowed to connect to the control socket.
+ 	#
+-#	uid = radius
++#	uid = freerad
+ 
+ 	#
+ 	#  Name of group that is allowed to connect to the control socket.
+ 	#
+-#	gid = radius
++#	gid = freerad
+ 
+ 	#
+ 	#  Access mode.
+Index: freeradius-server/src/main/radiusd.c
+===================================================================
+--- freeradius-server.orig/src/main/radiusd.c
++++ freeradius-server/src/main/radiusd.c
+@@ -97,7 +97,6 @@ int main(int argc, char *argv[])
+ 	bool display_version = false;
+ 	int flag = 0;
+ 	int from_child[2] = {-1, -1};
+-	char *p;
+ 	fr_state_t *state = NULL;
+ 
+ 	/*
+@@ -132,13 +131,7 @@ int main(int argc, char *argv[])
+ 	main_config.myip.af = AF_UNSPEC;
+ 	main_config.port = 0;
+ 	main_config.daemonize = true;
+-
+-	p = strrchr(argv[0], FR_DIR_SEP);
+-	if (!p) {
+-		main_config.name = argv[0];
+-	} else {
+-		main_config.name = p + 1;
+-	}
++	main_config.name = "radiusd";
+ 
+ 	/*
+ 	 *	Don't put output anywhere until we get told a little

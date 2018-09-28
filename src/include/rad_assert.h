@@ -28,12 +28,12 @@ RCSIDH(rad_assert_h, "$Id$")
 extern "C" {
 #endif
 
-extern void rad_assert_fail (char const *file, unsigned int line, char const *expr);
+void rad_assert_fail(char const *file, unsigned int line, char const *expr) CC_HINT(noreturn);
 
 #ifdef NDEBUG
 	#define rad_assert(expr) ((void) (0))
 
-#elif !defined(FR_SCAN_BUILD)
+#elif !defined(__clang_analyzer__)
 	#define rad_assert(expr) \
 		((void) ((expr) ? (void) 0 : \
 			(void) rad_assert_fail (__FILE__, __LINE__, #expr)))

@@ -45,6 +45,15 @@ eap inner-eap {
 	#  You SHOULD use different certificates than are used
 	#  for the outer EAP configuration!
 	#
+	#  You can create the "inner-server.pem" file by doing:
+	#
+	#	cd raddb/certs
+	#	vi inner-server.cnf
+	#	make inner-server
+	#
+	#  The certificate MUST be different from the "server.cnf"
+	#  file.
+	#
 	#  Support for PEAP/TLS and RFC 5176 TLS/TLS is experimental.
 	#  It might work, or it might not.
 	#
@@ -79,12 +88,16 @@ eap inner-eap {
 
 		#  Other needful things
 		dh_file = ${certdir}/dh
-		random_file = ${certdir}/random
+		random_file = /dev/urandom
 
 		#  CRL and OCSP things go here.  See the main "eap"
 		#  file for details.
 	#	check_crl = yes
 	#	ca_path = /path/to/directory/with/ca_certs/and/crls/
+
+		# Accept an expired Certificate Revocation List
+		#
+#		allow_expired_crl = no
 
 		#
 		#  The session resumption / fast re-authentication

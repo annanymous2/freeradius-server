@@ -1,7 +1,8 @@
 /*
  *   This program is is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License, version 2 if the
- *   License as published by the Free Software Foundation.
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation; either version 2 of the License, or (at
+ *   your option) any later version.
  *
  *   This program is distributed in the hope that it will be useful,
  *   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -31,12 +32,12 @@ RCSID("$Id$")
  *	going to return.
  */
 typedef struct rlm_sometimes_t {
-	char			*rcode_str;
-	int			rcode;
-	int			start;
-	int			end;
-	char			*key;
-	DICT_ATTR const		*da;
+	char const	*rcode_str;
+	rlm_rcode_t	rcode;
+	uint32_t	start;
+	uint32_t	end;
+	char const	*key;
+	DICT_ATTR const	*da;
 } rlm_sometimes_t;
 
 /*
@@ -49,16 +50,12 @@ typedef struct rlm_sometimes_t {
  *	buffer over-flows.
  */
 static const CONF_PARSER module_config[] = {
-	{ "rcode",      PW_TYPE_STRING_PTR, offsetof(rlm_sometimes_t,rcode_str), NULL, "fail" },
-	{ "key", PW_TYPE_STRING_PTR | PW_TYPE_ATTRIBUTE,    offsetof(rlm_sometimes_t,key), NULL, "User-Name" },
-	{ "start", PW_TYPE_INTEGER,    offsetof(rlm_sometimes_t,start), NULL, "0" },
-	{ "end", PW_TYPE_INTEGER,    offsetof(rlm_sometimes_t,end), NULL, "127" },
-
-	{ NULL, -1, 0, NULL, NULL }		/* end the list */
+	{ "rcode", FR_CONF_OFFSET(PW_TYPE_STRING, rlm_sometimes_t, rcode_str), "fail" },
+	{ "key", FR_CONF_OFFSET(PW_TYPE_STRING | PW_TYPE_ATTRIBUTE, rlm_sometimes_t, key), "User-Name" },
+	{ "start", FR_CONF_OFFSET(PW_TYPE_INTEGER, rlm_sometimes_t, start), "0" },
+	{ "end", FR_CONF_OFFSET(PW_TYPE_INTEGER, rlm_sometimes_t, end), "127" },
+	CONF_PARSER_TERMINATOR
 };
-
-
-extern const FR_NAME_NUMBER mod_rcode_table[];
 
 static int mod_instantiate(CONF_SECTION *conf, void *instance)
 {
@@ -67,8 +64,8 @@ static int mod_instantiate(CONF_SECTION *conf, void *instance)
 	/*
 	 *	Convert the rcode string to an int, and get rid of it
 	 */
-	inst->rcode = fr_str2int(mod_rcode_table, inst->rcode_str, -1);
-	if (inst->rcode == -1) {
+	inst->rcode = fr_str2int(mod_rcode_table, inst->rcode_str, RLM_MODULE_UNKNOWN);
+	if (inst->rcode == RLM_MODULE_UNKNOWN) {
 		cf_log_err_cs(conf, "Unknown module return code '%s'", inst->rcode_str);
 		return -1;
 	}
@@ -82,11 +79,10 @@ static int mod_instantiate(CONF_SECTION *conf, void *instance)
 /*
  *	A lie!  It always returns!
  */
-static rlm_rcode_t sometimes_return(void *instance, RADIUS_PACKET *packet,
-				    RADIUS_PACKET *reply)
+static rlm_rcode_t sometimes_return(void *instance, RADIUS_PACKET *packet, RADIUS_PACKET *reply)
 {
 	uint32_t hash;
-	int value;
+	uint32_t value;
 	rlm_sometimes_t *inst = instance;
 	VALUE_PAIR *vp;
 
@@ -98,10 +94,10 @@ static rlm_rcode_t sometimes_return(void *instance, RADIUS_PACKET *packet,
 	/*
 	 *	Hash based on the given key.  Usually User-Name.
 	 */
-	vp = pairfind(packet->vps, inst->da->attr, inst->da->vendor, TAG_ANY);
+	vp = fr_pair_find_by_da(packet->vps, inst->da, TAG_ANY);
 	if (!vp) return RLM_MODULE_NOOP;
 
-	hash = fr_hash(&vp->data, vp->length);
+	hash = fr_hash(&vp->data, vp->vp_length);
 	hash &= 0xff;		/* ensure it's 0..255 */
 	value = hash;
 
@@ -119,20 +115,20 @@ static rlm_rcode_t sometimes_return(void *instance, RADIUS_PACKET *packet,
 	 */
 	if ((inst->rcode == RLM_MODULE_HANDLED) && reply) {
 		switch (packet->code) {
-		case PW_AUTHENTICATION_REQUEST:
-			reply->code = PW_AUTHENTICATION_ACK;
+		case PW_CODE_ACCESS_REQUEST:
+			reply->code = PW_CODE_ACCESS_ACCEPT;
 			break;
 
-		case PW_ACCOUNTING_REQUEST:
-			reply->code = PW_ACCOUNTING_RESPONSE;
+		case PW_CODE_ACCOUNTING_REQUEST:
+			reply->code = PW_CODE_ACCOUNTING_RESPONSE;
 			break;
 
-		case PW_COA_REQUEST:
-			reply->code = PW_COA_ACK;
+		case PW_CODE_COA_REQUEST:
+			reply->code = PW_CODE_COA_ACK;
 			break;
 
-		case PW_DISCONNECT_REQUEST:
-			reply->code = PW_DISCONNECT_ACK;
+		case PW_CODE_DISCONNECT_REQUEST:
+			reply->code = PW_CODE_DISCONNECT_ACK;
 			break;
 
 		default:
@@ -143,51 +139,53 @@ static rlm_rcode_t sometimes_return(void *instance, RADIUS_PACKET *packet,
 	return inst->rcode;
 }
 
-static rlm_rcode_t sometimes_packet(void *instance, REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_sometimes_packet(void *instance, REQUEST *request)
 {
 	return sometimes_return(instance, request->packet, request->reply);
 }
 
-static rlm_rcode_t sometimes_reply(void *instance, REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_sometimes_reply(void *instance, REQUEST *request)
 {
 	return sometimes_return(instance, request->reply, NULL);
 }
 
-static rlm_rcode_t mod_pre_proxy(void *instance, REQUEST *request)
+#ifdef WITH_PROXY
+static rlm_rcode_t CC_HINT(nonnull) mod_pre_proxy(void *instance, REQUEST *request)
 {
 	if (!request->proxy) return RLM_MODULE_NOOP;
 
 	return sometimes_return(instance, request->proxy, request->proxy_reply);
 }
 
-static rlm_rcode_t mod_post_proxy(void *instance, REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_post_proxy(void *instance, REQUEST *request)
 {
 	if (!request->proxy_reply) return RLM_MODULE_NOOP;
 
 	return sometimes_return(instance, request->proxy_reply, NULL);
 }
+#endif
 
+extern module_t rlm_sometimes;
 module_t rlm_sometimes = {
-	RLM_MODULE_INIT,
-	"sometimes",
-	RLM_TYPE_CHECK_CONFIG_SAFE | RLM_TYPE_HUP_SAFE,   	/* type */
-	sizeof(rlm_sometimes_t),
-	module_config,
-	mod_instantiate,		/* instantiation */
-	NULL,				/* detach */
-	{
-		sometimes_packet,	/* authentication */
-		sometimes_packet,	/* authorization */
-		sometimes_packet,	/* preaccounting */
-		sometimes_packet,	/* accounting */
-		NULL,
-		mod_pre_proxy,	/* pre-proxy */
-		mod_post_proxy,	/* post-proxy */
-		sometimes_reply		/* post-auth */
+	.magic		= RLM_MODULE_INIT,
+	.name		= "sometimes",
+	.type		= RLM_TYPE_HUP_SAFE,   	/* needed for radmin */
+	.inst_size	= sizeof(rlm_sometimes_t),
+	.config		= module_config,
+	.instantiate	= mod_instantiate,
+	.methods = {
+		[MOD_AUTHENTICATE]	= mod_sometimes_packet,
+		[MOD_AUTHORIZE]		= mod_sometimes_packet,
+		[MOD_PREACCT]		= mod_sometimes_packet,
+		[MOD_ACCOUNTING]	= mod_sometimes_packet,
+#ifdef WITH_PROXY
+		[MOD_PRE_PROXY]		= mod_pre_proxy,
+		[MOD_POST_PROXY]	= mod_post_proxy,
+#endif
+		[MOD_POST_AUTH]		= mod_sometimes_reply,
 #ifdef WITH_COA
-		,
-		sometimes_packet,	/* recv-coa */
-		sometimes_reply		/* send-coa */
+		[MOD_RECV_COA]		= mod_sometimes_packet,
+		[MOD_SEND_COA]		= mod_sometimes_reply,
 #endif
 	},
 };

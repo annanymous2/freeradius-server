@@ -1,7 +1,8 @@
 /*
  *   This program is is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License, version 2 if the
- *   License as published by the Free Software Foundation.
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation; either version 2 of the License, or (at
+ *   your option) any later version.
  *
  *   This program is distributed in the hope that it will be useful,
  *   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -27,6 +28,7 @@
  * @copyright 2000  Alan Curry <pacman@world.std.com>
  */
 RCSID("$Id$")
+USES_APPLE_DEPRECATED_API
 
 #include	<freeradius-devel/radiusd.h>
 
@@ -53,56 +55,67 @@ RCSID("$Id$")
 #include	<freeradius-devel/modules.h>
 #include	<freeradius-devel/sysutmp.h>
 
-static char trans[64] =
-   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static char trans[64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 #define ENC(c) trans[c]
 
-struct unix_instance {
+typedef struct rlm_unix {
+	char const *name;	//!< Instance name.
 	char const *radwtmp;
-};
+} rlm_unix_t;
 
 static const CONF_PARSER module_config[] = {
-	{ "radwtmp",  PW_TYPE_FILE_OUTPUT | PW_TYPE_REQUIRED,
-	  offsetof(struct unix_instance,radwtmp), NULL,   "NULL" },
-
-	{ NULL, -1, 0, NULL, NULL }		/* end the list */
+	{ "radwtmp", FR_CONF_OFFSET(PW_TYPE_FILE_OUTPUT | PW_TYPE_REQUIRED, rlm_unix_t, radwtmp), "NULL" },
+	CONF_PARSER_TERMINATOR
 };
-
 
 /*
  *	The Group = handler.
  */
-static int groupcmp(UNUSED void *instance, REQUEST *req, UNUSED VALUE_PAIR *request,
+static int groupcmp(UNUSED void *instance, REQUEST *request, UNUSED VALUE_PAIR *req_vp,
 		    VALUE_PAIR *check, UNUSED VALUE_PAIR *check_pairs,
 		    UNUSED VALUE_PAIR **reply_pairs)
 {
 	struct passwd	*pwd;
 	struct group	*grp;
 	char		**member;
-	int		retval;
+	int		retval = -1;
 
 	/*
-	 *	No user name, doesn't compare.
+	 *	No user name, can't compare.
 	 */
-	if (!req->username) {
+	if (!request->username) return -1;
+
+	if (rad_getpwnam(request, &pwd, request->username->vp_strvalue) < 0) {
+		RDEBUG("%s", fr_strerror());
 		return -1;
 	}
 
-	pwd = getpwnam(req->username->vp_strvalue);
-	if (!pwd)
+	if (rad_getgrnam(request, &grp, check->vp_strvalue) < 0) {
+		RDEBUG("%s", fr_strerror());
+		talloc_free(pwd);
 		return -1;
+	}
 
-	grp = getgrnam(check->vp_strvalue);
-	if (!grp)
-		return -1;
+	/*
+	 *	The users default group isn't the one we're looking for,
+	 *	look through the list of group members.
+	 */
+	if (pwd->pw_gid == grp->gr_gid) {
+		retval = 0;
 
-	retval = (pwd->pw_gid == grp->gr_gid) ? 0 : -1;
-	if (retval < 0) {
+	} else {
 		for (member = grp->gr_mem; *member && retval; member++) {
-			if (strcmp(*member, pwd->pw_name) == 0)
+			if (strcmp(*member, pwd->pw_name) == 0) {
 				retval = 0;
+				break;
+			}
 		}
 	}
+
+	/* lifo */
+	talloc_free(grp);
+	talloc_free(pwd);
+
 	return retval;
 }
 
@@ -110,17 +123,51 @@ static int groupcmp(UNUSED void *instance, REQUEST *req, UNUSED VALUE_PAIR *requ
 /*
  *	Read the config
  */
-static int mod_instantiate(UNUSED CONF_SECTION *conf, void *instance)
+static int mod_bootstrap(CONF_SECTION *conf, void *instance)
 {
-	struct unix_instance *inst = instance;
+	rlm_unix_t *inst = instance;
+
+	DICT_ATTR const *group_da, *user_name_da;
+
+	inst->name = cf_section_name2(conf);
+	if (!inst->name) {
+		inst->name = cf_section_name1(conf);
+	}
+
+	group_da = dict_attrbyvalue(PW_GROUP, 0);
+	if (!group_da) {
+		ERROR("rlm_unix (%s): 'Group' attribute not found in dictionary", inst->name);
+		return -1;
+	}
+
+	user_name_da = dict_attrbyvalue(PW_USER_NAME, 0);
+	if (!user_name_da) {
+		ERROR("rlm_unix (%s): 'User-Name' attribute not found in dictionary", inst->name);
+		return -1;
+	}
 
 	/* FIXME - delay these until a group file has been read so we know
 	 * groupcmp can actually do something */
-	paircompare_register(dict_attrbyvalue(PW_GROUP, 0), dict_attrbyvalue(PW_USER_NAME, 0), false, groupcmp, inst);
+	paircompare_register(group_da, user_name_da, false, groupcmp, inst);
+
 #ifdef PW_GROUP_NAME /* compat */
-	paircompare_register(dict_attrbyvalue(PW_GROUP_NAME, 0), dict_attrbyvalue(PW_USER_NAME, 0),
-			true, groupcmp, inst);
+	{
+		DICT_ATTR const *group_name_da;
+
+		group_name_da = dict_attrbyvalue(PW_GROUP_NAME, 0);
+		if (!group_name_da) {
+			ERROR("rlm_unix (%s): 'Group-Name' attribute not found in dictionary", inst->name);
+			return -1;
+		}
+		paircompare_register(group_name_da, user_name_da, true, groupcmp, inst);
+	}
 #endif
+
+	if (paircompare_register_byname("Unix-Group", user_name_da, false, groupcmp, inst) < 0) {
+		ERROR("rlm_unix (%s): Failed registering Unix-Group: %s", inst->name,
+		      fr_strerror());
+		return -1;
+	}
 
 	return 0;
 }
@@ -130,7 +177,7 @@ static int mod_instantiate(UNUSED CONF_SECTION *conf, void *instance)
  *	Pull the users password from where-ever, and add it to
  *	the given vp list.
  */
-static rlm_rcode_t mod_authorize(UNUSED void *instance, REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_authorize(UNUSED void *instance, REQUEST *request)
 {
 	char const	*name;
 	char const	*encrypted_pass;
@@ -267,7 +314,7 @@ static rlm_rcode_t mod_authorize(UNUSED void *instance, REQUEST *request)
 	if (encrypted_pass[0] == 0)
 		return RLM_MODULE_NOOP;
 
-	vp = pairmake_config("Crypt-Password", encrypted_pass, T_OP_SET);
+	vp = pair_make_config("Crypt-Password", encrypted_pass, T_OP_SET);
 	if (!vp) return RLM_MODULE_FAIL;
 
 	return RLM_MODULE_UPDATED;
@@ -306,7 +353,7 @@ static char *uue(void *in)
 /*
  *	Unix accounting - write a wtmp file.
  */
-static rlm_rcode_t mod_accounting(void *instance, REQUEST *request)
+static rlm_rcode_t CC_HINT(nonnull) mod_accounting(void *instance, REQUEST *request)
 {
 	VALUE_PAIR	*vp;
 	vp_cursor_t	cursor;
@@ -322,15 +369,15 @@ static rlm_rcode_t mod_accounting(void *instance, REQUEST *request)
 #ifdef USER_PROCESS
 	int		protocol = -1;
 #endif
-	int		nas_port = 0;
-	int		port_seen = 0;
-	struct unix_instance *inst = (struct unix_instance *) instance;
+	uint32_t	nas_port = 0;
+	bool		port_seen = true;
+	rlm_unix_t *inst = (rlm_unix_t *) instance;
 
 	/*
 	 *	No radwtmp.  Don't do anything.
 	 */
 	if (!inst->radwtmp) {
-		RDEBUG2("No radwtmp file configured.  Ignoring accounting request.");
+		RDEBUG2("No radwtmp file configured.  Ignoring accounting request");
 		return RLM_MODULE_NOOP;
 	}
 
@@ -342,8 +389,8 @@ static rlm_rcode_t mod_accounting(void *instance, REQUEST *request)
 	/*
 	 *	Which type is this.
 	 */
-	if ((vp = pairfind(request->packet->vps, PW_ACCT_STATUS_TYPE, 0, TAG_ANY))==NULL) {
-		RDEBUG("no Accounting-Status-Type attribute in request.");
+	if ((vp = fr_pair_find_by_num(request->packet->vps, PW_ACCT_STATUS_TYPE, 0, TAG_ANY))==NULL) {
+		RDEBUG("no Accounting-Status-Type attribute in request");
 		return RLM_MODULE_NOOP;
 	}
 	status = vp->vp_integer;
@@ -359,7 +406,7 @@ static rlm_rcode_t mod_accounting(void *instance, REQUEST *request)
 	 *	We're only interested in accounting messages
 	 *	with a username in it.
 	 */
-	if (pairfind(request->packet->vps, PW_USER_NAME, 0, TAG_ANY) == NULL)
+	if (fr_pair_find_by_num(request->packet->vps, PW_USER_NAME, 0, TAG_ANY) == NULL)
 		return RLM_MODULE_NOOP;
 
 	t = request->timestamp;
@@ -368,36 +415,39 @@ static rlm_rcode_t mod_accounting(void *instance, REQUEST *request)
 	/*
 	 *	First, find the interesting attributes.
 	 */
-	for (vp = paircursor(&cursor, &request->packet->vps);
+	for (vp = fr_cursor_init(&cursor, &request->packet->vps);
 	     vp;
-	     vp = pairnext(&cursor)) {
+	     vp = fr_cursor_next(&cursor)) {
 		if (!vp->da->vendor) switch (vp->da->attr) {
-			case PW_USER_NAME:
-				if (vp->length >= sizeof(ut.ut_name)) {
-					memcpy(ut.ut_name, vp->vp_strvalue, sizeof(ut.ut_name));
-				} else {
-					strlcpy(ut.ut_name, vp->vp_strvalue, sizeof(ut.ut_name));
-				}
-				break;
-			case PW_LOGIN_IP_HOST:
-			case PW_FRAMED_IP_ADDRESS:
-				framed_address = vp->vp_ipaddr;
+		case PW_USER_NAME:
+			if (vp->vp_length >= sizeof(ut.ut_name)) {
+				memcpy(ut.ut_name, vp->vp_strvalue, sizeof(ut.ut_name));
+			} else {
+				strlcpy(ut.ut_name, vp->vp_strvalue, sizeof(ut.ut_name));
+			}
+			break;
+
+		case PW_LOGIN_IP_HOST:
+		case PW_FRAMED_IP_ADDRESS:
+			framed_address = vp->vp_ipaddr;
 				break;
 #ifdef USER_PROCESS
-			case PW_FRAMED_PROTOCOL:
-				protocol = vp->vp_integer;
-				break;
+		case PW_FRAMED_PROTOCOL:
+			protocol = vp->vp_integer;
+			break;
 #endif
-			case PW_NAS_IP_ADDRESS:
-				nas_address = vp->vp_ipaddr;
-				break;
-			case PW_NAS_PORT:
-				nas_port = vp->vp_integer;
-				port_seen = 1;
-				break;
-			case PW_ACCT_DELAY_TIME:
-				delay = vp->vp_ipaddr;
-				break;
+		case PW_NAS_IP_ADDRESS:
+			nas_address = vp->vp_ipaddr;
+			break;
+
+		case PW_NAS_PORT:
+			nas_port = vp->vp_integer;
+			port_seen = true;
+			break;
+
+		case PW_ACCT_DELAY_TIME:
+			delay = vp->vp_ipaddr;
+			break;
 		}
 	}
 
@@ -481,22 +531,16 @@ static rlm_rcode_t mod_accounting(void *instance, REQUEST *request)
 }
 
 /* globally exported name */
+extern module_t rlm_unix;
 module_t rlm_unix = {
-	RLM_MODULE_INIT,
-	"System",
-	RLM_TYPE_THREAD_UNSAFE | RLM_TYPE_CHECK_CONFIG_SAFE,
-	sizeof(struct unix_instance),
-	module_config,
-	mod_instantiate,		/* instantiation */
-	NULL,				/* detach */
-	{
-		NULL,		    /* authentication */
-		mod_authorize,       /* authorization */
-		NULL,		 /* preaccounting */
-		mod_accounting,      /* accounting */
-		NULL,		  /* checksimul */
-		NULL,			/* pre-proxy */
-		NULL,			/* post-proxy */
-		NULL			/* post-auth */
+	.magic		= RLM_MODULE_INIT,
+	.name		= "unix",
+	.type		= RLM_TYPE_THREAD_UNSAFE,
+	.inst_size	= sizeof(rlm_unix_t),
+	.config		= module_config,
+	.bootstrap	= mod_bootstrap,
+	.methods = {
+		[MOD_AUTHORIZE]		= mod_authorize,
+		[MOD_ACCOUNTING]	= mod_accounting
 	},
 };

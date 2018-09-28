@@ -44,7 +44,7 @@ typedef struct fr_hash_entry_t {
 	struct fr_hash_entry_t *next;
 	uint32_t	reversed;
 	uint32_t	key;
- 	void const 	*data;
+	void const 	*data;
 } fr_hash_entry_t;
 
 
@@ -596,7 +596,7 @@ int fr_hash_table_walk(fr_hash_table_t *ht,
 			 fr_hash_table_walk_t callback,
 			 void *context)
 {
-	int i, rcode;;
+	int i, rcode;
 
 	if (!ht || !callback) return 0;
 
@@ -613,7 +613,7 @@ int fr_hash_table_walk(fr_hash_table_t *ht,
 
 			next = node->next;
 
-			memcpy(&arg, node->data, sizeof(arg));
+			memcpy(&arg, &node->data, sizeof(arg));
 			rcode = callback(context, arg);
 
 			if (rcode != 0) return rcode;
@@ -759,33 +759,6 @@ uint32_t fr_hash_update(void const *data, size_t size, uint32_t hash)
 }
 
 /*
- *	Return a "folded" hash, where the lower "bits" are the
- *	hash, and the upper bits are zero.
- *
- *	If you need a non-power-of-two hash, cope.
- */
-uint32_t fr_hash_fold(uint32_t hash, int bits)
-{
-	int count;
-	uint32_t result;
-
-	if ((bits <= 0) || (bits >= 32)) return hash;
-
-	result = hash;
-
-	/*
-	 *	Never use the same bits twice in an xor.
-	 */
-	for (count = 0; count < 32; count += bits) {
-		hash >>= bits;
-		result ^= hash;
-	}
-
-	return result & (((uint32_t) (1 << bits)) - 1);
-}
-
-
-/*
  *	Hash a C string, so we loop over it once.
  */
 uint32_t fr_hash_string(char const *p)
@@ -822,11 +795,11 @@ int main(int argc, char **argv)
 	ht = fr_hash_table_create(hash_int, NULL, NULL);
 	if (!ht) {
 		fprintf(stderr, "Hash create failed\n");
-		exit(1);
+		fr_exit(1);
 	}
 
 	array = malloc(sizeof(int) * MAX);
-	if (!array) exit(1);
+	if (!array) fr_exit(1);
 
 	for (i = 0; i < MAX; i++) {
 		p = array + i;
@@ -834,13 +807,13 @@ int main(int argc, char **argv)
 
 		if (!fr_hash_table_insert(ht, p)) {
 			fprintf(stderr, "Failed insert %08x\n", i);
-			exit(1);
+			fr_exit(1);
 		}
 #ifdef TEST_INSERT
 		q = fr_hash_table_finddata(ht, p);
 		if (q != p) {
 			fprintf(stderr, "Bad data %d\n", i);
-			exit(1);
+			fr_exit(1);
 		}
 #endif
 	}
@@ -856,18 +829,18 @@ int main(int argc, char **argv)
 			q = fr_hash_table_finddata(ht, &i);
 			if (!q || *q != i) {
 				fprintf(stderr, "Failed finding %d\n", i);
-				exit(1);
+				fr_exit(1);
 			}
 
 #if 0
 			if (!fr_hash_table_delete(ht, &i)) {
 				fprintf(stderr, "Failed deleting %d\n", i);
-				exit(1);
+				fr_exit(1);
 			}
 			q = fr_hash_table_finddata(ht, &i);
 			if (q) {
 				fprintf(stderr, "Failed to delete %08x\n", i);
-				exit(1);
+				fr_exit(1);
 			}
 #endif
 		}
@@ -878,6 +851,6 @@ int main(int argc, char **argv)
 	fr_hash_table_free(ht);
 	free(array);
 
-	exit(0);
+	fr_exit(0);
 }
 #endif

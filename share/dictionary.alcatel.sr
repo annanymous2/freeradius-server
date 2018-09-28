@@ -1,5 +1,5 @@
 # -*- text -*-
-# Copyright (C) 2012 The FreeRADIUS Server project and contributors
+# Copyright (C) 2015 The FreeRADIUS Server project and contributors
 ##############################################################################
 #
 #	Alcatel-Lucent Service Router dictionary.
@@ -21,12 +21,12 @@ VALUE	Timetra-Access			both			3
 
 ATTRIBUTE	Timetra-Home-Directory			2	string
 
-VALUE	Timetra-Restrict-To-Home	true			1
-VALUE	Timetra-Restrict-To-Home	false			2
-
 ATTRIBUTE	Timetra-Restrict-To-Home		3	integer
 ATTRIBUTE	Timetra-Profile				4	string
 ATTRIBUTE	Timetra-Default-Action			5	integer
+
+VALUE	Timetra-Restrict-To-Home	true			1
+VALUE	Timetra-Restrict-To-Home	false			2
 
 VALUE	Timetra-Default-Action		permit-all		1
 VALUE	Timetra-Default-Action		deny-all		2
@@ -74,6 +74,13 @@ ATTRIBUTE	Alc-PPPoE-Service-Name			35	string
 ATTRIBUTE	Alc-DHCP-Vendor-Class-Id		36	string
 
 # RADIUS subscriber accounting VSAs (HSMDA override counters)
+#
+#  In a stupid format.  These attributes are 10 octets long, in the
+#  following format:
+#
+#	2 octets - Queue ID
+#	8 octets - 64-bit counter.
+#
 ATTRIBUTE	Alc-Acct-OC-I-Inprof-Octets-64		37	octets
 ATTRIBUTE	Alc-Acct-OC-I-Outprof-Octets-64		38	octets
 ATTRIBUTE	Alc-Acct-OC-O-Inprof-Octets-64		39	octets
@@ -87,7 +94,7 @@ ATTRIBUTE	Alc-App-Prof-Str			45	string
 ATTRIBUTE	Alc-Tunnel-Group			46	string
 ATTRIBUTE	Alc-Tunnel-Algorithm			47	integer
 
-VALUE 	Alc-Tunnel-Algorithm		weighted-access		1
+VALUE	Alc-Tunnel-Algorithm		weighted-access		1
 VALUE	Alc-Tunnel-Algorithm		existing-first		2
 
 ATTRIBUTE	Alc-Tunnel-Max-Sessions			48	integer	has_tag
@@ -175,8 +182,8 @@ ATTRIBUTE	Alc-Credit-Control-Quota		96	string
 ATTRIBUTE	Alc-Tunnel-Challenge			97	integer	has_tag
 ATTRIBUTE	Alc-Force-Nak				98	string	# CoA
 
-VALUE	Alc-Tunnel-Challenge		 never			1
-VALUE	Alc-Tunnel-Challenge		 always			2
+VALUE	Alc-Tunnel-Challenge		never			1
+VALUE	Alc-Tunnel-Challenge		always			2
 
 ATTRIBUTE	Alc-Ipv6-Address			99	ipv6addr
 ATTRIBUTE	Alc-Serv-Id				100	integer
@@ -243,84 +250,91 @@ ATTRIBUTE	Alc-Acct-O-statmode			127	string
 # ATM Traffic Descriptor Profiles
 ATTRIBUTE	Alc-ATM-Ingress-TD-Profile		128	integer
 ATTRIBUTE	Alc-ATM-Egress-TD-Profile		129	integer
- 
+
 # Application-assurance transit ip (CoA)
 ATTRIBUTE	Alc-AA-Transit-IP			130	integer	# CoA
- 
+
 VALUE	Alc-AA-Transit-IP		host			1
 VALUE	Alc-AA-Transit-IP		audit-start		2
 VALUE	Alc-AA-Transit-IP		audit-end		3
- 
+
 # DHCPv6 Relay pool selection attributes
 ATTRIBUTE	Alc-Delegated-IPv6-Pool			131	string
- 
+
 ATTRIBUTE	Alc-Access-Loop-Rate-Down		132	integer
 ATTRIBUTE	Alc-Access-Loop-Encap-Offset		133	octets
- 
+
 # Submgt SLA-profile filter overrrule
 ATTRIBUTE	Alc-Subscriber-Filter			134	string
- 
+
 ATTRIBUTE	Alc-PPP-Force-IPv6CP			135	integer
- 
+
 # One-Time HTTP Redirection
 ATTRIBUTE	Alc-Onetime-Http-Redirection-Filter-Id	136	string
- 
+
 # Used when clearing all radius li triggered sources from a mirror destination
 # via CoA. The value of this attribute is used to authenticate the coa.
 ATTRIBUTE	Alc-Authentication-Policy-Name		137	string # CoA
- 
+
 # Lawful intercept VSAs continued
 ATTRIBUTE	Alc-LI-Intercept-Id			138	integer	encrypt=2
 ATTRIBUTE	Alc-LI-Session-Id			139	integer	encrypt=2
- 
+
 # NAT
 ATTRIBUTE	Alc-Nat-Outside-Serv-Id			140	integer
 ATTRIBUTE	Alc-Nat-Outside-Ip-Addr			141	ipaddr
- 
+
 # Mobile-Gateway APN-Password VSA (password used for the next APN AccessReq)
 ATTRIBUTE	Alc-APN-Password			142	string	encrypt=2
- 
+
 # Mobile-Gateway Next-APN-Name VSA (PGW-APN to be used for the session)
 ATTRIBUTE	Alc-APN-Name				143	string
- 
+
 ATTRIBUTE	Alc-Tunnel-Acct-Policy			144	string	has_tag
- 
+
 # Wlan-Gateway
 ATTRIBUTE	Alc-Mgw-Interface-Type			145	integer
- 
+
 VALUE	Alc-Mgw-Interface-Type		gn			1
 VALUE	Alc-Mgw-Interface-Type		s2a			2
 VALUE	Alc-Mgw-Interface-Type		s2b			3
- 
+
 ATTRIBUTE	Alc-Wlan-APN-Name			146	string
- 
+
 ATTRIBUTE	Alc-MsIsdn				147	string
- 
+
 # WIFI Received Signal Strength Indication
 ATTRIBUTE	Alc-RSSI				148	integer
- 
+
 # Number of attached WIFI UEs
 ATTRIBUTE	Alc-Num-Attached-UEs			149	integer
- 
+
 # Mobile-Gateway Charging-profile-ID VSA
 ATTRIBUTE	Alc-Charging-Prof-ID			150	integer
- 
+
 # 151-155 are currently unused
- 
+
 # Application-Assurance Radius Accounting Attributes
 ATTRIBUTE	Alc-AA-Group-Partition-Isa-Id		156	string
- 
+
 # Application-Assurance Radius Peer Information
 ATTRIBUTE	Alc-AA-Peer-Identifier			157	string
- 
+
+# A local configured filter policy can be extended with shared dynamic filter entries
+ATTRIBUTE 	Alc-Nas-Filter-Rule-Shared		158	string
+
+# They represent a per host customization of a generic filter policy: only
+# traffic to/from the subscriber host will match against these entries
+ATTRIBUTE 	Alc-Ascend-Data-Filter-Host-Spec		159	 string
+
 # Relative Session-Timeout
 ATTRIBUTE	Alc-Relative-Session-Timeout		160	integer
- 
+
 # 161-162 are currently unused
- 
+
 # Accounting interim update trigger reason
 ATTRIBUTE	Alc-Acct-Triggered-Reason		163	integer
- 
+
 VALUE	Alc-Acct-Triggered-Reason	regular			1
 VALUE	Alc-Acct-Triggered-Reason	sla-start		2
 VALUE	Alc-Acct-Triggered-Reason	sla-stop		3
@@ -328,9 +342,30 @@ VALUE	Alc-Acct-Triggered-Reason	Framed-IP-Address-up	4
 VALUE	Alc-Acct-Triggered-Reason	Framed-IP-Address-down	5
 VALUE	Alc-Acct-Triggered-Reason	Alc-Ipv6-Address-up	6
 VALUE	Alc-Acct-Triggered-Reason	Alc-Ipv6-Address-down	7
-VALUE	Alc-Acct-Triggered-Reason	Delegated-IPv6-Prefix-up	8
-VALUE	Alc-Acct-Triggered-Reason	Delegated-IPv6-Prefix-down	9
+VALUE	Alc-Acct-Triggered-Reason	Delegated-IPv6-Prefix-up 8
+VALUE	Alc-Acct-Triggered-Reason	Delegated-IPv6-Prefix-down 9
 VALUE	Alc-Acct-Triggered-Reason	Framed-IPv6-Prefix-up	10
 VALUE	Alc-Acct-Triggered-Reason	Framed-IPv6-Prefix-down	11
+
+# Used when authenticating migrant hosts
+ATTRIBUTE   Alc-Wlan-Portal-Redirect                  172 string
+
+# If a migrant host is redirected, specifies the URL
+ATTRIBUTE   Alc-Wlan-Portal-Url                       173 string
+
+# Defines the lease-time in seconds for RADIUS proxy and create-host-CoA
+# scenarios only.
+ATTRIBUTE   Alc-Lease-Time                            174 integer
+
+# The URL to which traffic matching the host IPv4 filter entry with http-redirect
+# action is redirected to
+ATTRIBUTE   Alc-Portal-Url                            177 string
+
+# names longer than the allowed maximum are treated as host setup failures
+ATTRIBUTE   Alc-SLAAC-IPv6-Pool                       181 string
+
+# The VLAN is transparently taken from the UE’s Ethernet layer and can be reflected
+# in both authentication and accounting
+ATTRIBUTE   Alc-Wlan-SSID-VLAN                        206 string
 
 END-VENDOR	Alcatel-Lucent-Service-Router

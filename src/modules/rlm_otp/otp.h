@@ -54,6 +54,7 @@ RCSIDH(otp_h, "$Id$")
 #define OTP_MAX_CHAP_RESPONSE_LEN	50
 
 typedef enum otp_pwe {
+	PWE_NONE	= 0,
 	PWE_PAP 	= 1,
 	PWE_CHAP 	= 3,
 	PWE_MSCHAP 	= 5,
@@ -84,8 +85,8 @@ typedef struct otp_request_t {
 		} u;
 	} pwe;
 
-	int		allow_async;		//!< Async auth allowed?
-	int		allow_sync;		//!< Sync auth allowed?
+	bool		allow_async;		//!< Async auth allowed?
+	bool		allow_sync;		//!< Sync auth allowed?
 	unsigned	challenge_delay;	//!< Min delay between async
 						//!< auths.
 	int		resync;			//!< Resync on async auth?

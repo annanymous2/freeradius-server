@@ -7,9 +7,30 @@
 # Version:	$Id$
 #
 
-$(if $(wildcard Make.inc),,$(error Missing 'Make.inc' Run './configure [options]' and retry")) 
+#
+#  The default rule is "all".
+#
+all:
+
+#
+#  Catch people who try to use BSD make
+#
+ifeq "0" "1"
+.error GNU Make is required to build FreeRADIUS
+endif
+
+#
+#  We require Make.inc, UNLESS the target is "make deb"
+#
+#  Since "make deb" re-runs configure... there's no point in
+#  requiring the developer to run configure *before* making
+#  the debian packages.
+#
+ifneq "$(MAKECMDGOALS)" "deb"
+$(if $(wildcard Make.inc),,$(error Missing 'Make.inc' Run './configure [options]' and retry))
 
 include Make.inc
+endif
 
 MFLAGS += --no-print-directory
 
@@ -22,19 +43,50 @@ endif
 export DESTDIR := $(R)
 
 # And over-ride all of the other magic.
+ifneq "$(MAKECMDGOALS)" "deb"
 include scripts/boiler.mk
+endif
 
-test: build.raddb ${BUILD_DIR}/bin/radiusd ${BUILD_DIR}/bin/radclient
+#
+#  To work around OpenSSL issues with travis.
+#
+.PHONY:
+raddb/test.conf:
+	@echo 'security {' >> $@
+	@echo '        allow_vulnerable_openssl = yes' >> $@
+	@echo '}' >> $@
+	@echo '$$INCLUDE radiusd.conf' >> $@
+
+#
+#  Run "radiusd -C", looking for errors.
+#
+# Only redirect STDOUT, which should contain details of why the test failed.
+# Don't molest STDERR as this may be used to receive output from a debugger.
+$(BUILD_DIR)/tests/radiusd-c: raddb/test.conf ${BUILD_DIR}/bin/radiusd | build.raddb
 	@$(MAKE) -C raddb/certs
-	@./build/make/jlibtool --mode=execute ./build/bin/radiusd -XCMd ./raddb -n debug -D ./share
+	@printf "radiusd -C... "
+	@if ! FR_LIBRARY_PATH=./build/lib/local/.libs/ ./build/make/jlibtool --mode=execute ./build/bin/radiusd -XCMd ./raddb -D ./share -n test > $(BUILD_DIR)/tests/radiusd.config.log; then \
+		rm -f raddb/test.conf; \
+		cat $(BUILD_DIR)/tests/radiusd.config.log; \
+		echo "fail"; \
+		exit 1; \
+	fi
+	@rm -f raddb/test.conf
+	@echo "ok"
+	@touch $@
+
+test: ${BUILD_DIR}/bin/radiusd ${BUILD_DIR}/bin/radclient tests.unit tests.xlat tests.keywords tests.auth tests.modules $(BUILD_DIR)/tests/radiusd-c | build.raddb
 	@$(MAKE) -C src/tests tests
 
 #  Tests specifically for Travis.  We do a LOT more than just
 #  the above tests
 ifneq "$(findstring travis,${prefix})" ""
-travis-test: test
+travis-test: raddb/test.conf test
+	@FR_LIBRARY_PATH=./build/lib/local/.libs/ ./build/make/jlibtool --mode=execute ./build/bin/radiusd -xxxv -n test
+	@rm -f raddb/test.conf
 	@$(MAKE) install
-	@$(MAKE) deb
+	@perl -p -i -e 's/allow_vulnerable_openssl = no/allow_vulnerable_openssl = yes/' ${raddbdir}/radiusd.conf
+	@${sbindir}/radiusd -XC
 endif
 
 #
@@ -56,23 +108,6 @@ endif
 #
 export DESTDIR := $(R)
 
-.PHONY: install.bindir
-install.bindir:
-	@[ -d $(R)$(bindir) ] || $(INSTALL) -d -m 755 $(R)$(bindir)
-
-.PHONY: install.sbindir
-install.sbindir:
-	@[ -d $(R)$(sbindir) ] || $(INSTALL) -d -m 755 $(R)$(sbindir)
-
-.PHONY: install.dirs
-install.dirs: install.bindir install.sbindir
-	@$(INSTALL) -d -m 755	$(R)$(mandir)
-	@$(INSTALL) -d -m 755	$(R)$(RUNDIR)
-	@$(INSTALL) -d -m 700	$(R)$(logdir)
-	@$(INSTALL) -d -m 700	$(R)$(radacctdir)
-	@$(INSTALL) -d -m 755	$(R)$(datadir)
-	@$(INSTALL) -d -m 755	$(R)$(dictdir)
-
 DICTIONARIES := $(wildcard share/dictionary*)
 install.share: $(addprefix $(R)$(dictdir)/,$(notdir $(DICTIONARIES)))
 
@@ -85,9 +120,20 @@ install.man: $(subst man/,$(R)$(mandir)/,$(MANFILES))
 
 $(R)$(mandir)/%: man/%
 	@echo INSTALL $(notdir $<)
-	@$(INSTALL) -m 644 $< $@
+	@sed -e "s,/etc/raddb,$(raddbdir),g" \
+		-e "s,/usr/local/share,$(datarootdir),g" \
+		$< > $<.subst
+	@$(INSTALL) -m 644 $<.subst $@
+	@rm $<.subst
 
-install: install.dirs install.share install.man
+#
+#  Don't install rlm_test
+#
+ALL_INSTALL := $(patsubst %rlm_test.la,,$(ALL_INSTALL))
+
+install: install.share install.man
+	@$(INSTALL) -d -m 700	$(R)$(logdir)
+	@$(INSTALL) -d -m 700	$(R)$(radacctdir)
 
 ifneq ($(RADMIN),)
 ifneq ($(RGROUP),)
@@ -133,8 +179,8 @@ distclean: clean
 #
 ifeq "$(MAKECMDGOALS)" "reconfig"
 
-CONFIGURE_IN_FILES := $(shell find . -name configure.ac -print)
-CONFIGURE_FILES	   := $(patsubst %.in,%,$(CONFIGURE_IN_FILES))
+CONFIGURE_AC_FILES := $(shell find . -name configure.ac -print)
+CONFIGURE_FILES	   := $(patsubst %.ac,%,$(CONFIGURE_AC_FILES))
 
 #
 #  The GNU tools make autoconf=="missing autoconf", which then returns
@@ -183,6 +229,7 @@ CONFIGURE_ARGS	   := $(shell head -10 config.log | grep '^  \$$' | sed 's/^..../
 
 src/%all.mk: src/%all.mk.in src/%configure
 	@echo CONFIGURE $(dir $@)
+	@rm -f ./config.cache $(dir $<)/config.cache
 	@cd $(dir $<) && ./configure $(CONFIGURE_ARGS)
 endif
 
@@ -199,7 +246,7 @@ TAGS:
 #
 .PHONY: certs
 certs:
-	@cd raddb/certs && $(MAKE)
+	@$(MAKE) -C raddb/certs
 
 ######################################################################
 #
@@ -209,17 +256,16 @@ certs:
 #  BEFORE running this command!
 #
 ######################################################################
-freeradius-server-$(RADIUSD_VERSION_STRING).tar.gz: .git
-	git archive --format=tar --prefix=freeradius-server-$(RADIUSD_VERSION_STRING)/ stable | gzip > $@
+BRANCH = $(shell git rev-parse --abbrev-ref HEAD)
 
-freeradius-server-$(RADIUSD_VERSION_STRING).tar.gz.sig: freeradius-server-$(RADIUSD_VERSION_STRING).tar.gz
-	gpg --default-key aland@freeradius.org -b $<
+freeradius-server-$(RADIUSD_VERSION_STRING).tar.gz: .git
+	git archive --format=tar --prefix=freeradius-server-$(RADIUSD_VERSION_STRING)/ $(BRANCH) | gzip > $@
 
 freeradius-server-$(RADIUSD_VERSION_STRING).tar.bz2: .git
-	git archive --format=tar --prefix=freeradius-server-$(RADIUSD_VERSION_STRING)/ stable | bzip2 > $@
+	git archive --format=tar --prefix=freeradius-server-$(RADIUSD_VERSION_STRING)/ $(BRANCH) | bzip2 > $@
 
-freeradius-server-$(RADIUSD_VERSION_STRING).tar.bz2.sig: freeradius-server-$(RADIUSD_VERSION_STRING).tar.bz2
-	gpg --default-key aland@freeradius.org -b $<
+%.sig: %
+	gpg --default-key packages@freeradius.org -b $<
 
 # high-level targets
 .PHONY: dist-check
@@ -236,7 +282,7 @@ dist-check: redhat/freeradius.spec suse/freeradius.spec debian/changelog
 		echo suse/freeradius.spec 'Version' needs to be updated; \
 		exit 1; \
 	fi
-	@if [ `head -n 1 debian/changelog | sed 's/.*(//;s/-0).*//;s/-1).*//;'`  != "$(RADIUSD_VERSION_STRING)" ]; then \
+	@if [ `head -n 1 debian/changelog | sed 's/.*(//;s/-0).*//;s/-1).*//;s/\+.*//'`  != "$(RADIUSD_VERSION_STRING)" ]; then \
 		echo debian/changelog needs to be updated; \
 		exit 1; \
 	fi
@@ -246,8 +292,7 @@ dist: dist-check freeradius-server-$(RADIUSD_VERSION_STRING).tar.gz freeradius-s
 dist-sign: freeradius-server-$(RADIUSD_VERSION_STRING).tar.gz.sig freeradius-server-$(RADIUSD_VERSION_STRING).tar.bz2.sig
 
 dist-publish: freeradius-server-$(RADIUSD_VERSION_STRING).tar.gz.sig freeradius-server-$(RADIUSD_VERSION_STRING).tar.gz freeradius-server-$(RADIUSD_VERSION_STRING).tar.gz.sig freeradius-server-$(RADIUSD_VERSION_STRING).tar.bz2 freeradius-server-$(RADIUSD_VERSION_STRING).tar.gz.sig freeradius-server-$(RADIUSD_VERSION_STRING).tar.bz2.sig
-	scp $^ freeradius.org@ns5.freeradius.org:public_ftp
-	scp $^ freeradius.org@www.tr.freeradius.org:public_ftp
+	scp $^ freeradius.org@ftp.freeradius.org:public_ftp
 
 #
 #  Note that we do NOT do the tagging here!  We just print out what
@@ -255,6 +300,30 @@ dist-publish: freeradius-server-$(RADIUSD_VERSION_STRING).tar.gz.sig freeradius-
 #
 dist-tag: freeradius-server-$(RADIUSD_VERSION_STRING).tar.gz freeradius-server-$(RADIUSD_VERSION_STRING).tar.bz2
 	@echo "git tag release_`echo $(RADIUSD_VERSION_STRING) | tr .- __`"
+
+#
+#	Docker-related targets
+#
+.PHONY: docker
+docker:
+	docker build scripts/docker/ubuntu16 --build-arg=release=release_`echo $(RADIUSD_VERSION_STRING) | tr .- __` -t freeradius/freeradius-server:$(RADIUSD_VERSION_STRING)
+	docker build scripts/docker/alpine --build-arg=release=release_`echo $(RADIUSD_VERSION_STRING) | tr .- __` -t freeradius/freeradius-server:$(RADIUSD_VERSION_STRING)-alpine
+
+.PHONY: docker-push
+docker-push: docker
+	docker push freeradius/freeradius-server:$(RADIUSD_VERSION_STRING)
+	docker push freeradius/freeradius-server:$(RADIUSD_VERSION_STRING)-alpine
+
+.PHONY: docker-tag-latest
+docker-tag-latest: docker
+	docker tag freeradius/freeradius-server:$(RADIUSD_VERSION_STRING) freeradius/freeradius-server:latest
+
+.PHONY: docker-push-latest
+docker-push-latest: docker-push docker-tag-latest
+	docker push freeradius/freeradius-server:latest
+
+.PHONY: docker-publish
+docker-publish: docker-push-latest
 
 #
 #	Build a debian package
@@ -266,5 +335,14 @@ deb:
 # Developer checks
 .PHONY: warnings
 warnings:
-	@(make clean all 2>&1) | egrep -v '^/|deprecated|^In file included|: In function|   from |^HEADER|^CC|^LINK' > warnings.txt
+	@(make clean all 2>&1) | egrep -v '^/|deprecated|^In file included|: In function|   from |^HEADER|^CC|^LN' > warnings.txt
 	@wc -l warnings.txt
+
+#
+#  Ensure we're using tabs in the configuration files,
+#  and remove trailing whitespace in source files.
+#
+.PHONY: whitespace
+whitespace:
+	@for x in $$(git ls-files raddb/ src/); do unexpand $$x > $$x.bak; cp $$x.bak $$x; rm -f $$x.bak;done
+	@perl -p -i -e 'trim' $$(git ls-files src/)

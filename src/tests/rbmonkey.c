@@ -9,42 +9,45 @@
  *	This needs to be kept in lockstep with rbtree.c
  */
 
-/* red-black tree description */
-typedef enum { Black, Red } NodeColor;
+/* RED-BLACK tree description */
+typedef enum {
+	BLACK,
+	RED
+} node_colour_t;
 
 struct rbnode_t {
-	rbnode_t    *Left;          /* left child */
-	rbnode_t    *Right;         /* right child */
-	rbnode_t    *Parent;        /* parent */
-	NodeColor   Color;          /* node color (black, red) */
-	void        *Data;          /* data stored in node */
+    rbnode_t		*left;		//!< left child
+    rbnode_t		*right;		//!< right child
+    rbnode_t		*parent;	//!< Parent
+    node_colour_t	colour;		//!< Node colour (BLACK, RED)
+    void		*data;		//!< data stored in node
 };
 
 struct rbtree_t {
 #ifndef NDEBUG
-	uint32_t magic;
+	uint32_t		magic;
 #endif
-	rbnode_t *Root;
-	int     num_elements;
-	int (*Compare)(void const *, void const *);
-	int replace_flag;
-	void (*freeNode)(void *);
+	rbnode_t		*root;
+	int			num_elements;
+	rb_comparator_t		compare;
+	rb_free_t		free;
+	bool			replace;
 #ifdef HAVE_PTHREAD_H
-	int lock;
-	pthread_mutex_t mutex;
+	bool			lock;
+	pthread_mutex_t		mutex;
 #endif
 };
 
 /* Storage for the NIL pointer. */
-rbnode_t *NIL;
+static rbnode_t *NIL;
 
 static int comp(void const *a, void const *b)
 {
-	if (*(int const *)a > *(int const *)b) {
+	if (*(uint32_t const *)a > *(uint32_t const *)b) {
 		return -1;
 	}
 
-	if (*(int const *)a < *(int const *)b) {
+	if (*(uint32_t const *)a < *(uint32_t const *)b) {
 		return 1;
 	}
 	return 0;
@@ -61,27 +64,27 @@ static int print_cb(UNUSED void *ctx, void *i)
 #define MAXSIZE 1024
 
 static int r = 0;
-static int rvals[MAXSIZE];
+static uint32_t rvals[MAXSIZE];
 
-static int store_cb(UNUSED void *ctx, void *i)
+static int store_cb(UNUSED void *ctx, void  *i)
 {
-	rvals[r++] = *(int *)i;
+	rvals[r++] = *(int const *)i;
 	return 0;
 }
 
-static int mask;
+static uint32_t mask;
 
-static int filter_cb(UNUSED void *ctx, void *i)
+static int filter_cb(void *ctx, void *i)
 {
-	if ((*(int *)i & mask) == (*(int *)ctx & mask)) {
+	if ((*(uint32_t *)i & mask) == (*(uint32_t *)ctx & mask)) {
 		return 2;
 	}
 	return 0;
 }
 
 /*
- * Returns the count of black nodes from root to child leaves, or a
- * negative number indicating which red-black rule was broken.
+ * Returns the count of BLACK nodes from root to child leaves, or a
+ * negative number indicating which RED-BLACK rule was broken.
  */
 static int rbcount(rbtree_t *t)
 {
@@ -89,66 +92,66 @@ static int rbcount(rbtree_t *t)
 	int count, count_expect;
 
 	count_expect = -1;
-	n = t->Root;
+	n = t->root;
 	if (!n || n == NIL) {
 		return 0;
 	}
-	if (n->Color != Black) {
-		return -2; /* Root not Black */
+	if (n->colour != BLACK) {
+		return -2; /* root not BLACK */
 	}
 	count = 0;
 descend:
-	while (n->Left != NIL) {
-		if (n->Color == Red) {
-			if (n->Left->Color != Black || n->Right->Color != Black) {
-				return -4; /* Children of Red nodes must be Black */
+	while (n->left != NIL) {
+		if (n->colour == RED) {
+			if (n->left->colour != BLACK || n->right->colour != BLACK) {
+				return -4; /* Children of RED nodes must be BLACK */
 			}
 		}
 		else {
 			count++;
 		}
-		n = n->Left;
+		n = n->left;
 	}
-	if (n->Right != NIL) {
-		if (n->Color == Red) {
-			if (n->Left->Color != Black || n->Right->Color != Black) {
-				return -4; /* Children of Red nodes must be Black */
+	if (n->right != NIL) {
+		if (n->colour == RED) {
+			if (n->left->colour != BLACK || n->right->colour != BLACK) {
+				return -4; /* Children of RED nodes must be BLACK */
 			}
 		}
 		else {
 			count++;
 		}
-		n = n->Right;
+		n = n->right;
 	}
-	if (n->Left != NIL || n->Right != NIL) {
+	if (n->left != NIL || n->right != NIL) {
 		goto descend;
 	}
 	if (count_expect < 0) {
-		count_expect = count + (n->Color == Black);
+		count_expect = count + (n->colour == BLACK);
 	}
 	else {
-		if (count_expect != count + (n->Color == Black)) {
+		if (count_expect != count + (n->colour == BLACK)) {
 			fprintf(stderr,"Expected %i got %i\n", count_expect, count);
-			return -5; /* All paths must traverse the same number of Black nodes. */
+			return -5; /* All paths must traverse the same number of BLACK nodes. */
 		}
 	}
 ascend:
-	if (!n->Parent) return count_expect;
-	while (n->Parent->Right == n) {
-		n = n->Parent;
-		if (!n->Parent) return count_expect;
-		if (n->Color == Black) {
+	if (!n->parent) return count_expect;
+	while (n->parent->right == n) {
+		n = n->parent;
+		if (!n->parent) return count_expect;
+		if (n->colour == BLACK) {
 			count--;
 		}
 	}
-	if (n->Parent->Left == n) {
-		if (n->Parent->Right != NIL) {
-			n = n->Parent->Right;
+	if (n->parent->left == n) {
+		if (n->parent->right != NIL) {
+			n = n->parent->right;
 			goto descend;
 		}
-		n = n->Parent;
-		if (!n->Parent) return count_expect;
-		if (n->Color == Black) {
+		n = n->parent;
+		if (!n->parent) return count_expect;
+		if (n->colour == BLACK) {
 			count--;
 		}
 	}
@@ -160,37 +163,35 @@ ascend:
 int main(UNUSED int argc, UNUSED char *argv[])
 {
 	rbtree_t *t;
-	int i, j, thresh;
-	int n, nextseed, rep;
-	int vals[MAXSIZE];
+	int i, j;
+	uint32_t thresh;
+	int n, rep;
+	uint32_t vals[MAXSIZE];
 	struct timeval now;
 	gettimeofday(&now, NULL);
 
 	/* TODO: make starting seed and repetitions a CLI option */
-	nextseed = now.tv_usec;
 	rep = REPS;
 
 again:
 	if (!--rep) return 0;
 
-	srand(nextseed);
-	thresh = rand();
-	mask = 0xff >> (rand() & 7);
+	thresh = fr_rand();
+	mask = 0xff >> (fr_rand() & 7);
 	thresh &= mask;
-	n = (rand() % MAXSIZE) + 1;
-	while (n < 0 || n > MAXSIZE) n >>= 1;
-	fprintf(stderr, "seed = %i filter = %x mask = %x n= %i\n",
-		nextseed, thresh, mask, n);
-	nextseed = rand();
+	n = (fr_rand() % MAXSIZE) + 1;
 
-	t = rbtree_create(comp, free, RBTREE_FLAG_LOCK);
+	fprintf(stderr, "filter = %x mask = %x n= %i\n",
+		thresh, mask, n);
+
+	t = rbtree_create(NULL, comp, free, RBTREE_FLAG_LOCK);
 	/* Find out the value of the NIL node */
-	NIL = t->Root->Left;
+	NIL = t->root->left;
 
 	for (i = 0; i < n; i++) {
 		int *p;
-		p = malloc(sizeof(int));
-		*p = rand();
+		p = malloc(sizeof(*p));
+		*p = fr_rand();
 		vals[i] = *p;
 		rbtree_insert(t, p);
 	}
@@ -212,13 +213,13 @@ again:
 
 	 *
 	 */
-	rbtree_walk(t, DeleteOrder, filter_cb, &thresh);
+	(void) rbtree_walk(t, RBTREE_DELETE_ORDER, filter_cb, &thresh);
 	i = rbcount(t);
 	fprintf(stderr,"After delete rbcount is %i.\n", i);
 	if (i < 0) { return i; }
 
 	r = 0;
-	rbtree_walk(t, InOrder, &store_cb, NULL);
+	rbtree_walk(t, RBTREE_IN_ORDER, &store_cb, NULL);
 
 	for (j = i = 0; i < n; i++) {
 		if (i && vals[i-1] == vals[i]) continue;

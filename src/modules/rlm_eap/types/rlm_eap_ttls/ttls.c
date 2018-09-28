@@ -24,16 +24,17 @@
 RCSID("$Id$")
 
 #include "eap_ttls.h"
+#include "eap_chbind.h"
 
 /*
- *    0		   1		   2		   3
+ *    0                   1                   2                   3
  *    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
  *   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- *   |			   AVP Code			    |
+ *   |                           AVP Code                            |
  *   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- *   |V M r r r r r r|		  AVP Length		   |
+ *   |V M r r r r r r|                  AVP Length                   |
  *   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
- *   |			Vendor-ID (opt)			|
+ *   |                        Vendor-ID (opt)                        |
  *   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
  *   |    Data ...
  *   +-+-+-+-+-+-+-+-+
@@ -53,7 +54,7 @@ static int diameter_verify(REQUEST *request, uint8_t const *data, unsigned int d
 		hdr_len = 12;
 
 		if (remaining < hdr_len) {
-		  RDEBUG2(" Diameter attribute is too small (%u) to contain a Diameter header", remaining);
+		  RDEBUG2("Diameter attribute is too small (%u) to contain a Diameter header", remaining);
 			return 0;
 		}
 
@@ -64,7 +65,7 @@ static int diameter_verify(REQUEST *request, uint8_t const *data, unsigned int d
 
 		if ((data[4] & 0x80) != 0) {
 			if (remaining < 16) {
-				RDEBUG2(" Diameter attribute is too small to contain a Diameter header with Vendor-Id");
+				RDEBUG2("Diameter attribute is too small to contain a Diameter header with Vendor-Id");
 				return 0;
 			}
 
@@ -143,15 +144,19 @@ static VALUE_PAIR *diameter2vp(REQUEST *request, REQUEST *fake, SSL *ssl,
 	size_t		offset;
 	size_t		size;
 	size_t		data_left = data_len;
-	char		*p;
 	VALUE_PAIR	*first = NULL;
 	VALUE_PAIR	*vp;
 	RADIUS_PACKET	*packet = fake->packet; /* FIXME: api issues */
 	vp_cursor_t	out;
 
-	paircursor(&out, &first);
+	fr_cursor_init(&out, &first);
 
-	while (data_left > 0) {
+	/*
+	 *	Parse while there's still data.
+	 */
+	while (data_left >= 9) {
+		size_t attr_len;
+
 		rad_assert(data_left <= data_len);
 		memcpy(&attr, data, sizeof(attr));
 		data += 4;
@@ -163,19 +168,33 @@ static VALUE_PAIR *diameter2vp(REQUEST *request, REQUEST *fake, SSL *ssl,
 		length = ntohl(length);
 
 		/*
+		 *	Length is *value* length.  The actual
+		 *	attributes are aligned on 4 octets.
+		 */
+		attr_len = length & 0x00ffffff;
+		attr_len += 0x03;
+		attr_len &= ~(uint32_t) 0x03;
+
+		/*
 		 *	A "vendor" flag, with a vendor ID of zero,
 		 *	is equivalent to no vendor.  This is stupid.
 		 */
 		offset = 8;
-		if ((length & (1 << 31)) != 0) {
+		if ((length & ((uint32_t)1 << 31)) != 0) {
 			memcpy(&vendor, data, sizeof(vendor));
 			vendor = ntohl(vendor);
 
 			data += 4; /* skip the vendor field, it's zero */
 			offset += 4; /* offset to value field */
 
-			if (attr > 65535) goto next_attr;
-			if (vendor > FR_MAX_VENDOR) goto next_attr;
+			if (attr > 65535) {
+				DEBUG("Skipping Diameter attribute %08x", attr);
+				goto next_attr;
+			}
+			if (vendor > FR_MAX_VENDOR) {
+				DEBUG("Skipping large vendor ID %08x", vendor);
+				goto next_attr;
+			}
 		}
 
 		/*
@@ -234,7 +253,7 @@ static VALUE_PAIR *diameter2vp(REQUEST *request, REQUEST *fake, SSL *ssl,
 			memcpy(buffer + 2, data, size);
 
 			vp = NULL;
-			decoded = rad_attr2vp(NULL, NULL, NULL,
+			decoded = rad_attr2vp(packet, NULL, NULL, NULL,
 					      buffer, size + 2, &vp);
 			if (decoded < 0) {
 				REDEBUG2("diameter2vp failed decoding attr: %s",
@@ -244,11 +263,11 @@ static VALUE_PAIR *diameter2vp(REQUEST *request, REQUEST *fake, SSL *ssl,
 
 			if ((size_t) decoded != size + 2) {
 				REDEBUG2("diameter2vp failed to entirely decode VSA");
-				pairfree(&vp);
+				fr_pair_list_free(&vp);
 				goto do_octets;
 			}
 
-			pairinsert(&out, vp);
+			fr_cursor_merge(&out, vp);
 
 			goto next_attr;
 		}
@@ -257,10 +276,10 @@ static VALUE_PAIR *diameter2vp(REQUEST *request, REQUEST *fake, SSL *ssl,
 		 *	Create it.  If this fails, it's because we're OOM.
 		 */
 	do_octets:
-		vp = paircreate(packet, attr, vendor);
+		vp = fr_pair_afrom_num(packet, attr, vendor);
 		if (!vp) {
 			RDEBUG2("Failure in creating VP");
-			pairfree(&first);
+			fr_pair_list_free(&first);
 			return NULL;
 		}
 
@@ -273,7 +292,7 @@ static VALUE_PAIR *diameter2vp(REQUEST *request, REQUEST *fake, SSL *ssl,
 		switch (vp->da->type) {
 		case PW_TYPE_INTEGER:
 		case PW_TYPE_DATE:
-			if (size != vp->length) {
+			if (size != vp->vp_length) {
 				DICT_ATTR const *da;
 
 				/*
@@ -281,14 +300,15 @@ static VALUE_PAIR *diameter2vp(REQUEST *request, REQUEST *fake, SSL *ssl,
 				 *	attribute.
 				 */
 		raw:
-				if (vp) pairfree(&vp);
-				da = dict_attrunknown(attr, vendor, true);
+				if (vp) fr_pair_list_free(&vp);
+				da = dict_unknown_afrom_fields(packet, attr, vendor);
 				if (!da) return NULL;
-				vp = pairalloc(NULL, da);
-				pairmemcpy(vp, data, size);
+				vp = fr_pair_afrom_da(packet, da);
+				if (!vp) return NULL;
+				fr_pair_value_memcpy(vp, data, size);
 				break;
 			}
-			memcpy(&vp->vp_integer, data, vp->length);
+			memcpy(&vp->vp_integer, data, vp->vp_length);
 
 			/*
 			 *	Stored in host byte order: change it.
@@ -297,8 +317,8 @@ static VALUE_PAIR *diameter2vp(REQUEST *request, REQUEST *fake, SSL *ssl,
 			break;
 
 		case PW_TYPE_INTEGER64:
-			if (size != vp->length) goto raw;
-			memcpy(&vp->vp_integer64, data, vp->length);
+			if (size != vp->vp_length) goto raw;
+			memcpy(&vp->vp_integer64, data, vp->vp_length);
 
 			/*
 			 *	Stored in host byte order: change it.
@@ -306,15 +326,15 @@ static VALUE_PAIR *diameter2vp(REQUEST *request, REQUEST *fake, SSL *ssl,
 			vp->vp_integer64 = ntohll(vp->vp_integer64);
 			break;
 
-		case PW_TYPE_IPADDR:
-			if (size != vp->length) {
+		case PW_TYPE_IPV4_ADDR:
+			if (size != vp->vp_length) {
 				RDEBUG2("Invalid length attribute %d",
 				       attr);
-				pairfree(&first);
-				pairfree(&vp);
+				fr_pair_list_free(&first);
+				fr_pair_list_free(&vp);
 				return NULL;
 			}
-			memcpy(&vp->vp_ipaddr, data, vp->length);
+			memcpy(&vp->vp_ipaddr, data, vp->vp_length);
 
 			/*
 			 *	Stored in network byte order: don't change it.
@@ -322,40 +342,34 @@ static VALUE_PAIR *diameter2vp(REQUEST *request, REQUEST *fake, SSL *ssl,
 			break;
 
 		case PW_TYPE_BYTE:
-			if (size != vp->length) goto raw;
-			vp->vp_integer = data[0];
+			if (size != vp->vp_length) goto raw;
+			vp->vp_byte = data[0];
 			break;
 
 		case PW_TYPE_SHORT:
-			if (size != vp->length) goto raw;
-			vp->vp_integer = (data[0] * 256) + data[1];
+			if (size != vp->vp_length) goto raw;
+			vp->vp_short = (data[0] * 256) + data[1];
 			break;
 
 		case PW_TYPE_SIGNED:
-			if (size != vp->length) goto raw;
-			memcpy(&vp->vp_signed, data, vp->length);
+			if (size != vp->vp_length) goto raw;
+			memcpy(&vp->vp_signed, data, vp->vp_length);
 			vp->vp_signed = ntohl(vp->vp_signed);
 			break;
 
-		case PW_TYPE_IPV6ADDR:
-			if (size != vp->length) goto raw;
-			memcpy(&vp->vp_ipv6addr, data, vp->length);
+		case PW_TYPE_IPV6_ADDR:
+			if (size != vp->vp_length) goto raw;
+			memcpy(&vp->vp_ipv6addr, data, vp->vp_length);
 			break;
 
-		case PW_TYPE_IPV6PREFIX:
-			if (size != vp->length) goto raw;
-			memcpy(&vp->vp_ipv6prefix, data, vp->length);
+		case PW_TYPE_IPV6_PREFIX:
+			if (size != vp->vp_length) goto raw;
+			memcpy(vp->vp_ipv6prefix, data, vp->vp_length);
 			break;
 
-			/*
-			 *	Ensure it's NUL terminated.
-			 */
 		case PW_TYPE_STRING:
-			vp->vp_strvalue = p = talloc_array(vp, char, size + 1);
-			vp->type = VT_DATA;
-			memcpy(p, data, size);
-			p[size] = '\0';
-			vp->length = strlen(p);
+			fr_pair_value_bstrncpy(vp, data, size);
+			vp->vp_length = strlen(vp->vp_strvalue); /* embedded zeros are NOT allowed */
 			break;
 
 			/*
@@ -363,7 +377,7 @@ static VALUE_PAIR *diameter2vp(REQUEST *request, REQUEST *fake, SSL *ssl,
 			 */
 		case PW_TYPE_OCTETS:
 		default:
-			pairmemcpy(vp, data, size);
+			fr_pair_value_memcpy(vp, data, size);
 			break;
 		}
 
@@ -393,11 +407,11 @@ static VALUE_PAIR *diameter2vp(REQUEST *request, REQUEST *fake, SSL *ssl,
 		    ((vp->da->vendor == VENDORPEC_MICROSOFT) && (vp->da->attr == PW_MSCHAP_CHALLENGE))) {
 			uint8_t	challenge[16];
 
-			if ((vp->length < 8) ||
-			    (vp->length > 16)) {
+			if ((vp->vp_length < 8) ||
+			    (vp->vp_length > 16)) {
 				RDEBUG("Tunneled challenge has invalid length");
-				pairfree(&first);
-				pairfree(&vp);
+				fr_pair_list_free(&first);
+				fr_pair_list_free(&vp);
 				return NULL;
 			}
 
@@ -405,10 +419,10 @@ static VALUE_PAIR *diameter2vp(REQUEST *request, REQUEST *fake, SSL *ssl,
 					      sizeof(challenge));
 
 			if (memcmp(challenge, vp->vp_octets,
-				   vp->length) != 0) {
+				   vp->vp_length) != 0) {
 				RDEBUG("Tunneled challenge is incorrect");
-				pairfree(&first);
-				pairfree(&vp);
+				fr_pair_list_free(&first);
+				fr_pair_list_free(&vp);
 				return NULL;
 			}
 		}
@@ -416,25 +430,13 @@ static VALUE_PAIR *diameter2vp(REQUEST *request, REQUEST *fake, SSL *ssl,
 		/*
 		 *	Update the list.
 		 */
-		pairinsert(&out, vp);
+		fr_cursor_insert(&out, vp);
 
 	next_attr:
-		/*
-		 *	Catch non-aligned attributes.
-		 */
-		if (data_left == length) break;
+		if (data_left <= attr_len) break;
 
-		/*
-		 *	The length does NOT include the padding, so
-		 *	we've got to account for it here by rounding up
-		 *	to the nearest 4-byte boundary.
-		 */
-		length += 0x03;
-		length &= ~0x03;
-
-		rad_assert(data_left >= length);
-		data_left -= length;
-		data += length - offset; /* already updated */
+		data_left -= attr_len;
+		data += (attr_len - offset);
 	}
 
 	/*
@@ -471,11 +473,11 @@ static int vp2diameter(REQUEST *request, tls_session_t *tls_session, VALUE_PAIR 
 	p = buffer;
 	total = 0;
 
-	for (vp = paircursor(&cursor, &first); vp; vp = pairnext(&cursor)) {
+	for (vp = fr_cursor_init(&cursor, &first); vp; vp = fr_cursor_next(&cursor)) {
 		/*
 		 *	Too much data: die.
 		 */
-		if ((total + vp->length + 12) >= sizeof(buffer)) {
+		if ((total + vp->vp_length + 12) >= sizeof(buffer)) {
 			RDEBUG2("output buffer is full!");
 			return 0;
 		}
@@ -485,11 +487,11 @@ static int vp2diameter(REQUEST *request, tls_session_t *tls_session, VALUE_PAIR 
 		 *	together.  Maybe we should...
 		 */
 
-		length = vp->length;
+		length = vp->vp_length;
 		vendor = vp->da->vendor;
 		if (vendor != 0) {
 			attr = vp->da->attr & 0xffff;
-			length |= (1 << 31);
+			length |= ((uint32_t)1 << 31);
 		} else {
 			attr = vp->da->attr;
 		}
@@ -540,7 +542,7 @@ static int vp2diameter(REQUEST *request, tls_session_t *tls_session, VALUE_PAIR 
 			length = 8;
 			break;
 
-		case PW_TYPE_IPADDR:
+		case PW_TYPE_IPV4_ADDR:
 			memcpy(p, &vp->vp_ipaddr, 4); /* network order */
 			length = 4;
 			break;
@@ -548,8 +550,8 @@ static int vp2diameter(REQUEST *request, tls_session_t *tls_session, VALUE_PAIR 
 		case PW_TYPE_STRING:
 		case PW_TYPE_OCTETS:
 		default:
-			memcpy(p, vp->vp_strvalue, vp->length);
-			length = vp->length;
+			memcpy(p, vp->vp_strvalue, vp->vp_length);
+			length = vp->vp_length;
 			break;
 		}
 
@@ -581,7 +583,7 @@ static int vp2diameter(REQUEST *request, tls_session_t *tls_session, VALUE_PAIR 
 #ifndef NDEBUG
 		size_t i;
 
-		if ((debug_flag > 2) && fr_log_fp) {
+		if ((rad_debug_lvl > 2) && fr_log_fp) {
 			for (i = 0; i < total; i++) {
 				if ((i & 0x0f) == 0) fprintf(fr_log_fp, "  TTLS tunnel data out %04x: ", (int) i);
 
@@ -610,14 +612,13 @@ static int vp2diameter(REQUEST *request, tls_session_t *tls_session, VALUE_PAIR 
 /*
  *	Use a reply packet to determine what to do.
  */
-static rlm_rcode_t process_reply(UNUSED eap_handler_t *handler, tls_session_t *tls_session,
-				 REQUEST *request, RADIUS_PACKET *reply)
+static rlm_rcode_t CC_HINT(nonnull) process_reply(eap_handler_t *handler, tls_session_t *tls_session,
+						  REQUEST *request, RADIUS_PACKET *reply)
 {
 	rlm_rcode_t rcode = RLM_MODULE_REJECT;
 	VALUE_PAIR *vp;
 	ttls_tunnel_t *t = tls_session->opaque;
 
-	rad_assert(request != NULL);
 	rad_assert(handler->request == request);
 
 	/*
@@ -642,10 +643,20 @@ static rlm_rcode_t process_reply(UNUSED eap_handler_t *handler, tls_session_t *t
 	 *	NOT 'eap start', so we should check for that....
 	 */
 	switch (reply->code) {
-	case PW_AUTHENTICATION_ACK:
+	case PW_CODE_ACCESS_ACCEPT:
 		RDEBUG("Got tunneled Access-Accept");
 
 		rcode = RLM_MODULE_OK;
+
+		/*
+		 *	Always delete MPPE keys & encryption policy
+		 *	from the tunneled reply.  These never get sent
+		 *	back to the user.
+		 */
+		fr_pair_delete_by_num(&reply->vps, 7, VENDORPEC_MICROSOFT, TAG_ANY);
+		fr_pair_delete_by_num(&reply->vps, 8, VENDORPEC_MICROSOFT, TAG_ANY);
+		fr_pair_delete_by_num(&reply->vps, 16, VENDORPEC_MICROSOFT, TAG_ANY);
+		fr_pair_delete_by_num(&reply->vps, 17, VENDORPEC_MICROSOFT, TAG_ANY);
 
 		/*
 		 *	MS-CHAP2-Success means that we do NOT return
@@ -656,27 +667,18 @@ static rlm_rcode_t process_reply(UNUSED eap_handler_t *handler, tls_session_t *t
 		 *	packet, and we will send EAP-Success.
 		 */
 		vp = NULL;
-		pairfilter(tls_session, &vp, &reply->vps, PW_MSCHAP2_SUCCESS, VENDORPEC_MICROSOFT, TAG_ANY);
+		fr_pair_list_mcopy_by_num(tls_session, &vp, &reply->vps, PW_MSCHAP2_SUCCESS, VENDORPEC_MICROSOFT, TAG_ANY);
 		if (vp) {
-			RDEBUG("Got MS-CHAP2-Success, tunneling it to the client in a challenge.");
+			RDEBUG("Got MS-CHAP2-Success, tunneling it to the client in a challenge");
 			rcode = RLM_MODULE_HANDLED;
 			t->authenticated = true;
-
-			/*
-			 *	Delete MPPE keys & encryption policy.  We don't
-			 *	want these here.
-			 */
-			pairdelete(&reply->vps, 7, VENDORPEC_MICROSOFT, TAG_ANY);
-			pairdelete(&reply->vps, 8, VENDORPEC_MICROSOFT, TAG_ANY);
-			pairdelete(&reply->vps, 16, VENDORPEC_MICROSOFT, TAG_ANY);
-			pairdelete(&reply->vps, 17, VENDORPEC_MICROSOFT, TAG_ANY);
 
 			/*
 			 *	Use the tunneled reply, but not now.
 			 */
 			if (t->use_tunneled_reply) {
 				rad_assert(!t->accept_vps);
-				pairfilter(t, &t->accept_vps, &reply->vps,
+				fr_pair_list_mcopy_by_num(t, &t->accept_vps, &reply->vps,
 					  0, 0, TAG_ANY);
 				rad_assert(!reply->vps);
 			}
@@ -684,15 +686,31 @@ static rlm_rcode_t process_reply(UNUSED eap_handler_t *handler, tls_session_t *t
 		} else { /* no MS-CHAP2-Success */
 			/*
 			 *	Can only have EAP-Message if there's
-			 *	no MS-CHAP2-Success.  (FIXME: EAP-MSCHAP?)
+			 *	no MS-CHAP2-Success.
 			 *
 			 *	We also do NOT tunnel the EAP-Success
 			 *	attribute back to the client, as the client
 			 *	can figure it out, from the non-tunneled
 			 *	EAP-Success packet.
 			 */
-			pairfilter(tls_session, &vp, &reply->vps, PW_EAP_MESSAGE, 0, TAG_ANY);
-			pairfree(&vp);
+			fr_pair_list_mcopy_by_num(tls_session, &vp, &reply->vps, PW_EAP_MESSAGE, 0, TAG_ANY);
+			fr_pair_list_free(&vp);
+		}
+
+		/* move channel binding responses; we need to send them */
+		fr_pair_list_mcopy_by_num(tls_session, &vp, &reply->vps, PW_UKERNA_CHBIND, VENDORPEC_UKERNA, TAG_ANY);
+		if (fr_pair_find_by_num(vp, PW_UKERNA_CHBIND, VENDORPEC_UKERNA, TAG_ANY) != NULL) {
+			t->authenticated = true;
+			/*
+			 *	Use the tunneled reply, but not now.
+			 */
+			if (t->use_tunneled_reply) {
+				rad_assert(!t->accept_vps);
+				fr_pair_list_mcopy_by_num(t, &t->accept_vps, &reply->vps,
+					  0, 0, TAG_ANY);
+				rad_assert(!reply->vps);
+			}
+			rcode = RLM_MODULE_HANDLED;
 		}
 
 		/*
@@ -700,8 +718,11 @@ static rlm_rcode_t process_reply(UNUSED eap_handler_t *handler, tls_session_t *t
 		 *	VP's back to the client.
 		 */
 		if (vp) {
+			RDEBUG("Sending tunneled reply attributes");
+			rdebug_pair_list(L_DBG_LVL_1, request, vp, NULL);
+
 			vp2diameter(request, tls_session, vp);
-			pairfree(&vp);
+			fr_pair_list_free(&vp);
 		}
 
 		/*
@@ -712,14 +733,14 @@ static rlm_rcode_t process_reply(UNUSED eap_handler_t *handler, tls_session_t *t
 		 *	tunneled user!
 		 */
 		if (t->use_tunneled_reply) {
-			pairdelete(&reply->vps, PW_PROXY_STATE, 0, TAG_ANY);
-			pairfilter(request->reply, &request->reply->vps,
+			fr_pair_delete_by_num(&reply->vps, PW_PROXY_STATE, 0, TAG_ANY);
+			fr_pair_list_mcopy_by_num(request->reply, &request->reply->vps,
 				  &reply->vps, 0, 0, TAG_ANY);
 		}
 		break;
 
 
-	case PW_AUTHENTICATION_REJECT:
+	case PW_CODE_ACCESS_REJECT:
 		RDEBUG("Got tunneled Access-Reject");
 		rcode = RLM_MODULE_REJECT;
 		break;
@@ -730,7 +751,7 @@ static rlm_rcode_t process_reply(UNUSED eap_handler_t *handler, tls_session_t *t
 		 *	an Access-Challenge means that we MUST tunnel
 		 *	a Reply-Message to the client.
 		 */
-	case PW_ACCESS_CHALLENGE:
+	case PW_CODE_ACCESS_CHALLENGE:
 		RDEBUG("Got tunneled Access-Challenge");
 
 		/*
@@ -738,8 +759,8 @@ static rlm_rcode_t process_reply(UNUSED eap_handler_t *handler, tls_session_t *t
 		 *
 		 *	Get rid of the old State, too.
 		 */
-		pairfree(&t->state);
-		pairfilter(t, &t->state, &reply->vps, PW_STATE, 0, TAG_ANY);
+		fr_pair_list_free(&t->state);
+		fr_pair_list_mcopy_by_num(t, &t->state, &reply->vps, PW_STATE, 0, TAG_ANY);
 
 		/*
 		 *	We should really be a bit smarter about this,
@@ -749,7 +770,7 @@ static rlm_rcode_t process_reply(UNUSED eap_handler_t *handler, tls_session_t *t
 		 *	method works in 99.9% of the situations.
 		 */
 		vp = NULL;
-		pairfilter(t, &vp, &reply->vps, PW_EAP_MESSAGE, 0, TAG_ANY);
+		fr_pair_list_mcopy_by_num(t, &vp, &reply->vps, PW_EAP_MESSAGE, 0, TAG_ANY);
 
 		/*
 		 *	There MUST be a Reply-Message in the challenge,
@@ -759,7 +780,11 @@ static rlm_rcode_t process_reply(UNUSED eap_handler_t *handler, tls_session_t *t
 		 *	we MUST create one, with an empty string as
 		 *	it's value.
 		 */
-		pairfilter(t, &vp, &reply->vps, PW_REPLY_MESSAGE, 0, TAG_ANY);
+		fr_pair_list_mcopy_by_num(t, &vp, &reply->vps, PW_REPLY_MESSAGE, 0, TAG_ANY);
+
+		/* also move chbind messages, if any */
+		fr_pair_list_mcopy_by_num(t, &vp, &reply->vps, PW_UKERNA_CHBIND, VENDORPEC_UKERNA,
+			  TAG_ANY);
 
 		/*
 		 *	Handle the ACK, by tunneling any necessary reply
@@ -767,7 +792,7 @@ static rlm_rcode_t process_reply(UNUSED eap_handler_t *handler, tls_session_t *t
 		 */
 		if (vp) {
 			vp2diameter(request, tls_session, vp);
-			pairfree(&vp);
+			fr_pair_list_free(&vp);
 		}
 		rcode = RLM_MODULE_HANDLED;
 		break;
@@ -786,14 +811,13 @@ static rlm_rcode_t process_reply(UNUSED eap_handler_t *handler, tls_session_t *t
 /*
  *	Do post-proxy processing,
  */
-static int eapttls_postproxy(eap_handler_t *handler, void *data)
+static int CC_HINT(nonnull) eapttls_postproxy(eap_handler_t *handler, void *data)
 {
 	int rcode;
 	tls_session_t *tls_session = (tls_session_t *) data;
 	REQUEST *fake, *request = handler->request;
 
-	rad_assert(request != NULL);
-	RDEBUG("Passing reply from proxy back into the tunnel.");
+	RDEBUG("Passing reply from proxy back into the tunnel");
 
 	/*
 	 *	If there was a fake request associated with the proxied
@@ -806,22 +830,20 @@ static int eapttls_postproxy(eap_handler_t *handler, void *data)
 	/*
 	 *	Do the callback, if it exists, and if it was a success.
 	 */
-	if (fake &&
-	    handler->request->proxy_reply &&
-	    (handler->request->proxy_reply->code == PW_AUTHENTICATION_ACK)) {
+	if (fake && (handler->request->proxy_reply->code == PW_CODE_ACCESS_ACCEPT)) {
 		/*
 		 *	Terrible hacks.
 		 */
 		rad_assert(!fake->packet);
-		fake->packet = request->proxy;
+		fake->packet = talloc_steal(fake, request->proxy);
 		fake->packet->src_ipaddr = request->packet->src_ipaddr;
 		request->proxy = NULL;
 
 		rad_assert(!fake->reply);
-		fake->reply = request->proxy_reply;
+		fake->reply = talloc_steal(fake, request->proxy_reply);
 		request->proxy_reply = NULL;
 
-		if ((debug_flag > 0) && fr_log_fp) {
+		if ((rad_debug_lvl > 0) && fr_log_fp) {
 			fprintf(fr_log_fp, "server %s {\n",
 				(!fake->server) ? "" : fake->server);
 		}
@@ -834,21 +856,20 @@ static int eapttls_postproxy(eap_handler_t *handler, void *data)
 		rcode = rad_postauth(fake);
 		RDEBUG2("post-auth returns %d", rcode);
 
-		if ((debug_flag > 0) && fr_log_fp) {
+		if ((rad_debug_lvl > 0) && fr_log_fp) {
 			fprintf(fr_log_fp, "} # server %s\n",
 				(!fake->server) ? "" : fake->server);
 
-			RDEBUG("Final reply from tunneled session code %d",
-			       fake->reply->code);
-			debug_pair_list(fake->reply->vps);
+			RDEBUG("Final reply from tunneled session code %d", fake->reply->code);
+			rdebug_pair_list(L_DBG_LVL_1, request, fake->reply->vps, NULL);
 		}
 
 		/*
 		 *	Terrible hacks.
 		 */
-		request->proxy = fake->packet;
+		request->proxy = talloc_steal(request, fake->packet);
 		fake->packet = NULL;
-		request->proxy_reply = fake->reply;
+		request->proxy_reply = talloc_steal(request, fake->reply);
 		fake->reply = NULL;
 
 		/*
@@ -857,10 +878,9 @@ static int eapttls_postproxy(eap_handler_t *handler, void *data)
 
 		switch (rcode) {
 		case RLM_MODULE_FAIL:
-			request_free(&fake);
+			talloc_free(fake);
 			eaptls_fail(handler, 0);
 			return 0;
-			break;
 
 		default:  /* Don't Do Anything */
 			RDEBUG2("Got reply %d",
@@ -868,20 +888,19 @@ static int eapttls_postproxy(eap_handler_t *handler, void *data)
 			break;
 		}
 	}
-	request_free(&fake);	/* robust if !fake */
+	talloc_free(fake);	/* robust if !fake */
 
 	/*
 	 *	Process the reply from the home server.
 	 */
-	rcode = process_reply(handler, tls_session, handler->request,
-			      handler->request->proxy_reply);
+	rcode = process_reply(handler, tls_session, handler->request, handler->request->proxy_reply);
 
 	/*
 	 *	The proxy code uses the reply from the home server as
 	 *	the basis for the reply to the NAS.  We don't want that,
 	 *	so we toss it, after we've had our way with it.
 	 */
-	pairfree(&handler->request->proxy_reply->vps);
+	fr_pair_list_free(&handler->request->proxy_reply->vps);
 
 	switch (rcode) {
 	case RLM_MODULE_REJECT:
@@ -891,6 +910,7 @@ static int eapttls_postproxy(eap_handler_t *handler, void *data)
 	case RLM_MODULE_HANDLED:
 		RDEBUG("Reply was handled");
 		eaptls_request(handler->eap_ds, tls_session);
+		request->proxy_reply->code = PW_CODE_ACCESS_CHALLENGE;
 		return 1;
 
 	case RLM_MODULE_OK:
@@ -902,7 +922,7 @@ static int eapttls_postproxy(eap_handler_t *handler, void *data)
 		return eaptls_success(handler, 0);
 
 	default:
-		RDEBUG("Reply was unknown.");
+		RDEBUG("Reply was unknown");
 		break;
 	}
 
@@ -917,7 +937,7 @@ static int eapttls_postproxy(eap_handler_t *handler, void *data)
  */
 int eapttls_process(eap_handler_t *handler, tls_session_t *tls_session)
 {
-	int code = PW_AUTHENTICATION_REJECT;
+	PW_CODE code = PW_CODE_ACCESS_REJECT;
 	rlm_rcode_t rcode;
 	REQUEST *fake;
 	VALUE_PAIR *vp;
@@ -925,8 +945,7 @@ int eapttls_process(eap_handler_t *handler, tls_session_t *tls_session)
 	uint8_t const *data;
 	size_t data_len;
 	REQUEST *request = handler->request;
-
-	rad_assert(request != NULL);
+	chbind_packet_t *chbind;
 
 	/*
 	 *	Just look at the buffer directly, without doing
@@ -944,8 +963,8 @@ int eapttls_process(eap_handler_t *handler, tls_session_t *tls_session)
 	 */
 	if (data_len == 0) {
 		if (t->authenticated) {
-			RDEBUG("Got ACK, and the user was already authenticated.");
-			return PW_AUTHENTICATION_ACK;
+			RDEBUG("Got ACK, and the user was already authenticated");
+			return PW_CODE_ACCESS_ACCEPT;
 		} /* else no session, no data, die. */
 
 		/*
@@ -953,11 +972,11 @@ int eapttls_process(eap_handler_t *handler, tls_session_t *tls_session)
 		 *	wrong.
 		 */
 		RDEBUG2("SSL_read Error");
-		return PW_AUTHENTICATION_REJECT;
+		return PW_CODE_ACCESS_REJECT;
 	}
 
 #ifndef NDEBUG
-	if ((debug_flag > 2) && fr_log_fp) {
+	if ((rad_debug_lvl > 2) && fr_log_fp) {
 		size_t i;
 
 		for (i = 0; i < data_len; i++) {
@@ -972,11 +991,11 @@ int eapttls_process(eap_handler_t *handler, tls_session_t *tls_session)
 #endif
 
 	if (!diameter_verify(request, data, data_len)) {
-		return PW_AUTHENTICATION_REJECT;
+		return PW_CODE_ACCESS_REJECT;
 	}
 
 	/*
-	 *	Allocate a fake REQUEST structe.
+	 *	Allocate a fake REQUEST structure.
 	 */
 	fake = request_alloc_fake(request);
 
@@ -987,26 +1006,23 @@ int eapttls_process(eap_handler_t *handler, tls_session_t *tls_session)
 	 */
 	fake->packet->vps = diameter2vp(request, fake, tls_session->ssl, data, data_len);
 	if (!fake->packet->vps) {
-		request_free(&fake);
-		return PW_AUTHENTICATION_REJECT;
+		talloc_free(fake);
+		return PW_CODE_ACCESS_REJECT;
 	}
 
 	/*
 	 *	Tell the request that it's a fake one.
 	 */
-	pairmake_packet("Freeradius-Proxied-To", "127.0.0.1", T_OP_EQ);
+	fr_pair_make(fake->packet, &fake->packet->vps, "Freeradius-Proxied-To", "127.0.0.1", T_OP_EQ);
 
-	if ((debug_flag > 0) && fr_log_fp) {
-		RDEBUG("Got tunneled request");
-
-		debug_pair_list(fake->packet->vps);
-	}
+	RDEBUG("Got tunneled request");
+	rdebug_pair_list(L_DBG_LVL_1, request, fake->packet->vps, NULL);
 
 	/*
 	 *	Update other items in the REQUEST data structure.
 	 */
-	fake->username = pairfind(fake->packet->vps, PW_USER_NAME, 0, TAG_ANY);
-	fake->password = pairfind(fake->packet->vps, PW_USER_PASSWORD, 0, TAG_ANY);
+	fake->username = fr_pair_find_by_num(fake->packet->vps, PW_USER_NAME, 0, TAG_ANY);
+	fake->password = fr_pair_find_by_num(fake->packet->vps, PW_USER_PASSWORD, 0, TAG_ANY);
 
 	/*
 	 *	No User-Name, try to create one from stored data.
@@ -1017,25 +1033,19 @@ int eapttls_process(eap_handler_t *handler, tls_session_t *tls_session)
 		 *	an EAP-Identity, and pull it out of there.
 		 */
 		if (!t->username) {
-			vp = pairfind(fake->packet->vps, PW_EAP_MESSAGE, 0, TAG_ANY);
+			vp = fr_pair_find_by_num(fake->packet->vps, PW_EAP_MESSAGE, 0, TAG_ANY);
 			if (vp &&
-			    (vp->length >= EAP_HEADER_LEN + 2) &&
+			    (vp->vp_length >= EAP_HEADER_LEN + 2) &&
 			    (vp->vp_strvalue[0] == PW_EAP_RESPONSE) &&
 			    (vp->vp_strvalue[EAP_HEADER_LEN] == PW_EAP_IDENTITY) &&
 			    (vp->vp_strvalue[EAP_HEADER_LEN + 1] != 0)) {
-				char *p;
-
 				/*
 				 *	Create & remember a User-Name
 				 */
-				t->username = pairmake(t, NULL, "User-Name", NULL, T_OP_EQ);
+				t->username = fr_pair_make(t, NULL, "User-Name", NULL, T_OP_EQ);
 				rad_assert(t->username != NULL);
-				t->username->length = vp->length - 5;
 
-				t->username->vp_strvalue = p = talloc_array(t->username, char,
-									    t->username->length + 1);
-				memcpy(p, vp->vp_octets + 5, t->username->length);
-				p[t->username->length] = 0;
+				fr_pair_value_bstrncpy(t->username, vp->vp_octets + 5, vp->vp_length - 5);
 
 				RDEBUG("Got tunneled identity of %s",
 				       t->username->vp_strvalue);
@@ -1045,11 +1055,11 @@ int eapttls_process(eap_handler_t *handler, tls_session_t *tls_session)
 				 *	set it here.
 				 */
 				if (t->default_method != 0) {
-					RDEBUG("Setting default EAP type for tunneled EAP session.");
-					vp = paircreate(fake, PW_EAP_TYPE, 0);
+					RDEBUG("Setting default EAP type for tunneled EAP session");
+					vp = fr_pair_afrom_num(fake, PW_EAP_TYPE, 0);
 					rad_assert(vp != NULL);
 					vp->vp_integer = t->default_method;
-					pairadd(&fake->config_items, vp);
+					fr_pair_add(&fake->config, vp);
 				}
 
 			} else {
@@ -1058,14 +1068,14 @@ int eapttls_process(eap_handler_t *handler, tls_session_t *tls_session)
 				 *	as it's permitted to do EAP without
 				 *	user-name.
 				 */
-				RWDEBUG2("No EAP-Identity found to start EAP conversation.");
+				RWDEBUG2("No EAP-Identity found to start EAP conversation");
 			}
 		} /* else there WAS a t->username */
 
 		if (t->username) {
-			vp = paircopy(fake->packet, t->username);
-			pairadd(&fake->packet->vps, vp);
-			fake->username = pairfind(fake->packet->vps, PW_USER_NAME, 0, TAG_ANY);
+			vp = fr_pair_list_copy(fake->packet, t->username);
+			fr_pair_add(&fake->packet->vps, vp);
+			fake->username = fr_pair_find_by_num(fake->packet->vps, PW_USER_NAME, 0, TAG_ANY);
 		}
 	} /* else the request ALREADY had a User-Name */
 
@@ -1073,8 +1083,8 @@ int eapttls_process(eap_handler_t *handler, tls_session_t *tls_session)
 	 *	Add the State attribute, too, if it exists.
 	 */
 	if (t->state) {
-		vp = paircopy(fake->packet, t->state);
-		if (vp) pairadd(&fake->packet->vps, vp);
+		vp = fr_pair_list_copy(fake->packet, t->state);
+		if (vp) fr_pair_add(&fake->packet->vps, vp);
 	}
 
 	/*
@@ -1088,7 +1098,7 @@ int eapttls_process(eap_handler_t *handler, tls_session_t *tls_session)
 		VALUE_PAIR *copy;
 		vp_cursor_t cursor;
 
-		for (vp = paircursor(&cursor, &request->packet->vps); vp; vp = pairnext(&cursor)) {
+		for (vp = fr_cursor_init(&cursor, &request->packet->vps); vp; vp = fr_cursor_next(&cursor)) {
 			/*
 			 *	The attribute is a server-side thingy,
 			 *	don't copy it.
@@ -1107,19 +1117,19 @@ int eapttls_process(eap_handler_t *handler, tls_session_t *tls_session)
 			 *	AND attributes which are copied there
 			 *	from below.
 			 */
-			if (pairfind(fake->packet->vps, vp->da->attr, vp->da->vendor, TAG_ANY)) {
+			if (fr_pair_find_by_da(fake->packet->vps, vp->da, TAG_ANY)) {
 				continue;
 			}
 
 			/*
 			 *	Some attributes are handled specially.
 			 */
-			switch (vp->da->attr) {
-				/*
-				 *	NEVER copy Message-Authenticator,
-				 *	EAP-Message, or State.  They're
-				 *	only for outside of the tunnel.
-				 */
+			if (!vp->da->vendor) switch (vp->da->attr) {
+			/*
+			 *	NEVER copy Message-Authenticator,
+			 *	EAP-Message, or State.  They're
+			 *	only for outside of the tunnel.
+			 */
 			case PW_USER_NAME:
 			case PW_USER_PASSWORD:
 			case PW_CHAP_PASSWORD:
@@ -1129,11 +1139,10 @@ int eapttls_process(eap_handler_t *handler, tls_session_t *tls_session)
 			case PW_EAP_MESSAGE:
 			case PW_STATE:
 				continue;
-				break;
 
-				/*
-				 *	By default, copy it over.
-				 */
+			/*
+			 *	By default, copy it over.
+			 */
 			default:
 				break;
 			}
@@ -1142,12 +1151,12 @@ int eapttls_process(eap_handler_t *handler, tls_session_t *tls_session)
 			 *	Don't copy from the head, we've already
 			 *	checked it.
 			 */
-			copy = paircopy2(fake->packet, vp, vp->da->attr, vp->da->vendor, TAG_ANY);
-			pairadd(&fake->packet->vps, copy);
+			copy = fr_pair_list_copy_by_num(fake->packet, vp, vp->da->attr, vp->da->vendor, TAG_ANY);
+			fr_pair_add(&fake->packet->vps, copy);
 		}
 	}
 
-	if ((vp = pairfind(request->config_items, PW_VIRTUAL_SERVER, 0, TAG_ANY)) != NULL) {
+	if ((vp = fr_pair_find_by_num(request->config, PW_VIRTUAL_SERVER, 0, TAG_ANY)) != NULL) {
 		fake->server = vp->vp_strvalue;
 
 	} else if (t->virtual_server) {
@@ -1156,13 +1165,42 @@ int eapttls_process(eap_handler_t *handler, tls_session_t *tls_session)
 	} /* else fake->server == request->server */
 
 
-	if ((debug_flag > 0) && fr_log_fp) {
+	if ((rad_debug_lvl > 0) && fr_log_fp) {
 		RDEBUG("Sending tunneled request");
+	}
 
-		debug_pair_list(fake->packet->vps);
+	/*
+	 *	Process channel binding.
+	 */
+	chbind = eap_chbind_vp2packet(fake, fake->packet->vps);
+	if (chbind) {
+		PW_CODE chbind_code;
+		CHBIND_REQ *req = talloc_zero(fake, CHBIND_REQ);
 
-		fprintf(fr_log_fp, "server %s {\n",
-			(!fake->server) ? "" : fake->server);
+		RDEBUG("received chbind request");
+		req->request = chbind;
+		if (fake->username) {
+			req->username = fake->username;
+		} else {
+			req->username = NULL;
+		}
+		chbind_code = chbind_process(request, req);
+
+		/* encapsulate response here */
+		if (req->response) {
+			RDEBUG("sending chbind response");
+			fr_pair_add(&fake->reply->vps,
+				    eap_chbind_packet2vp(fake->reply, req->response));
+		} else {
+			RDEBUG("no chbind response");
+		}
+
+		/* clean up chbind req */
+		talloc_free(req);
+
+		if (chbind_code != PW_CODE_ACCESS_ACCEPT) {
+			return chbind_code;
+		}
 	}
 
 	/*
@@ -1172,25 +1210,12 @@ int eapttls_process(eap_handler_t *handler, tls_session_t *tls_session)
 	rad_virtual_server(fake);
 
 	/*
-	 *	Note that we don't do *anything* with the reply
-	 *	attributes.
-	 */
-	if ((debug_flag > 0) && fr_log_fp) {
-		fprintf(fr_log_fp, "} # server %s\n",
-			(!fake->server) ? "" : fake->server);
-
-		RDEBUG("Got tunneled reply code %d", fake->reply->code);
-
-		debug_pair_list(fake->reply->vps);
-	}
-
-	/*
 	 *	Decide what to do with the reply.
 	 */
 	switch (fake->reply->code) {
 	case 0:			/* No reply code, must be proxied... */
 #ifdef WITH_PROXY
-		vp = pairfind(fake->config_items, PW_PROXY_TO_REALM, 0, TAG_ANY);
+		vp = fr_pair_find_by_num(fake->config, PW_PROXY_TO_REALM, 0, TAG_ANY);
 		if (vp) {
 			eap_tunnel_data_t *tunnel;
 			RDEBUG("Tunneled authentication will be proxied to %s", vp->vp_strvalue);
@@ -1199,8 +1224,8 @@ int eapttls_process(eap_handler_t *handler, tls_session_t *tls_session)
 			 *	Tell the original request that it's going
 			 *	to be proxied.
 			 */
-			pairfilter(request, &(request->config_items),
-				  &(fake->config_items),
+			fr_pair_list_mcopy_by_num(request, &request->config,
+				  &fake->config,
 				  PW_PROXY_TO_REALM, 0, TAG_ANY);
 
 			/*
@@ -1208,7 +1233,7 @@ int eapttls_process(eap_handler_t *handler, tls_session_t *tls_session)
 			 *	tunneled request.
 			 */
 			rad_assert(!request->proxy);
-			request->proxy = fake->packet;
+			request->proxy = talloc_steal(request, fake->packet);
 			memset(&request->proxy->src_ipaddr, 0,
 			       sizeof(request->proxy->src_ipaddr));
 			memset(&request->proxy->src_ipaddr, 0,
@@ -1240,7 +1265,6 @@ int eapttls_process(eap_handler_t *handler, tls_session_t *tls_session)
 			 *	So we associate the fake request with
 			 *	this request.
 			 */
-			talloc_set_destructor(fake, request_opaque_free);
 			code = request_data_add(request, request->proxy, REQUEST_DATA_EAP_MSCHAP_TUNNEL_CALLBACK,
 						fake, true);
 			rad_assert(code == 0);
@@ -1250,14 +1274,14 @@ int eapttls_process(eap_handler_t *handler, tls_session_t *tls_session)
 			 *	Didn't authenticate the packet, but
 			 *	we're proxying it.
 			 */
-			code = PW_STATUS_CLIENT;
+			code = PW_CODE_STATUS_CLIENT;
 
 		} else
 #endif	/* WITH_PROXY */
 		  {
 			RDEBUG("No tunneled reply was found for request %d , and the request was not proxied: rejecting the user.",
 			       request->number);
-			code = PW_AUTHENTICATION_REJECT;
+			code = PW_CODE_ACCESS_REJECT;
 		}
 		break;
 
@@ -1268,25 +1292,25 @@ int eapttls_process(eap_handler_t *handler, tls_session_t *tls_session)
 		rcode = process_reply(handler, tls_session, request, fake->reply);
 		switch (rcode) {
 		case RLM_MODULE_REJECT:
-			code = PW_AUTHENTICATION_REJECT;
+			code = PW_CODE_ACCESS_REJECT;
 			break;
 
 		case RLM_MODULE_HANDLED:
-			code = PW_ACCESS_CHALLENGE;
+			code = PW_CODE_ACCESS_CHALLENGE;
 			break;
 
 		case RLM_MODULE_OK:
-			code = PW_AUTHENTICATION_ACK;
+			code = PW_CODE_ACCESS_ACCEPT;
 			break;
 
 		default:
-			code = PW_AUTHENTICATION_REJECT;
+			code = PW_CODE_ACCESS_REJECT;
 			break;
 		}
 		break;
 	}
 
-	request_free(&fake);
+	talloc_free(fake);
 
 	return code;
 }

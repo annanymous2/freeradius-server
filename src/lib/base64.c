@@ -27,26 +27,22 @@ RCSID("$Id$")
 #include <freeradius-devel/libradius.h>
 #include <freeradius-devel/base64.h>
 
-/* Get UCHAR_MAX from stdint.h, in src/include/missing.h */
-#include <limits.h>
-
 #define us(x) (uint8_t) x
 
 /** Base 64 encode binary data
  *
  * Base64 encode IN array of size INLEN into OUT array of size OUTLEN.
  *
- * @param[in] in Data to encode.
- * @param[in] inlen Length of data to encode.
  * @param[out] out Where to write Base64 string.
  * @param[in] outlen size of buffer including NULL byte.
+ * @param[in] in Data to encode.
+ * @param[in] inlen Length of data to encode.
  * @return The amount of data we wrote to the buffer or -1 if output buffer
  *	was too small.
  */
-size_t fr_base64_encode(uint8_t const *in, size_t inlen, char *out, size_t outlen)
+size_t fr_base64_encode(char *out, size_t outlen, uint8_t const *in, size_t inlen)
 {
-	static char const b64str[64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklm"
-				       "nopqrstuvwxyz0123456789+/";
+	static char const b64str[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 	char *p = out;
 	if (outlen < (FR_BASE64_ENC_LENGTH(inlen) + 1)) {
@@ -67,51 +63,6 @@ size_t fr_base64_encode(uint8_t const *in, size_t inlen, char *out, size_t outle
 	p[0] = '\0';
 
 	return p - out;
-}
-
-/** Allocate a buffer and store zero terminated base64 encoded data
- *
- * Allocate a buffer and store zero terminated base64 encoded data from array
- * IN of size INLEN, returning FR_BASE64_ENC_LENGTH(INLEN), i.e.,
- * the length of the encoded data, excluding the terminating zero.
- *
- * On return, the OUT variable will hold a pointer to newly allocated memory
- * that must be deallocated by the caller.
- *
- * If output string length would overflow, 0 is returned and OUT is set to NULL.
- *
- * @param[in] in Binary data in.
- * @param[in] inlen Length of binary data.
- * @param[out] out Which to write the pointer to the newly allocated buffer.
- * @return The length of the string in the output buffer or -1 on error.
- */
-ssize_t fr_base64_encode_alloc(uint8_t const *in, size_t inlen, char **out)
-{
-	size_t outlen = FR_BASE64_ENC_LENGTH(inlen) + 1;
-
-	/* Check for overflow in outlen computation.
-	 *
-	 * If there is no overflow, outlen >= inlen.
-	 *
-	 * If the operation (inlen + 2) overflows then it yields at most +1, so
-	 * outlen is 0.
-	 *
-	 * If the multiplication overflows, we lose at least half of the
-	 * correct value, so the result is < ((inlen + 2) / 3) * 2, which is
-	 * less than (inlen + 2) * 0.66667, which is less than inlen as soon as
-	 * (inlen > 4).
-	 */
-	if (inlen > outlen) {
-		*out = '\0';
-		return -1;
-	}
-
-	*out = talloc_array(NULL, char, outlen);
-	if (!*out) {
-		return -1;
-	}
-
-	return fr_base64_encode(in, inlen, *out, outlen);
 }
 
 /*
@@ -267,7 +218,7 @@ static const signed char b64[0x100] = {
  * @return true if CH is a character from the Base64 alphabet, and false
  *	otherwise.
  */
-int fr_isbase64(char c)
+bool fr_is_base64(char c)
 {
 	return b64[us(c)] >= 0;
 }
@@ -276,25 +227,24 @@ int fr_isbase64(char c)
  *
  * Decode base64 encoded input array IN of length INLEN to output array OUT that
  * can hold *OUTLEN bytes.  Return true if decoding was successful, i.e.
- * if the input was valid base64 data, false otherwise.
+ * if the input was valid base64 data, -1 otherwise.
  *
  * If *OUTLEN is too small, as many bytes as possible will be written to OUT.
  * On return, *OUTLEN holds the length of decoded bytes in OUT.
  *
  * Note that as soon as any non-alphabet characters are encountered,
- * decoding is stopped and false is returned.
+ * decoding is stopped and -1 is returned.
  *
  * This means that, when applicable, you must remove any line terminators
  * that is part of the data stream before calling this function.
  *
- * @param[in] in Base64 string to decode.
- * @param[in] inlen length of Base64 string.
  * @param[out] out Where to write the decoded data.
  * @param[in] outlen The length of the output buffer.
+ * @param[in] in Base64 string to decode.
+ * @param[in] inlen length of Base64 string.
  * @return -1 on error, else the length of decoded data.
  */
-ssize_t fr_base64_decode(char const *in, size_t inlen, uint8_t *out,
-			 size_t outlen)
+ssize_t fr_base64_decode(uint8_t *out, size_t outlen, char const *in, size_t inlen)
 {
 	uint8_t *p = out;
 
@@ -303,7 +253,7 @@ ssize_t fr_base64_decode(char const *in, size_t inlen, uint8_t *out,
 	}
 
 	while (inlen >= 2) {
-		if (!fr_isbase64(in[0]) || !fr_isbase64(in[1])) {
+		if (!fr_is_base64(in[0]) || !fr_is_base64(in[1])) {
 			break;
 		}
 
@@ -314,7 +264,7 @@ ssize_t fr_base64_decode(char const *in, size_t inlen, uint8_t *out,
 		if (in[2] == '=') {
 			if ((inlen != 4) || (in[3] != '=')) break;
 		} else {
-			if (!fr_isbase64(in[2])) break;
+			if (!fr_is_base64(in[2])) break;
 
 			*p++ = ((b64[us(in[1])] << 4) & 0xf0) | (b64[us(in[2])] >> 2);
 
@@ -323,69 +273,19 @@ ssize_t fr_base64_decode(char const *in, size_t inlen, uint8_t *out,
 			if (in[3] == '=') {
 				if (inlen != 4) break;
 			} else {
-	      			if (!fr_isbase64(in[3])) break;
+				if (!fr_is_base64(in[3])) break;
 
 				*p++ = ((b64[us(in[2])] << 6) & 0xc0) | b64[us(in[3])];
-	    		}
+			}
 		}
 
 		in += 4;
 		inlen -= 4;
-    	}
+	}
 
 	if (inlen != 0) {
 		return -1;
 	}
 
-  	return p - out;
-}
-
-/** Allocate a buffer and store decoded data.
- *
- * Allocate an output buffer in *OUT, and decode the base64 encoded data stored
- * in IN of size INLEN to the *OUT buffer.
- *
- * On return, the size of the decoded data is stored in *OUTLEN.
- * OUTLEN may be NULL, if the caller is not interested in the decoded length.
- * *OUT may be NULL to indicate an out of memory error, in which case *OUTLEN
- * contains the size of the memory block needed.
- *
- * The function returns true on successful decoding and memory allocation
- * errors.  (Use the *OUT and *OUTLEN parameters to differentiate between
- * successful decoding and memory error.)
- *
- * The function returns false if the input was invalid, in which case *OUT is
- * NULL and *OUTLEN is undefined.
- *
- * @param[in] in Base64 string to decode.
- * @param[in] inlen length of Base64 string.
- * @param[out] out Where to write the pointer to the decoded data.
- * @return -1 on error, else the length of data written to the buffer.
- */
-ssize_t fr_base64_decode_alloc(char const *in, size_t inlen, uint8_t **out)
-{
-	ssize_t ret;
-	/*
-	 * This may allocate a few bytes too much, depending on input,
-	 * but it's not worth the extra CPU time to compute the exact amount.
-	 * The exact amount is 3 * inlen / 4, minus 1 if the input ends
-	 * with "=" and minus another 1 if the input ends with "==".
-	 * Dividing before multiplying avoids the possibility of overflow.
-	 */
-	size_t needlen = FR_BASE64_DEC_LENGTH(inlen);
-
-	*out = talloc_array(NULL, uint8_t, needlen);
-	if (!*out) {
-		return -1;
-	}
-
-	ret = fr_base64_decode(in, inlen, *out, needlen);
-	if (ret < 0) {
-		talloc_free(*out);
-		*out = '\0';
-
-		return -1;
-	}
-
-	return ret;
+	return p - out;
 }

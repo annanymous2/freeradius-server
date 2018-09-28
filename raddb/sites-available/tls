@@ -7,7 +7,16 @@
 listen {
 	ipaddr = *
 	port = 2083
-	type = auth
+
+	#
+	#  TCP and TLS sockets can accept Access-Request and
+	#  Accounting-Request on the same socket.
+	#
+	#	auth	  = only Access-Request
+	#	acct	  = only Accounting-Request
+	#	auth+acct = both
+	#
+	type = auth+acct
 
 	# For now, only TCP transport is allowed.
 	proto = tcp
@@ -17,13 +26,67 @@ listen {
 
 	clients = radsec
 
+	#
+	#  Connection limiting for sockets with "proto = tcp".
+	#
+	limit {
+	      #
+	      #  Limit the number of simultaneous TCP connections to the socket
+	      #
+	      #  The default is 16.
+	      #  Setting this to 0 means "no limit"
+	      max_connections = 16
+
+	      #  The per-socket "max_requests" option does not exist.
+
+	      #
+	      #  The lifetime, in seconds, of a TCP connection.  After
+	      #  this lifetime, the connection will be closed.
+	      #
+	      #  Setting this to 0 means "forever".
+	      lifetime = 0
+
+	      #
+	      #  The idle timeout, in seconds, of a TCP connection.
+	      #  If no packets have been received over the connection for
+	      #  this time, the connection will be closed.
+	      #
+	      #  Setting this to 0 means "no timeout".
+	      #
+	      #  We STRONGLY RECOMMEND that you set an idle timeout.
+	      #
+	      idle_timeout = 30
+	}
+
 	#  This is *exactly* the same configuration as used by the EAP-TLS
 	#  module.  It's OK for testing, but for production use it's a good
 	#  idea to use different server certificates for EAP and for RADIUS
 	#  transport.
+	#
+	#  If you want only one TLS configuration for multiple sockets,
+	#  then we suggest putting "tls { ...}" into radiusd.conf.
+	#  The subsection below can then be changed into a reference:
+	#
+	#	tls = ${tls}
+	#
+	#  Which means "the tls sub-section is not here, but instead is in
+	#  the top-level section called 'tls'".
+	#
+	#  If you have multiple tls configurations, you can put them into
+	#  sub-sections of a top-level "tls" section.  There's no need to
+	#  call them all "tls".  You can then use:
+	#
+	#	tls = ${tls.site1}
+	#
+	#  to refer to the "site1" sub-section of the "tls" section.
+	#
 	tls {
 		private_key_password = whatever
 		private_key_file = ${certdir}/server.pem
+
+		# Accept an expired Certificate Revocation List
+		#
+	#	allow_expired_crl = no
 
 		#  If Private key & Certificate are located in
 		#  the same file, then private_key_file &
@@ -71,7 +134,7 @@ listen {
 		#  write to files in its configuration
 		#  directory.
 		#
-#		random_file = ${certdir}/random
+#		random_file = /dev/urandom
 
 		#
 		#  The default fragment size is 1K.
@@ -110,10 +173,9 @@ listen {
 	       #  match, the certificate verification will fail,
 	       #  rejecting the user.
 	       #
-	       #  In 2.1.10 and later, this check can be done
-	       #  more generally by checking the value of the
-	       #  TLS-Client-Cert-Issuer attribute.  This check
-	       #  can be done via any mechanism you choose.
+	       #  This check can be done more generally by checking
+	       #  the value of the TLS-Client-Cert-Issuer attribute.
+	       #  This check can be done via any mechanism you choose.
 	       #
 	#       check_cert_issuer = "/C=GB/ST=Berkshire/L=Newbury/O=My Company Ltd"
 
@@ -130,7 +192,7 @@ listen {
 	       #
 	       #  In 2.1.10 and later, this check can be done
 	       #  more generally by checking the value of the
-	       #  TLS-Client-Cert-CN attribute.  This check
+	       #  TLS-Client-Cert-Common-Name attribute.  This check
 	       #  can be done via any mechanism you choose.
 	       #
 	#	check_cert_cn = %{User-Name}
@@ -140,17 +202,13 @@ listen {
 		# in "man 1 ciphers".
 		cipher_list = "DEFAULT"
 
-		#
-
-		#  This configuration entry should be deleted
-		#  once the server is running in a normal
-		#  configuration.  It is here ONLY to make
-		#  initial deployments easier.
-		#
-		#
-		#  This is enabled in eap.conf, so we don't need it here.
-		#
-#		make_cert_command = "${certdir}/bootstrap"
+		# If enabled, OpenSSL will use server cipher list
+		# (possibly defined by cipher_list option above)
+		# for choosing right cipher suite rather than
+		# using client-specified list which is OpenSSl default
+		# behavior. Having it set to yes is a current best practice
+		# for TLS
+		cipher_server_preference = no
 
 		#
 		#  Session resumption / fast reauthentication
@@ -184,6 +242,13 @@ listen {
 		      #  Deleting the entire "cache" subsection
 		      #  Also disables caching.
 		      #
+			#
+			#  As of version 3.0.14, the session cache requires the use
+			#  of the "name" and "persist_dir" configuration items, below.
+			#
+			#  The internal OpenSSL session cache has been permanently
+			#  disabled.
+			#
 		      #  You can disallow resumption for a
 		      #  particular user by adding the following
 		      #  attribute to the control item list:
@@ -202,15 +267,6 @@ listen {
 		      #  time.
 		      #
 		      lifetime = 24 # hours
-
-		      #
-		      #  The maximum number of entries in the
-		      #  cache.  Set to "0" for "infinite".
-		      #
-		      #  This could be set to the number of users
-		      #  who are logged in... which can be a LOT.
-		      #
-		      max_entries = 255
 
 		      #
 		      #  Internal "name" of the session cache.
@@ -292,22 +348,39 @@ listen {
 clients radsec {
 	client 127.0.0.1 {
 		ipaddr = 127.0.0.1
-		proto = tcp
-		secret = testing123
-	}
-}
 
-listen {
-       ipaddr = 127.0.0.1
-       port = 4000
-       type = auth
+		#
+		#  Ensure that this client is TLS *only*.
+		#
+		proto = tls
+
+		#
+		#  TCP clients can have any shared secret.
+		#
+		#  TLS clients MUST have the shared secret
+		#  set to "radsec".  Or, for "proto = tls",
+		#  you can omit the secret, and it will
+		#  automatically be set to "radsec".
+		#
+		secret = radsec
+
+		#
+		#  You can also use a "limit" section here.
+		#  See raddb/clients.conf for examples.
+		#
+		#  Note that BOTH limits are applied.  You
+		#  should therefore set the "listen" limits
+		#  higher than the ones for each individual
+		#  client.
+		#
+	}
 }
 
 home_server tls {
 	ipaddr = 127.0.0.1
 	port = 2083
 	type = auth
-	secret = testing123
+	secret = radsec
 	proto = tcp
 	status_check = none
 
@@ -345,13 +418,27 @@ home_server tls {
 		ca_file = ${cadir}/ca.pem
 
 		#
+		#  For TLS-PSK, the key should be specified
+		#  dynamically, instead of using a hard-coded
+		#  psk_identity and psk_hexphrase.
+		#
+		#  The input to the dynamic expansion will be the PSK
+		#  identity supplied by the client, in the
+		#  TLS-PSK-Identity attribute.  The output of the
+		#  expansion should be a hex string, of no more than
+		#  512 characters.  The string should not be prefixed
+		#  with "0x".  e.g. "abcdef" is OK.  "0xabcdef" is not.
+		#
+	#	psk_query = "%{psksql:select hex(key) from psk_keys where keyid = '%{TLS-PSK-Identity}'}"
+
+		#
 		#  For DH cipher suites to work, you have to
 		#  run OpenSSL to create the DH file first:
 		#
 		#  	openssl dhparam -out certs/dh 1024
 		#
 		dh_file = ${certdir}/dh
-		random_file = ${certdir}/random
+		random_file = /dev/urandom
 
 		#
 		#  The default fragment size is 1K.
@@ -407,7 +494,7 @@ home_server tls {
 	       #
 	       #  In 2.1.10 and later, this check can be done
 	       #  more generally by checking the value of the
-	       #  TLS-Client-Cert-CN attribute.  This check
+	       #  TLS-Client-Cert-Common-Name attribute.  This check
 	       #  can be done via any mechanism you choose.
 	       #
 	#	check_cert_cn = %{User-Name}

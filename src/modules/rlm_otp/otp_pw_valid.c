@@ -78,16 +78,20 @@ int otp_pw_valid(REQUEST *request, int pwe, char const *challenge,
 	char const	*username = request->username->vp_strvalue;
 	int		rc;
 
-	if (request->username->length > OTP_MAX_USERNAME_LEN) {
+	otp_request.version = 2;
+
+	if (strlcpy(otp_request.username, username,
+			sizeof(otp_request.username)) >=
+		sizeof(otp_request.username)) {
 		AUTH("rlm_otp: username [%s] too long", username);
 		return RLM_MODULE_REJECT;
 	}
-
-	/* we already know challenge is short enough */
-	otp_request.version = 2;
-
-	strcpy(otp_request.username, username);
-	strcpy(otp_request.challenge, challenge);
+	if (strlcpy(otp_request.challenge, challenge,
+			sizeof(otp_request.challenge)) >=
+		sizeof(otp_request.challenge)) {
+		AUTH("rlm_otp: challenge for [%s] too long", username);
+		return RLM_MODULE_REJECT;
+	}
 
 	otp_request.pwe.pwe = pwe;
 
@@ -95,10 +99,10 @@ int otp_pw_valid(REQUEST *request, int pwe, char const *challenge,
 	 *	otp_pwe_present() (done by caller) guarantees that both of
 	 *	these exist
 	 */
-	cvp = pairfind(request->packet->vps, pwattr[pwe - 1]->attr,
+	cvp = fr_pair_find_by_num(request->packet->vps, pwattr[pwe - 1]->attr,
 		       pwattr[pwe - 1]->vendor, TAG_ANY);
 
-	rvp = pairfind(request->packet->vps, pwattr[pwe]->attr,
+	rvp = fr_pair_find_by_num(request->packet->vps, pwattr[pwe]->attr,
 		       pwattr[pwe]->vendor, TAG_ANY);
 
 	/* this is just to quiet Coverity */
@@ -111,26 +115,29 @@ int otp_pw_valid(REQUEST *request, int pwe, char const *challenge,
 	 *	Unfortunately (?) otpd must do this also.
 	 */
 	switch (otp_request.pwe.pwe) {
+	case PWE_NONE:
+		return RLM_MODULE_NOOP;
+
 	case PWE_PAP:
-		if (rvp->length >= sizeof(otp_request.pwe.u.pap.passcode)) {
+		if (strlcpy(otp_request.pwe.u.pap.passcode, rvp->vp_strvalue,
+				sizeof(otp_request.pwe.u.pap.passcode)) >=
+			sizeof(otp_request.pwe.u.pap.passcode)) {
 			AUTH("rlm_otp: passcode for [%s] too long",
 			       username);
 
 			return RLM_MODULE_REJECT;
 		}
-
-		(void) strcpy(otp_request.pwe.u.pap.passcode, rvp->vp_strvalue);
 		break;
 
 	case PWE_CHAP:
-		if (cvp->length > 16) {
+		if (cvp->vp_length > 16) {
 			AUTH("rlm_otp: CHAP challenge for [%s] "
 			       "too long", username);
 
 			return RLM_MODULE_INVALID;
 		}
 
-		if (rvp->length != 17) {
+		if (rvp->vp_length != 17) {
 			AUTH("rlm_otp: CHAP response for [%s] "
 			      "wrong size", username);
 
@@ -138,49 +145,49 @@ int otp_pw_valid(REQUEST *request, int pwe, char const *challenge,
 		}
 
 		(void) memcpy(otp_request.pwe.u.chap.challenge, cvp->vp_octets,
-			      cvp->length);
+			      cvp->vp_length);
 
-		otp_request.pwe.u.chap.clen = cvp->length;
+		otp_request.pwe.u.chap.clen = cvp->vp_length;
 		(void) memcpy(otp_request.pwe.u.chap.response, rvp->vp_octets,
-			      rvp->length);
+			      rvp->vp_length);
 
-		otp_request.pwe.u.chap.rlen = rvp->length;
+		otp_request.pwe.u.chap.rlen = rvp->vp_length;
 		break;
 
 	case PWE_MSCHAP:
-		if (cvp->length != 8) {
+		if (cvp->vp_length != 8) {
 			AUTH("rlm_otp: MS-CHAP challenge for "
 			       "[%s] wrong size", username);
 
 			return RLM_MODULE_INVALID;
 		}
 
-		if (rvp->length != 50) {
+		if (rvp->vp_length != 50) {
 			AUTH("rlm_otp: MS-CHAP response for [%s] "
 			       "wrong size", username);
 
 			return RLM_MODULE_INVALID;
 		}
 		(void) memcpy(otp_request.pwe.u.chap.challenge,
-			      cvp->vp_octets, cvp->length);
+			      cvp->vp_octets, cvp->vp_length);
 
-		otp_request.pwe.u.chap.clen = cvp->length;
+		otp_request.pwe.u.chap.clen = cvp->vp_length;
 
 		(void) memcpy(otp_request.pwe.u.chap.response,
-			      rvp->vp_octets, rvp->length);
+			      rvp->vp_octets, rvp->vp_length);
 
-		otp_request.pwe.u.chap.rlen = rvp->length;
+		otp_request.pwe.u.chap.rlen = rvp->vp_length;
 		break;
 
 	case PWE_MSCHAP2:
-		if (cvp->length != 16) {
+		if (cvp->vp_length != 16) {
 			AUTH("rlm_otp: MS-CHAP2 challenge for "
 				      "[%s] wrong size", username);
 
 			return RLM_MODULE_INVALID;
 		}
 
-		if (rvp->length != 50) {
+		if (rvp->vp_length != 50) {
 			AUTH("rlm_otp: MS-CHAP2 response for [%s] "
 			       "wrong size", username);
 
@@ -188,14 +195,14 @@ int otp_pw_valid(REQUEST *request, int pwe, char const *challenge,
 		}
 
 		(void) memcpy(otp_request.pwe.u.chap.challenge, cvp->vp_octets,
-			      cvp->length);
+			      cvp->vp_length);
 
-		otp_request.pwe.u.chap.clen = cvp->length;
+		otp_request.pwe.u.chap.clen = cvp->vp_length;
 
 		(void) memcpy(otp_request.pwe.u.chap.response, rvp->vp_octets,
-			      rvp->length);
-		otp_request.pwe.u.chap.rlen = rvp->length;
-	break;
+			      rvp->vp_length);
+		otp_request.pwe.u.chap.rlen = rvp->vp_length;
+		break;
 	} /* switch (otp_request.pwe.pwe) */
 
 	/*
@@ -301,7 +308,7 @@ otp_read(otp_fd_t *fdp, char *buf, size_t len)
 				continue;
 			} else {
 				ERROR("rlm_otp: %s: read from otpd: %s",
-		     		       __func__, strerror(errno));
+				       __func__, fr_syserror(errno));
 				otp_putfd(fdp, 1);
 
 				return -1;
@@ -323,21 +330,21 @@ otp_read(otp_fd_t *fdp, char *buf, size_t len)
 
 /*
  *	Full write with logging, and close on failure.
- *	Returns 0 on success, errno on failure.
+ *	Returns number of bytes written on success, errno on failure.
  */
 static int otp_write(otp_fd_t *fdp, char const *buf, size_t len)
 {
 	size_t nleft = len;
 	ssize_t nwrote;
 
-  	while (nleft) {
+	while (nleft) {
 		nwrote = write(fdp->fd, &buf[len - nleft], nleft);
 		if (nwrote == -1) {
 			if (errno == EINTR) {
 				continue;
 			} else {
 				ERROR("rlm_otp: %s: write to otpd: %s",
-				       __func__, strerror(errno));
+				       __func__, fr_syserror(errno));
 
 				otp_putfd(fdp, 1);
 				return errno;
@@ -348,7 +355,7 @@ static int otp_write(otp_fd_t *fdp, char const *buf, size_t len)
 		nleft -= nwrote;
 	}
 
-	return 0;
+	return len - nleft;
 }
 
 /* connect to otpd and return fd */
@@ -373,7 +380,7 @@ static int otp_connect(char const *path)
 	fd = socket(PF_UNIX, SOCK_STREAM, 0);
 	if (fd == -1) {
 		ERROR("rlm_otp: %s: socket: %s", __func__,
-		       strerror(errno));
+		       fr_syserror(errno));
 
 		return -1;
 	}
@@ -381,7 +388,7 @@ static int otp_connect(char const *path)
 	      sizeof(sa.sun_family) + sp_len) == -1) {
 
 		ERROR("rlm_otp: %s: connect(%s): %s",
-		       __func__, path, strerror(errno));
+		       __func__, path, fr_syserror(errno));
 
 		(void) close(fd);
 

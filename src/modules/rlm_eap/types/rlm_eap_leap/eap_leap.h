@@ -18,7 +18,7 @@ RCSIDH(eap_leap_h, "$Id$")
 
 /*
  ****
- * EAP - LEAP doesnot specify code, id & length but chap specifies them,
+ * EAP - LEAP does not specify code, id & length but chap specifies them,
  *	for generalization purpose, complete header should be sent
  *	and not just value_size, value and name.
  *	future implementation.
@@ -41,10 +41,10 @@ typedef struct leap_packet_raw_t {
 typedef struct leap_packet {
 	unsigned char	code;
 	unsigned char	id;
-	int		length;
+	size_t		length;
 	int		count;
 	unsigned char	*challenge;
-	int		name_len;
+	size_t		name_len;
 	char		*name;
 } leap_packet_t;
 
@@ -60,16 +60,13 @@ typedef struct leap_session_t {
 
 /* function declarations here */
 
-int 		eapleap_compose(EAP_DS *auth, leap_packet_t *reply);
-leap_packet_t 	*eapleap_extract(EAP_DS *auth);
-leap_packet_t 	*eapleap_initiate(EAP_DS *eap_ds, VALUE_PAIR *user_name);
-int		eapleap_stage4(leap_packet_t *packet, VALUE_PAIR* password,
-			       leap_session_t *session);
-leap_packet_t	*eapleap_stage6(leap_packet_t *packet, REQUEST *request,
-				VALUE_PAIR *user_name, VALUE_PAIR* password,
+int 		eapleap_compose(REQUEST *request, EAP_DS *auth, leap_packet_t *reply);
+leap_packet_t 	*eapleap_extract(REQUEST *request, EAP_DS *eap_ds);
+leap_packet_t 	*eapleap_initiate(REQUEST *request, EAP_DS *eap_ds, VALUE_PAIR *user_name);
+int		eapleap_stage4(REQUEST *request, leap_packet_t *packet, VALUE_PAIR* password, leap_session_t *session);
+leap_packet_t	*eapleap_stage6(REQUEST *request, leap_packet_t *packet, VALUE_PAIR *user_name, VALUE_PAIR* password,
 				leap_session_t *session);
 
-void eapleap_lmpwdhash(unsigned char const *password,unsigned char *lmhash);
 void eapleap_mschap(unsigned char const *win_password, unsigned char const *challenge, unsigned char *response);
 
 #endif /*_EAP_LEAP_H*/

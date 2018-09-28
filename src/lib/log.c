@@ -25,120 +25,319 @@ RCSID("$Id$")
 
 #include <freeradius-devel/libradius.h>
 
-
-#define FR_STRERROR_BUFSIZE (1024)
-
-#ifdef HAVE_THREAD_TLS
 /*
- *	GCC on most Linux systems
+ *	Are we using glibc or a close relative?
  */
-#define THREAD_TLS __thread
-
-#elif defined(HAVE_DECLSPEC_THREAD)
-/*
- *	Visual C++, Borland
- */
-#define THREAD_TLS __declspec(thread)
-#else
-
-/*
- *	We don't have thread-local storage.  Ensure we don't
- *	ask for it.
- */
-#define THREAD_TLS
-
-/*
- *	Use pthread keys if we have pthreads.  For MAC, which should
- *	be very fast.
- */
-#ifdef HAVE_PTHREAD_H
-#define USE_PTHREAD_FOR_TLS (1)
-#endif
+#ifdef HAVE_FEATURES_H
+#  include <features.h>
 #endif
 
-#ifndef USE_PTHREAD_FOR_TLS
-/*
- *	Try to create a thread-local-storage version of this buffer.
+#define FR_STRERROR_BUFSIZE (2048)
+
+fr_thread_local_setup(char *, fr_strerror_buffer)	/* macro */
+fr_thread_local_setup(char *, fr_syserror_buffer)	/* macro */
+
+#ifndef NDEBUG
+/** POSIX-2008 errno macros
+ *
+ * Non-POSIX macros may be added, but you must check they're defined.
  */
-static THREAD_TLS char fr_strerror_buffer[FR_STRERROR_BUFSIZE];
-
+static char const *fr_errno_macro_names[] = {
+	[E2BIG] = "E2BIG",
+	[EACCES] = "EACCES",
+	[EADDRINUSE] = "EADDRINUSE",
+	[EADDRNOTAVAIL] = "EADDRNOTAVAIL",
+	[EAFNOSUPPORT] = "EAFNOSUPPORT",
+#if EWOULDBLOCK == EAGAIN
+	[EWOULDBLOCK] = "EWOULDBLOCK or EAGAIN",
 #else
-#include <pthread.h>
+	[EAGAIN] = "EAGAIN",
+	[EWOULDBLOCK] = "EWOULDBLOCK",
+#endif
+	[EALREADY] = "EALREADY",
+	[EBADF] = "EBADF",
+	[EBADMSG] = "EBADMSG",
+	[EBUSY] = "EBUSY",
+	[ECANCELED] = "ECANCELED",
+	[ECHILD] = "ECHILD",
+	[ECONNABORTED] = "ECONNABORTED",
+	[ECONNREFUSED] = "ECONNREFUSED",
+	[ECONNRESET] = "ECONNRESET",
+	[EDEADLK] = "EDEADLK",
+	[EDESTADDRREQ] = "EDESTADDRREQ",
+	[EDOM] = "EDOM",
+	[EDQUOT] = "EDQUOT",
+	[EEXIST] = "EEXIST",
+	[EFAULT] = "EFAULT",
+	[EFBIG] = "EFBIG",
+	[EHOSTUNREACH] = "EHOSTUNREACH",
+	[EIDRM] = "EIDRM",
+	[EILSEQ] = "EILSEQ",
+	[EINPROGRESS] = "EINPROGRESS",
+	[EINTR] = "EINTR",
+	[EINVAL] = "EINVAL",
+	[EIO] = "EIO",
+	[EISCONN] = "EISCONN",
+	[EISDIR] = "EISDIR",
+	[ELOOP] = "ELOOP",
+	[EMFILE] = "EMFILE",
+	[EMLINK] = "EMLINK",
+	[EMSGSIZE] = "EMSGSIZE",
+	[EMULTIHOP] = "EMULTIHOP",
+	[ENAMETOOLONG] = "ENAMETOOLONG",
+	[ENETDOWN] = "ENETDOWN",
+	[ENETRESET] = "ENETRESET",
+	[ENETUNREACH] = "ENETUNREACH",
+	[ENFILE] = "ENFILE",
+	[ENOBUFS] = "ENOBUFS",
+#ifdef ENODATA
+	[ENODATA] = "ENODATA",
+#endif
+	[ENODEV] = "ENODEV",
+	[ENOENT] = "ENOENT",
+	[ENOEXEC] = "ENOEXEC",
+	[ENOLCK] = "ENOLCK",
+	[ENOLINK] = "ENOLINK",
+	[ENOMEM] = "ENOMEM",
+	[ENOMSG] = "ENOMSG",
+	[ENOPROTOOPT] = "ENOPROTOOPT",
+	[ENOSPC] = "ENOSPC",
+#ifdef ENOSR
+	[ENOSR] = "ENOSR",
+#endif
+#ifdef ENOSTR
+	[ENOSTR] = "ENOSTR",
+#endif
+	[ENOSYS] = "ENOSYS",
+	[ENOTCONN] = "ENOTCONN",
+	[ENOTDIR] = "ENOTDIR",
+	[ENOTEMPTY] = "ENOTEMPTY",
+#ifdef ENOTRECOVERABLE
+	[ENOTRECOVERABLE] = "ENOTRECOVERABLE",
+#endif
+	[ENOTSOCK] = "ENOTSOCK",
+	[ENOTSUP] = "ENOTSUP",
+#if ENOTSUP != EOPNOTSUPP
+	[EOPNOTSUPP] = "EOPNOTSUPP",
+#endif
+	[ENOTTY] = "ENOTTY",
+	[ENXIO] = "ENXIO",
+	[EOVERFLOW] = "EOVERFLOW",
+#ifdef EOWNERDEAD
+	[EOWNERDEAD] = "EOWNERDEAD",
+#endif
+	[EPERM] = "EPERM",
+	[EPIPE] = "EPIPE",
+	[EPROTO] = "EPROTO",
+	[EPROTONOSUPPORT] = "EPROTONOSUPPORT",
+	[EPROTOTYPE] = "EPROTOTYPE",
+	[ERANGE] = "ERANGE",
+	[EROFS] = "EROFS",
+	[ESPIPE] = "ESPIPE",
+	[ESRCH] = "ESRCH",
+	[ESTALE] = "ESTALE",
+#ifdef ETIME
+	[ETIME] = "ETIME",
+#endif
+	[ETIMEDOUT] = "ETIMEDOUT",
+	[ETXTBSY] = "ETXTBSY",
+	[EXDEV] = "EXDEV"
+};
+#endif
 
-static pthread_key_t  fr_strerror_key;
-static pthread_once_t fr_strerror_once = PTHREAD_ONCE_INIT;
-
-/* Create Key */
-static void fr_strerror_make_key(void)
+/*
+ *	Explicitly cleanup the memory allocated to the error buffer,
+ *	just in case valgrind complains about it.
+ */
+static void _fr_logging_free(void *arg)
 {
-	pthread_key_create(&fr_strerror_key, NULL);
+	free(arg);
 }
-#endif
 
-/*
- *	Log to a buffer, trying to be thread-safe.
+/** Log to thread local error buffer
+ *
+ * @param fmt printf style format string. If NULL sets the 'new' byte to false,
+ *	  effectively clearing the last message.
  */
 void fr_strerror_printf(char const *fmt, ...)
 {
 	va_list ap;
 
-#ifdef USE_PTHREAD_FOR_TLS
 	char *buffer;
 
-	pthread_once(&fr_strerror_once, fr_strerror_make_key);
-
-	buffer = pthread_getspecific(fr_strerror_key);
+	buffer = fr_thread_local_init(fr_strerror_buffer, _fr_logging_free);
 	if (!buffer) {
 		int ret;
 
-		buffer = malloc(FR_STRERROR_BUFSIZE);
-		if (!buffer) return; /* panic and die! */
+		/*
+		 *	malloc is thread safe, talloc is not
+		 */
+		buffer = calloc((FR_STRERROR_BUFSIZE * 2) + 1, sizeof(char));	/* One byte extra for status */
+		if (!buffer) {
+			fr_perror("Failed allocating memory for libradius error buffer");
+			return;
+		}
 
-		ret = pthread_setspecific(fr_strerror_key, buffer);
+		ret = fr_thread_local_set(fr_strerror_buffer, buffer);
 		if (ret != 0) {
-			fr_perror("Failed recording thread error: %s",
-				  strerror(ret));
-
+			fr_perror("Failed setting up thread-local storage for libradius error buffer: %s", fr_syserror(ret));
+			free(buffer);
 			return;
 		}
 	}
 
-	va_start(ap, fmt);
-	vsnprintf(buffer, FR_STRERROR_BUFSIZE, fmt, ap);
+	/*
+	 *	NULL has a special meaning, setting the new bit to false.
+	 */
+	if (!fmt) {
+		buffer[FR_STRERROR_BUFSIZE * 2] &= 0x06;
+		return;
+	}
 
-#else
 	va_start(ap, fmt);
-	vsnprintf(fr_strerror_buffer, sizeof(fr_strerror_buffer), fmt, ap);
-#endif
+	/*
+	 *	Alternate where we write the message, so we can do:
+	 *	fr_strerror_printf("Additional error: %s", fr_strerror());
+	 */
+	switch (buffer[FR_STRERROR_BUFSIZE * 2] & 0x06) {
+	default:
+		vsnprintf(buffer + FR_STRERROR_BUFSIZE, FR_STRERROR_BUFSIZE, fmt, ap);
+		buffer[FR_STRERROR_BUFSIZE * 2] = 0x05;			/* Flip the 'new' bit to true */
+		break;
 
+	case 0x04:
+		vsnprintf(buffer, FR_STRERROR_BUFSIZE, fmt, ap);
+		buffer[FR_STRERROR_BUFSIZE * 2] = 0x03;			/* Flip the 'new' bit to true */
+		break;
+	}
 	va_end(ap);
 }
 
+/** Get the last library error
+ *
+ * Will only return the last library error once, after which it will return a zero length string.
+ *
+ * @return library error or zero length string
+ */
 char const *fr_strerror(void)
 {
-#ifndef USE_PTHREAD_FOR_TLS
-	return fr_strerror_buffer;
+	char *buffer;
 
-#else
-	char const *msg;
+	buffer = fr_thread_local_get(fr_strerror_buffer);
+	if (!buffer) return "";
 
-	pthread_once(&fr_strerror_once, fr_strerror_make_key);
+	switch (buffer[FR_STRERROR_BUFSIZE * 2]) {
+	default:
+		return "";
 
-	msg = pthread_getspecific(fr_strerror_key);
-	if (msg) return msg;
+	case 0x03:
+		buffer[FR_STRERROR_BUFSIZE * 2] &= 0x06;		/* Flip the 'new' bit to false */
+		return buffer;
 
-	return "(unknown error)"; /* DON'T return NULL! */
+	case 0x05:
+		buffer[FR_STRERROR_BUFSIZE * 2] &= 0x06;		/* Flip the 'new' bit to false */
+		return buffer + FR_STRERROR_BUFSIZE;
+	}
+}
+
+/** Guaranteed to be thread-safe version of strerror
+ *
+ * @param num errno as returned by function or from global errno.
+ * @return local specific error string relating to errno.
+ */
+char const *fr_syserror(int num)
+{
+	char *buffer, *p, *end;
+	int ret;
+
+	buffer = fr_thread_local_init(fr_syserror_buffer, _fr_logging_free);
+	if (!buffer) {
+		/*
+		 *	malloc is thread safe, talloc is not
+		 */
+		buffer = malloc(sizeof(char) * FR_STRERROR_BUFSIZE);
+		if (!buffer) {
+			fr_perror("Failed allocating memory for system error buffer");
+			return NULL;
+		}
+
+		ret = fr_thread_local_set(fr_syserror_buffer, buffer);
+		if (ret != 0) {
+			fr_perror("Failed setting up thread-local storage for system error buffer");
+			free(buffer);
+			return NULL;
+		}
+	}
+
+	if (!num) return "No error";
+
+	p = buffer;
+	end = p + FR_STRERROR_BUFSIZE;
+
+#ifndef NDEBUG
+	/*
+	 *	Prefix system errors with the macro name and number
+	 *	if we're debugging.
+	 */
+	if (num < (int)(sizeof(fr_errno_macro_names) / sizeof(*fr_errno_macro_names))) {
+		p += snprintf(p, end - p, "%s: ", fr_errno_macro_names[num]);
+	} else {
+		p += snprintf(p, end - p, "errno %i: ", num);
+	}
+	if (p >= end) return p;
 #endif
+
+	/*
+	 *	XSI-Compliant version
+	 */
+#if !defined(HAVE_FEATURES_H) || !defined(__GLIBC__) || ((_POSIX_C_SOURCE >= 200112L || _XOPEN_SOURCE >= 500) && ! _GNU_SOURCE)
+	ret = strerror_r(num, p, end - p);
+	if (ret != 0) {
+#  ifndef NDEBUG
+		fprintf(stderr, "strerror_r() failed to write error for errno %i to buffer %p (%zu bytes), "
+			"returned %i: %s\n", num, buffer, (size_t) FR_STRERROR_BUFSIZE, ret, strerror(ret));
+#  endif
+		buffer[0] = '\0';
+	}
+	return buffer;
+	/*
+	 *	GNU Specific version
+	 *
+	 *	The GNU Specific version returns a char pointer. That pointer may point
+	 *	the buffer you just passed in, or to an immutable static string.
+	 */
+#else
+	{
+		p = strerror_r(num, p, end - p);
+		if (!p) {
+#  ifndef NDEBUG
+			fprintf(stderr, "strerror_r() failed to write error for errno %i to buffer %p "
+				"(%zu bytes): %s\n", num, buffer, (size_t) FR_STRERROR_BUFSIZE, strerror(errno));
+#  endif
+			buffer[0] = '\0';
+			return buffer;
+		}
+
+		return p;
+	}
+#endif
+
 }
 
 void fr_perror(char const *fmt, ...)
 {
+	char const *error;
 	va_list ap;
 
 	va_start(ap, fmt);
 	vfprintf(stderr, fmt, ap);
-	if (strchr(fmt, ':') == NULL)
-		fprintf(stderr, ": ");
-	fprintf(stderr, "%s\n", fr_strerror());
+
+	error = fr_strerror();
+	if (error && (error[0] != '\0')) {
+		fprintf(stderr, ": %s\n", error);
+	} else {
+		fputs("\n", stderr);
+	}
+
 	va_end(ap);
 }

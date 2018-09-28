@@ -2697,15 +2697,28 @@ ac_compiler_gnu=$ac_cv_c_compiler_gnu
 
 
 ac_safe=`echo "yubikey.h" | sed 'y%./+-%__pm%'`
-old_CFLAGS="$CFLAGS"
+old_CPPFLAGS="$CPPFLAGS"
 smart_include=
-smart_include_dir=
+smart_include_dir="/usr/local/include /opt/include"
 
-if test "x$smart_try_dir" != "x"; then
-  for try in $smart_try_dir; do
+_smart_try_dir=
+_smart_include_dir=
+
+for _prefix in $smart_prefix ""; do
+  for _dir in $smart_try_dir; do
+    _smart_try_dir="${_smart_try_dir} ${_dir}/${_prefix}"
+  done
+
+  for _dir in $smart_include_dir; do
+    _smart_include_dir="${_smart_include_dir} ${_dir}/${_prefix}"
+  done
+done
+
+if test "x$_smart_try_dir" != "x"; then
+  for try in $_smart_try_dir; do
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for yubikey.h in $try" >&5
 $as_echo_n "checking for yubikey.h in $try... " >&6; }
-    CFLAGS="$old_CFLAGS -isystem $try"
+    CPPFLAGS="-isystem $try $old_CPPFLAGS"
     cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
 
@@ -2734,16 +2747,18 @@ $as_echo "no" >&6; }
 fi
 rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
   done
-  CFLAGS="$old_CFLAGS"
+  CPPFLAGS="$old_CPPFLAGS"
 fi
 
 if test "x$smart_include" = "x"; then
-  { $as_echo "$as_me:${as_lineno-$LINENO}: checking for yubikey.h" >&5
-$as_echo_n "checking for yubikey.h... " >&6; }
-  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+  for _prefix in $smart_prefix; do
+    { $as_echo "$as_me:${as_lineno-$LINENO}: checking for ${_prefix}/yubikey.h" >&5
+$as_echo_n "checking for ${_prefix}/yubikey.h... " >&6; }
+
+    cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
 
-		  #include <yubikey.h>
+		    #include <yubikey.h>
 int
 main ()
 {
@@ -2754,15 +2769,49 @@ int a = 1;
 _ACEOF
 if ac_fn_c_try_compile "$LINENO"; then :
 
-		   smart_include=" "
-		   { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+		     smart_include="-isystem ${_prefix}/"
+		     { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
 $as_echo "yes" >&6; }
-		   break
+		     break
 
 else
 
-		   smart_include=
-		   { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+		     smart_include=
+		     { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
+  done
+fi
+
+if test "x$smart_include" = "x"; then
+    { $as_echo "$as_me:${as_lineno-$LINENO}: checking for yubikey.h" >&5
+$as_echo_n "checking for yubikey.h... " >&6; }
+
+    cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+		    #include <yubikey.h>
+int
+main ()
+{
+int a = 1;
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"; then :
+
+		     smart_include=" "
+		     { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+$as_echo "yes" >&6; }
+		     break
+
+else
+
+		     smart_include=
+		     { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
 $as_echo "no" >&6; }
 
 fi
@@ -2770,6 +2819,36 @@ rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
 fi
 
 if test "x$smart_include" = "x"; then
+
+  for prefix in $smart_prefix; do
+
+
+if test "x$LOCATE" != "x"; then
+        DIRS=
+  file="${_prefix}/${1}"
+
+  for x in `${LOCATE} $file 2>/dev/null`; do
+                                        base=`echo $x | sed "s%/${file}%%"`
+    if test "x$x" = "x$base"; then
+      continue;
+    fi
+
+    dir=`${DIRNAME} $x 2>/dev/null`
+                exclude=`echo ${dir} | ${GREP} /home`
+    if test "x$exclude" != "x"; then
+      continue
+    fi
+
+                    already=`echo \$_smart_include_dir ${DIRS} | ${GREP} ${dir}`
+    if test "x$already" = "x"; then
+      DIRS="$DIRS $dir"
+    fi
+  done
+fi
+
+eval "_smart_include_dir=\"\$_smart_include_dir $DIRS\""
+
+  done
 
 
 if test "x$LOCATE" != "x"; then
@@ -2788,19 +2867,20 @@ if test "x$LOCATE" != "x"; then
       continue
     fi
 
-                    already=`echo \$smart_include_dir ${DIRS} | ${GREP} ${dir}`
+                    already=`echo \$_smart_include_dir ${DIRS} | ${GREP} ${dir}`
     if test "x$already" = "x"; then
       DIRS="$DIRS $dir"
     fi
   done
 fi
 
-eval "smart_include_dir=\"\$smart_include_dir $DIRS\""
+eval "_smart_include_dir=\"\$_smart_include_dir $DIRS\""
 
-  for try in $smart_include_dir /usr/local/include /opt/include; do
+
+  for try in $_smart_include_dir; do
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for yubikey.h in $try" >&5
 $as_echo_n "checking for yubikey.h in $try... " >&6; }
-    CFLAGS="$old_CFLAGS -isystem $try"
+    CPPFLAGS="-isystem $try $old_CPPFLAGS"
     cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
 
@@ -2829,18 +2909,20 @@ $as_echo "no" >&6; }
 fi
 rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
   done
-  CFLAGS="$old_CFLAGS"
+  CPPFLAGS="$old_CPPFLAGS"
 fi
 
 if test "x$smart_include" != "x"; then
   eval "ac_cv_header_$ac_safe=yes"
-  CFLAGS="$old_CFLAGS $smart_include"
-  SMART_CFLAGS="$SMART_CFLAGS $smart_include"
+  CPPFLAGS="$smart_include $old_CPPFLAGS"
+  SMART_CPPFLAGS="$smart_include $SMART_CPPFLAGS"
 fi
 
+smart_prefix=
+
     if test "x$ac_cv_header_yubikey_h" != "xyes"; then
-        have_ykclient="no"
-        { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: yubikey headers not found. Use --with-yubikey-include-dir=<path>." >&5
+	have_ykclient="no"
+	{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: yubikey headers not found. Use --with-yubikey-include-dir=<path>." >&5
 $as_echo "$as_me: WARNING: yubikey headers not found. Use --with-yubikey-include-dir=<path>." >&2;}
     fi
 
@@ -2852,14 +2934,17 @@ sm_lib_safe=`echo "yubikey" | sed 'y%./+-%__p_%'`
 sm_func_safe=`echo "yubikey_aes_decrypt" | sed 'y%./+-%__p_%'`
 
 old_LIBS="$LIBS"
+old_CPPFLAGS="$CPPFLAGS"
 smart_lib=
+smart_ldflags=
 smart_lib_dir=
 
 if test "x$smart_try_dir" != "x"; then
   for try in $smart_try_dir; do
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for yubikey_aes_decrypt in -lyubikey in $try" >&5
 $as_echo_n "checking for yubikey_aes_decrypt in -lyubikey in $try... " >&6; }
-    LIBS="-L$try -lyubikey $old_LIBS -Wl,-rpath,$try"
+    LIBS="-lyubikey $old_LIBS"
+    CPPFLAGS="-L$try -Wl,-rpath,$try $old_CPPFLAGS"
     cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
 extern char yubikey_aes_decrypt();
@@ -2873,7 +2958,8 @@ yubikey_aes_decrypt()
 _ACEOF
 if ac_fn_c_try_link "$LINENO"; then :
 
-		 smart_lib="-L$try -lyubikey -Wl,-rpath,$try"
+		 smart_lib="-lyubikey"
+		 smart_ldflags="-L$try -Wl,-rpath,$try"
 		 { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
 $as_echo "yes" >&6; }
 		 break
@@ -2886,6 +2972,7 @@ rm -f core conftest.err conftest.$ac_objext \
     conftest$ac_exeext conftest.$ac_ext
   done
   LIBS="$old_LIBS"
+  CPPFLAGS="$old_CPPFLAGS"
 fi
 
 if test "x$smart_lib" = "x"; then
@@ -2977,7 +3064,8 @@ eval "smart_lib_dir=\"\$smart_lib_dir $DIRS\""
   for try in $smart_lib_dir /usr/local/lib /opt/lib; do
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for yubikey_aes_decrypt in -lyubikey in $try" >&5
 $as_echo_n "checking for yubikey_aes_decrypt in -lyubikey in $try... " >&6; }
-    LIBS="-L$try -lyubikey $old_LIBS -Wl,-rpath,$try"
+    LIBS="-lyubikey $old_LIBS"
+    CPPFLAGS="-L$try -Wl,-rpath,$try $old_CPPFLAGS"
     cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
 extern char yubikey_aes_decrypt();
@@ -2991,7 +3079,8 @@ yubikey_aes_decrypt()
 _ACEOF
 if ac_fn_c_try_link "$LINENO"; then :
 
-		  smart_lib="-L$try -lyubikey -Wl,-rpath,$try"
+		  smart_lib="-lyubikey"
+		  smart_ldflags="-L$try -Wl,-rpath,$try"
 		  { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
 $as_echo "yes" >&6; }
 		  break
@@ -3004,17 +3093,18 @@ rm -f core conftest.err conftest.$ac_objext \
     conftest$ac_exeext conftest.$ac_ext
   done
   LIBS="$old_LIBS"
+  CPPFLAGS="$old_CPPFLAGS"
 fi
 
 if test "x$smart_lib" != "x"; then
   eval "ac_cv_lib_${sm_lib_safe}_${sm_func_safe}=yes"
-  LIBS="$smart_lib $old_LIBS"
-  SMART_LIBS="$smart_lib $SMART_LIBS"
+  LIBS="$smart_ldflags $smart_lib $old_LIBS"
+  SMART_LIBS="$smart_ldflags $smart_lib $SMART_LIBS"
 fi
 
     if test "x$ac_cv_lib_yubikey_yubikey_aes_decrypt" != "xyes"; then
-        have_yubikey="no"
-        { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: yubikey libraries not found. Use --with-yubikey-lib-dir=<path>." >&5
+	have_yubikey="no"
+	{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: yubikey libraries not found. Use --with-yubikey-lib-dir=<path>." >&5
 $as_echo "$as_me: WARNING: yubikey libraries not found. Use --with-yubikey-lib-dir=<path>." >&2;}
     fi
 
@@ -3023,7 +3113,7 @@ $as_echo "$as_me: WARNING: yubikey libraries not found. Use --with-yubikey-lib-d
 $as_echo "#define HAVE_YUBIKEY 1" >>confdefs.h
 
     else
-        { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: silently building without yubikey token decryption support. requires: yubikey" >&5
+	{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: silently building without yubikey token decryption support. requires: yubikey" >&5
 $as_echo "$as_me: WARNING: silently building without yubikey token decryption support. requires: yubikey" >&2;}
     fi
 
@@ -3033,15 +3123,28 @@ $as_echo "$as_me: WARNING: silently building without yubikey token decryption su
 
 
 ac_safe=`echo "ykclient.h" | sed 'y%./+-%__pm%'`
-old_CFLAGS="$CFLAGS"
+old_CPPFLAGS="$CPPFLAGS"
 smart_include=
-smart_include_dir=
+smart_include_dir="/usr/local/include /opt/include"
 
-if test "x$smart_try_dir" != "x"; then
-  for try in $smart_try_dir; do
+_smart_try_dir=
+_smart_include_dir=
+
+for _prefix in $smart_prefix ""; do
+  for _dir in $smart_try_dir; do
+    _smart_try_dir="${_smart_try_dir} ${_dir}/${_prefix}"
+  done
+
+  for _dir in $smart_include_dir; do
+    _smart_include_dir="${_smart_include_dir} ${_dir}/${_prefix}"
+  done
+done
+
+if test "x$_smart_try_dir" != "x"; then
+  for try in $_smart_try_dir; do
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for ykclient.h in $try" >&5
 $as_echo_n "checking for ykclient.h in $try... " >&6; }
-    CFLAGS="$old_CFLAGS -isystem $try"
+    CPPFLAGS="-isystem $try $old_CPPFLAGS"
     cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
 
@@ -3070,16 +3173,18 @@ $as_echo "no" >&6; }
 fi
 rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
   done
-  CFLAGS="$old_CFLAGS"
+  CPPFLAGS="$old_CPPFLAGS"
 fi
 
 if test "x$smart_include" = "x"; then
-  { $as_echo "$as_me:${as_lineno-$LINENO}: checking for ykclient.h" >&5
-$as_echo_n "checking for ykclient.h... " >&6; }
-  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+  for _prefix in $smart_prefix; do
+    { $as_echo "$as_me:${as_lineno-$LINENO}: checking for ${_prefix}/ykclient.h" >&5
+$as_echo_n "checking for ${_prefix}/ykclient.h... " >&6; }
+
+    cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
 
-		  #include <ykclient.h>
+		    #include <ykclient.h>
 int
 main ()
 {
@@ -3090,15 +3195,49 @@ int a = 1;
 _ACEOF
 if ac_fn_c_try_compile "$LINENO"; then :
 
-		   smart_include=" "
-		   { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+		     smart_include="-isystem ${_prefix}/"
+		     { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
 $as_echo "yes" >&6; }
-		   break
+		     break
 
 else
 
-		   smart_include=
-		   { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+		     smart_include=
+		     { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
+  done
+fi
+
+if test "x$smart_include" = "x"; then
+    { $as_echo "$as_me:${as_lineno-$LINENO}: checking for ykclient.h" >&5
+$as_echo_n "checking for ykclient.h... " >&6; }
+
+    cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+		    #include <ykclient.h>
+int
+main ()
+{
+int a = 1;
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"; then :
+
+		     smart_include=" "
+		     { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+$as_echo "yes" >&6; }
+		     break
+
+else
+
+		     smart_include=
+		     { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
 $as_echo "no" >&6; }
 
 fi
@@ -3106,6 +3245,36 @@ rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
 fi
 
 if test "x$smart_include" = "x"; then
+
+  for prefix in $smart_prefix; do
+
+
+if test "x$LOCATE" != "x"; then
+        DIRS=
+  file="${_prefix}/${1}"
+
+  for x in `${LOCATE} $file 2>/dev/null`; do
+                                        base=`echo $x | sed "s%/${file}%%"`
+    if test "x$x" = "x$base"; then
+      continue;
+    fi
+
+    dir=`${DIRNAME} $x 2>/dev/null`
+                exclude=`echo ${dir} | ${GREP} /home`
+    if test "x$exclude" != "x"; then
+      continue
+    fi
+
+                    already=`echo \$_smart_include_dir ${DIRS} | ${GREP} ${dir}`
+    if test "x$already" = "x"; then
+      DIRS="$DIRS $dir"
+    fi
+  done
+fi
+
+eval "_smart_include_dir=\"\$_smart_include_dir $DIRS\""
+
+  done
 
 
 if test "x$LOCATE" != "x"; then
@@ -3124,19 +3293,20 @@ if test "x$LOCATE" != "x"; then
       continue
     fi
 
-                    already=`echo \$smart_include_dir ${DIRS} | ${GREP} ${dir}`
+                    already=`echo \$_smart_include_dir ${DIRS} | ${GREP} ${dir}`
     if test "x$already" = "x"; then
       DIRS="$DIRS $dir"
     fi
   done
 fi
 
-eval "smart_include_dir=\"\$smart_include_dir $DIRS\""
+eval "_smart_include_dir=\"\$_smart_include_dir $DIRS\""
 
-  for try in $smart_include_dir /usr/local/include /opt/include; do
+
+  for try in $_smart_include_dir; do
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for ykclient.h in $try" >&5
 $as_echo_n "checking for ykclient.h in $try... " >&6; }
-    CFLAGS="$old_CFLAGS -isystem $try"
+    CPPFLAGS="-isystem $try $old_CPPFLAGS"
     cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
 
@@ -3165,18 +3335,20 @@ $as_echo "no" >&6; }
 fi
 rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
   done
-  CFLAGS="$old_CFLAGS"
+  CPPFLAGS="$old_CPPFLAGS"
 fi
 
 if test "x$smart_include" != "x"; then
   eval "ac_cv_header_$ac_safe=yes"
-  CFLAGS="$old_CFLAGS $smart_include"
-  SMART_CFLAGS="$SMART_CFLAGS $smart_include"
+  CPPFLAGS="$smart_include $old_CPPFLAGS"
+  SMART_CPPFLAGS="$smart_include $SMART_CPPFLAGS"
 fi
 
+smart_prefix=
+
     if test "x$ac_cv_header_ykclient_h" != "xyes"; then
-        have_ykclient="no"
-        { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: ykclient headers not found. Use --with-ykclient-include-dir=<path>." >&5
+	have_ykclient="no"
+	{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: ykclient headers not found. Use --with-ykclient-include-dir=<path>." >&5
 $as_echo "$as_me: WARNING: ykclient headers not found. Use --with-ykclient-include-dir=<path>." >&2;}
     fi
 
@@ -3188,14 +3360,17 @@ sm_lib_safe=`echo "ykclient" | sed 'y%./+-%__p_%'`
 sm_func_safe=`echo "ykclient_request_process" | sed 'y%./+-%__p_%'`
 
 old_LIBS="$LIBS"
+old_CPPFLAGS="$CPPFLAGS"
 smart_lib=
+smart_ldflags=
 smart_lib_dir=
 
 if test "x$smart_try_dir" != "x"; then
   for try in $smart_try_dir; do
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for ykclient_request_process in -lykclient in $try" >&5
 $as_echo_n "checking for ykclient_request_process in -lykclient in $try... " >&6; }
-    LIBS="-L$try -lykclient $old_LIBS -Wl,-rpath,$try"
+    LIBS="-lykclient $old_LIBS"
+    CPPFLAGS="-L$try -Wl,-rpath,$try $old_CPPFLAGS"
     cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
 extern char ykclient_request_process();
@@ -3209,7 +3384,8 @@ ykclient_request_process()
 _ACEOF
 if ac_fn_c_try_link "$LINENO"; then :
 
-		 smart_lib="-L$try -lykclient -Wl,-rpath,$try"
+		 smart_lib="-lykclient"
+		 smart_ldflags="-L$try -Wl,-rpath,$try"
 		 { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
 $as_echo "yes" >&6; }
 		 break
@@ -3222,6 +3398,7 @@ rm -f core conftest.err conftest.$ac_objext \
     conftest$ac_exeext conftest.$ac_ext
   done
   LIBS="$old_LIBS"
+  CPPFLAGS="$old_CPPFLAGS"
 fi
 
 if test "x$smart_lib" = "x"; then
@@ -3313,7 +3490,8 @@ eval "smart_lib_dir=\"\$smart_lib_dir $DIRS\""
   for try in $smart_lib_dir /usr/local/lib /opt/lib; do
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for ykclient_request_process in -lykclient in $try" >&5
 $as_echo_n "checking for ykclient_request_process in -lykclient in $try... " >&6; }
-    LIBS="-L$try -lykclient $old_LIBS -Wl,-rpath,$try"
+    LIBS="-lykclient $old_LIBS"
+    CPPFLAGS="-L$try -Wl,-rpath,$try $old_CPPFLAGS"
     cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
 extern char ykclient_request_process();
@@ -3327,7 +3505,8 @@ ykclient_request_process()
 _ACEOF
 if ac_fn_c_try_link "$LINENO"; then :
 
-		  smart_lib="-L$try -lykclient -Wl,-rpath,$try"
+		  smart_lib="-lykclient"
+		  smart_ldflags="-L$try -Wl,-rpath,$try"
 		  { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
 $as_echo "yes" >&6; }
 		  break
@@ -3340,30 +3519,34 @@ rm -f core conftest.err conftest.$ac_objext \
     conftest$ac_exeext conftest.$ac_ext
   done
   LIBS="$old_LIBS"
+  CPPFLAGS="$old_CPPFLAGS"
 fi
 
 if test "x$smart_lib" != "x"; then
   eval "ac_cv_lib_${sm_lib_safe}_${sm_func_safe}=yes"
-  LIBS="$smart_lib $old_LIBS"
-  SMART_LIBS="$smart_lib $SMART_LIBS"
+  LIBS="$smart_ldflags $smart_lib $old_LIBS"
+  SMART_LIBS="$smart_ldflags $smart_lib $SMART_LIBS"
 fi
 
     if test "x$ac_cv_lib_ykclient_ykclient_request_process" != "xyes"; then
-        have_ykclient="no"
+	have_ykclient="no"
 
 
 sm_lib_safe=`echo "ykclient" | sed 'y%./+-%__p_%'`
 sm_func_safe=`echo "ykclient_request" | sed 'y%./+-%__p_%'`
 
 old_LIBS="$LIBS"
+old_CPPFLAGS="$CPPFLAGS"
 smart_lib=
+smart_ldflags=
 smart_lib_dir=
 
 if test "x$smart_try_dir" != "x"; then
   for try in $smart_try_dir; do
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for ykclient_request in -lykclient in $try" >&5
 $as_echo_n "checking for ykclient_request in -lykclient in $try... " >&6; }
-    LIBS="-L$try -lykclient $old_LIBS -Wl,-rpath,$try"
+    LIBS="-lykclient $old_LIBS"
+    CPPFLAGS="-L$try -Wl,-rpath,$try $old_CPPFLAGS"
     cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
 extern char ykclient_request();
@@ -3377,7 +3560,8 @@ ykclient_request()
 _ACEOF
 if ac_fn_c_try_link "$LINENO"; then :
 
-		 smart_lib="-L$try -lykclient -Wl,-rpath,$try"
+		 smart_lib="-lykclient"
+		 smart_ldflags="-L$try -Wl,-rpath,$try"
 		 { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
 $as_echo "yes" >&6; }
 		 break
@@ -3390,6 +3574,7 @@ rm -f core conftest.err conftest.$ac_objext \
     conftest$ac_exeext conftest.$ac_ext
   done
   LIBS="$old_LIBS"
+  CPPFLAGS="$old_CPPFLAGS"
 fi
 
 if test "x$smart_lib" = "x"; then
@@ -3481,7 +3666,8 @@ eval "smart_lib_dir=\"\$smart_lib_dir $DIRS\""
   for try in $smart_lib_dir /usr/local/lib /opt/lib; do
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for ykclient_request in -lykclient in $try" >&5
 $as_echo_n "checking for ykclient_request in -lykclient in $try... " >&6; }
-    LIBS="-L$try -lykclient $old_LIBS -Wl,-rpath,$try"
+    LIBS="-lykclient $old_LIBS"
+    CPPFLAGS="-L$try -Wl,-rpath,$try $old_CPPFLAGS"
     cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
 extern char ykclient_request();
@@ -3495,7 +3681,8 @@ ykclient_request()
 _ACEOF
 if ac_fn_c_try_link "$LINENO"; then :
 
-		  smart_lib="-L$try -lykclient -Wl,-rpath,$try"
+		  smart_lib="-lykclient"
+		  smart_ldflags="-L$try -Wl,-rpath,$try"
 		  { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
 $as_echo "yes" >&6; }
 		  break
@@ -3508,21 +3695,22 @@ rm -f core conftest.err conftest.$ac_objext \
     conftest$ac_exeext conftest.$ac_ext
   done
   LIBS="$old_LIBS"
+  CPPFLAGS="$old_CPPFLAGS"
 fi
 
 if test "x$smart_lib" != "x"; then
   eval "ac_cv_lib_${sm_lib_safe}_${sm_func_safe}=yes"
-  LIBS="$smart_lib $old_LIBS"
-  SMART_LIBS="$smart_lib $SMART_LIBS"
+  LIBS="$smart_ldflags $smart_lib $old_LIBS"
+  SMART_LIBS="$smart_ldflags $smart_lib $SMART_LIBS"
 fi
 
-        if test "x$ac_cv_lib_ykclient_ykclient_request" == "xyes"; then
-            { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: libykclient missing ykclient_request_process. A later version of libykclient is required." >&5
+	if test "x$ac_cv_lib_ykclient_ykclient_request" = "xyes"; then
+	    { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: libykclient missing ykclient_request_process. A later version of libykclient is required." >&5
 $as_echo "$as_me: WARNING: libykclient missing ykclient_request_process. A later version of libykclient is required." >&2;}
-        else
-            { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: ykclient libraries not found. Use --with-ykclient-lib-dir=<path>." >&5
+	else
+	    { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: ykclient libraries not found. Use --with-ykclient-lib-dir=<path>." >&5
 $as_echo "$as_me: WARNING: ykclient libraries not found. Use --with-ykclient-lib-dir=<path>." >&2;}
-        fi
+	fi
     fi
 
     if test "x$have_ykclient" = "xyes"; then
@@ -3542,18 +3730,18 @@ fi
 
 if test x"$fail" != x""; then
     if test x"${enable_strict_dependencies}" = x"yes"; then
-        as_fn_error $? "set --without-rlm_yubikey to disable it explicitly." "$LINENO" 5
+	as_fn_error $? "set --without-rlm_yubikey to disable it explicitly." "$LINENO" 5
     else
-        { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: silently not building rlm_yubikey." >&5
+	{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: silently not building rlm_yubikey." >&5
 $as_echo "$as_me: WARNING: silently not building rlm_yubikey." >&2;}
-        { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: FAILURE: rlm_yubikey requires: $fail." >&5
+	{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: FAILURE: rlm_yubikey requires: $fail." >&5
 $as_echo "$as_me: WARNING: FAILURE: rlm_yubikey requires: $fail." >&2;};
-        targetname=""
+	targetname=""
     fi
 fi
 
-mod_ldflags="${SMART_LIBS}"
-mod_cflags="${SMART_CFLAGS}"
+mod_ldflags="$SMART_LIBS"
+mod_cflags="$SMART_CPPFLAGS"
 
 
 

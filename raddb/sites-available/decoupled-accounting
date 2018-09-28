@@ -42,6 +42,7 @@ server read-detail.example.com {
 		type = detail
 		filename = "${radacctdir}/detail.example.com/detail-*:*"
 		load_factor = 10
+		track = yes
 	}
 
 	#  All packets read from the detail file are processed through
@@ -117,12 +118,6 @@ accounting {
 	#
 	#  See "Accounting queries" in sql.conf
 #	sql
-
-	#
-	#  Instead of sending the query to the SQL server,
-	#  write it into a log file.
-	#
-#	sql_log
 
 	#  Cisco VoIP specific bulk accounting
 #	pgsql-voip

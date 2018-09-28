@@ -28,6 +28,7 @@
 
 #include <freeradius-devel/radiusd.h>
 #include <freeradius-devel/rad_assert.h>
+
 #include "ike_conf.h"
 #include "eap.h"
 #include "logging_impl.h"
@@ -50,8 +51,6 @@ enum {
 
 };
 
-
-
 static struct config_transform config_transforms[] =
 {
 	 {"integrity",	IKEv2_TRT_INTEGRITY_ALGORITHM,		OPT_INTEGRITY},
@@ -61,8 +60,6 @@ static struct config_transform config_transforms[] =
 	 {NULL, 0, 0} /* end of list */
 
 };
-
-
 
 /*
  *	Copied from rlm_files, and NOT under the same copyright
@@ -85,11 +82,11 @@ int getusersfile(TALLOC_CTX *ctx, char const *filename, PAIR_LIST **pair_list, c
 	 *	Walk through the 'users' file list, if we're debugging,
 	 *	or if we're in compat_mode.
 	 */
-	if ((debug_flag) ||
+	if ((rad_debug_lvl) ||
 		(strcmp(compat_mode_str, "cistron") == 0)) {
 		PAIR_LIST *entry;
 		VALUE_PAIR *vp;
-		int compat_mode = false;
+		bool compat_mode = false;
 
 		if (strcmp(compat_mode_str, "cistron") == 0) {
 			compat_mode = true;
@@ -127,7 +124,7 @@ int getusersfile(TALLOC_CTX *ctx, char const *filename, PAIR_LIST **pair_list, c
 				if ((vp->da->vendor!= 0) ||
 						(vp->da->attr < 0x100)) {
 					if (!compat_mode) {
-						WDEBUG("[%s]:%d Changing '%s =' to '%s =='\n\tfor comparing RADIUS attribute in check item list for user %s",
+						WARN("[%s]:%d Changing '%s =' to '%s =='\n\tfor comparing RADIUS attribute in check item list for user %s",
 								filename, entry->lineno,
 								vp->da->name, vp->da->name,
 								entry->name);
@@ -187,9 +184,8 @@ int getusersfile(TALLOC_CTX *ctx, char const *filename, PAIR_LIST **pair_list, c
 				 *	good warning message.
 				 */
 				 if ((vp->da->vendor == 0) &&
-					(vp->da->attr > 0xff) &&
-					(vp->da->attr > 1000)) {
-					WDEBUG("[%s]:%d Check item \"%s\"\n"
+				     (vp->da->attr > 1000)) {
+					WARN("[%s]:%d Check item \"%s\"\n"
 					       "\tfound in reply item list for user \"%s\".\n"
 					       "\tThis attribute MUST go on the first line"
 					       " with the other check items",
@@ -315,7 +311,7 @@ void rad_update_shared_seclist(struct sharedSecList **list, char const *id, VALU
 	}
 
 	//idtype
-	vp = pairfind(items, RAD_EAP_IKEV2_IDTYPE, 0, TAG_ANY);
+	vp = fr_pair_find_by_num(items, RAD_EAP_IKEV2_IDTYPE, 0, TAG_ANY);
 	if (!vp) {
 		DEBUG(IKEv2_LOG_PREFIX "[%s] -- Id type not set", id);
 	} else {
@@ -326,16 +322,16 @@ void rad_update_shared_seclist(struct sharedSecList **list, char const *id, VALU
 	}
 
 	//secret
-	vp = pairfind(items, RAD_EAP_IKEV2_SECRET, 0, TAG_ANY);
-	if (!vp || !vp->length) {
+	vp = fr_pair_find_by_num(items, RAD_EAP_IKEV2_SECRET, 0, TAG_ANY);
+	if (!vp || !vp->vp_length) {
 		DEBUG(IKEv2_LOG_PREFIX "[%s] -- Secret not set", id);
 	} else {
-		secret = vp->vp_strvalue;
+		memcpy(&secret, &vp->vp_strvalue, sizeof(secret));
 	}
 
 	//authtype
-	vp = pairfind(items, RAD_EAP_IKEV2_AUTHTYPE, 0, TAG_ANY);
-	if (vp && vp->length) {
+	vp = fr_pair_find_by_num(items, RAD_EAP_IKEV2_AUTHTYPE, 0, TAG_ANY);
+	if (vp && vp->vp_length) {
 		authtype = AuthtypeFromName(vp->vp_strvalue);
 
 		if (authtype == -1) {

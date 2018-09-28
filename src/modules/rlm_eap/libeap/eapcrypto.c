@@ -36,7 +36,7 @@ RCSID("$Id$")
 
 void eapsim_calculate_keys(struct eapsim_keys *ek)
 {
-	fr_SHA1_CTX context;
+	fr_sha1_ctx context;
 	uint8_t fk[160];
 	unsigned char buf[256];
 	unsigned char *p;
@@ -44,9 +44,9 @@ void eapsim_calculate_keys(struct eapsim_keys *ek)
 
 	p = buf;
 	memcpy(p, ek->identity, ek->identitylen);   p = p+ek->identitylen;
-	memcpy(p, ek->Kc[0], EAPSIM_Kc_SIZE);       p = p+EAPSIM_Kc_SIZE;
-	memcpy(p, ek->Kc[1], EAPSIM_Kc_SIZE);       p = p+EAPSIM_Kc_SIZE;
-	memcpy(p, ek->Kc[2], EAPSIM_Kc_SIZE);       p = p+EAPSIM_Kc_SIZE;
+	memcpy(p, ek->Kc[0], EAPSIM_KC_SIZE);       p = p+EAPSIM_KC_SIZE;
+	memcpy(p, ek->Kc[1], EAPSIM_KC_SIZE);       p = p+EAPSIM_KC_SIZE;
+	memcpy(p, ek->Kc[2], EAPSIM_KC_SIZE);       p = p+EAPSIM_KC_SIZE;
 	memcpy(p, ek->nonce_mt, sizeof(ek->nonce_mt)); p=p+sizeof(ek->nonce_mt);
 	memcpy(p, ek->versionlist, ek->versionlistlen);p=p+ek->versionlistlen;
 	memcpy(p, ek->versionselect, sizeof(ek->versionselect)); p=p+sizeof(ek->versionselect);
@@ -82,9 +82,9 @@ void eapsim_calculate_keys(struct eapsim_keys *ek)
 
 
 	/* do the master key first */
-	fr_SHA1Init(&context);
-	fr_SHA1Update(&context, buf, blen);
-	fr_SHA1Final(ek->master_key, &context);
+	fr_sha1_init(&context);
+	fr_sha1_update(&context, buf, blen);
+	fr_sha1_final(ek->master_key, &context);
 
 	/*
 	 * now use the PRF to expand it, generated K_aut, K_encr,
@@ -104,10 +104,8 @@ void eapsim_dump_mk(struct eapsim_keys *ek)
 {
 	unsigned int i, j, k;
 
-	j=0; k=0;
-
 	printf("Input was: \n");
-	printf("   identity: (len=%d)", ek->identitylen);
+	printf("   identity: (len=%u)", ek->identitylen);
 	for (i = 0; i < ek->identitylen; i++) {
 		printf("%02x", ek->identity[i]);
 	}
@@ -118,22 +116,22 @@ void eapsim_dump_mk(struct eapsim_keys *ek)
 	}
 
 	for (k = 0; k<3; k++) {
-		printf("\n   rand%d: ", k);
+		printf("\n   rand%u: ", k);
 		for (i = 0; i < EAPSIM_RAND_SIZE; i++) {
 			printf("%02x", ek->rand[k][i]);
 		}
 	}
 
 	for (k = 0; k<3; k++) {
-		printf("\n   sres%d: ", k);
+		printf("\n   sres%u: ", k);
 		for (i = 0; i < EAPSIM_SRES_SIZE; i++) {
 			printf("%02x", ek->sres[k][i]);
 		}
 	}
 
 	for (k = 0; k<3; k++) {
-		printf("\n   Kc%d: ", k);
-		for (i = 0; i < EAPSIM_Kc_SIZE; i++) {
+		printf("\n   Kc%u: ", k);
+		for (i = 0; i < EAPSIM_KC_SIZE; i++) {
 			printf("%02x", ek->Kc[k][i]);
 		}
 	}
@@ -150,7 +148,7 @@ void eapsim_dump_mk(struct eapsim_keys *ek)
 	printf("\n\nOutput\n");
 
 	printf("mk:	 ");
-	j=0; k=0;
+	j=0;
 	for (i = 0; i < sizeof(ek->master_key); i++) {
 		if(j==4) {
 			printf("_");
@@ -162,7 +160,7 @@ void eapsim_dump_mk(struct eapsim_keys *ek)
 	}
 
 	printf("\nK_aut:      ");
-	j=0; k=0;
+	j=0;
 	for (i = 0; i < sizeof(ek->K_aut); i++) {
 		if(j==4) {
 			printf("_");
@@ -174,7 +172,7 @@ void eapsim_dump_mk(struct eapsim_keys *ek)
 	}
 
 	printf("\nK_encr:     ");
-	j=0; k=0;
+	j=0;
 	for (i = 0; i < sizeof(ek->K_encr); i++) {
 		if(j==4) {
 			printf("_");

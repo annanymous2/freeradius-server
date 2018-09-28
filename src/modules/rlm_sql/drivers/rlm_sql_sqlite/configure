@@ -1432,6 +1432,127 @@ fi
   as_fn_set_status $ac_retval
 
 } # ac_fn_c_try_link
+
+# ac_fn_c_check_func LINENO FUNC VAR
+# ----------------------------------
+# Tests whether FUNC exists, setting the cache variable VAR accordingly
+ac_fn_c_check_func ()
+{
+  as_lineno=${as_lineno-"$1"} as_lineno_stack=as_lineno_stack=$as_lineno_stack
+  { $as_echo "$as_me:${as_lineno-$LINENO}: checking for $2" >&5
+$as_echo_n "checking for $2... " >&6; }
+if eval \${$3+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+/* Define $2 to an innocuous variant, in case <limits.h> declares $2.
+   For example, HP-UX 11i <limits.h> declares gettimeofday.  */
+#define $2 innocuous_$2
+
+/* System header to define __stub macros and hopefully few prototypes,
+    which can conflict with char $2 (); below.
+    Prefer <limits.h> to <assert.h> if __STDC__ is defined, since
+    <limits.h> exists even on freestanding compilers.  */
+
+#ifdef __STDC__
+# include <limits.h>
+#else
+# include <assert.h>
+#endif
+
+#undef $2
+
+/* Override any GCC internal prototype to avoid an error.
+   Use char because int might match the return type of a GCC
+   builtin and then its argument prototype would still apply.  */
+#ifdef __cplusplus
+extern "C"
+#endif
+char $2 ();
+/* The GNU C library defines this for functions which it implements
+    to always fail with ENOSYS.  Some functions are actually named
+    something starting with __ and the normal name is an alias.  */
+#if defined __stub_$2 || defined __stub___$2
+choke me
+#endif
+
+int
+main ()
+{
+return $2 ();
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_link "$LINENO"; then :
+  eval "$3=yes"
+else
+  eval "$3=no"
+fi
+rm -f core conftest.err conftest.$ac_objext \
+    conftest$ac_exeext conftest.$ac_ext
+fi
+eval ac_res=\$$3
+	       { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
+$as_echo "$ac_res" >&6; }
+  eval $as_lineno_stack; ${as_lineno_stack:+:} unset as_lineno
+
+} # ac_fn_c_check_func
+
+# ac_fn_c_check_type LINENO TYPE VAR INCLUDES
+# -------------------------------------------
+# Tests whether TYPE exists after having included INCLUDES, setting cache
+# variable VAR accordingly.
+ac_fn_c_check_type ()
+{
+  as_lineno=${as_lineno-"$1"} as_lineno_stack=as_lineno_stack=$as_lineno_stack
+  { $as_echo "$as_me:${as_lineno-$LINENO}: checking for $2" >&5
+$as_echo_n "checking for $2... " >&6; }
+if eval \${$3+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  eval "$3=no"
+  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+$4
+int
+main ()
+{
+if (sizeof ($2))
+	 return 0;
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"; then :
+  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+$4
+int
+main ()
+{
+if (sizeof (($2)))
+	    return 0;
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"; then :
+
+else
+  eval "$3=yes"
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
+fi
+eval ac_res=\$$3
+	       { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
+$as_echo "$ac_res" >&6; }
+  eval $as_lineno_stack; ${as_lineno_stack:+:} unset as_lineno
+
+} # ac_fn_c_check_type
 cat >config.log <<_ACEOF
 This file contains any messages produced by compilers while
 running configure, to aid debugging if configure makes a mistake.
@@ -2644,14 +2765,17 @@ sm_lib_safe=`echo "sqlite3" | sed 'y%./+-%__p_%'`
 sm_func_safe=`echo "sqlite3_open" | sed 'y%./+-%__p_%'`
 
 old_LIBS="$LIBS"
+old_CPPFLAGS="$CPPFLAGS"
 smart_lib=
+smart_ldflags=
 smart_lib_dir=
 
 if test "x$smart_try_dir" != "x"; then
   for try in $smart_try_dir; do
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for sqlite3_open in -lsqlite3 in $try" >&5
 $as_echo_n "checking for sqlite3_open in -lsqlite3 in $try... " >&6; }
-    LIBS="-L$try -lsqlite3 $old_LIBS -Wl,-rpath,$try"
+    LIBS="-lsqlite3 $old_LIBS"
+    CPPFLAGS="-L$try -Wl,-rpath,$try $old_CPPFLAGS"
     cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
 extern char sqlite3_open();
@@ -2665,7 +2789,8 @@ sqlite3_open()
 _ACEOF
 if ac_fn_c_try_link "$LINENO"; then :
 
-		 smart_lib="-L$try -lsqlite3 -Wl,-rpath,$try"
+		 smart_lib="-lsqlite3"
+		 smart_ldflags="-L$try -Wl,-rpath,$try"
 		 { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
 $as_echo "yes" >&6; }
 		 break
@@ -2678,6 +2803,7 @@ rm -f core conftest.err conftest.$ac_objext \
     conftest$ac_exeext conftest.$ac_ext
   done
   LIBS="$old_LIBS"
+  CPPFLAGS="$old_CPPFLAGS"
 fi
 
 if test "x$smart_lib" = "x"; then
@@ -2769,7 +2895,8 @@ eval "smart_lib_dir=\"\$smart_lib_dir $DIRS\""
   for try in $smart_lib_dir /usr/local/lib /opt/lib; do
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for sqlite3_open in -lsqlite3 in $try" >&5
 $as_echo_n "checking for sqlite3_open in -lsqlite3 in $try... " >&6; }
-    LIBS="-L$try -lsqlite3 $old_LIBS -Wl,-rpath,$try"
+    LIBS="-lsqlite3 $old_LIBS"
+    CPPFLAGS="-L$try -Wl,-rpath,$try $old_CPPFLAGS"
     cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
 extern char sqlite3_open();
@@ -2783,7 +2910,8 @@ sqlite3_open()
 _ACEOF
 if ac_fn_c_try_link "$LINENO"; then :
 
-		  smart_lib="-L$try -lsqlite3 -Wl,-rpath,$try"
+		  smart_lib="-lsqlite3"
+		  smart_ldflags="-L$try -Wl,-rpath,$try"
 		  { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
 $as_echo "yes" >&6; }
 		  break
@@ -2796,192 +2924,40 @@ rm -f core conftest.err conftest.$ac_objext \
     conftest$ac_exeext conftest.$ac_ext
   done
   LIBS="$old_LIBS"
+  CPPFLAGS="$old_CPPFLAGS"
 fi
 
 if test "x$smart_lib" != "x"; then
   eval "ac_cv_lib_${sm_lib_safe}_${sm_func_safe}=yes"
-  LIBS="$smart_lib $old_LIBS"
-  SMART_LIBS="$smart_lib $SMART_LIBS"
+  LIBS="$smart_ldflags $smart_lib $old_LIBS"
+  SMART_LIBS="$smart_ldflags $smart_lib $SMART_LIBS"
 fi
 
+        LDFLAGS="${LDFLAGS} ${SMART_LIBS}"
     if test "x$ac_cv_lib_sqlite3_sqlite3_open" != "xyes"
     then
-        { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: Sqlite libraries not found. Use --with-sqlite-lib-dir=<path>." >&5
+	{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: Sqlite libraries not found. Use --with-sqlite-lib-dir=<path>." >&5
 $as_echo "$as_me: WARNING: Sqlite libraries not found. Use --with-sqlite-lib-dir=<path>." >&2;}
-        fail="$fail libsqlite3"
+	fail="$fail libsqlite3"
     else
+		for ac_func in \
+		sqlite3_prepare_v2 \
+		sqlite3_open_v2 \
+		sqlite3_create_function_v2 \
+		sqlite3_errstr \
+		sqlite3_extended_result_codes \
 
-
-sm_lib_safe=`echo "sqlite3" | sed 'y%./+-%__p_%'`
-sm_func_safe=`echo "sqlite3_open_v2" | sed 'y%./+-%__p_%'`
-
-old_LIBS="$LIBS"
-smart_lib=
-smart_lib_dir=
-
-if test "x$smart_try_dir" != "x"; then
-  for try in $smart_try_dir; do
-    { $as_echo "$as_me:${as_lineno-$LINENO}: checking for sqlite3_open_v2 in -lsqlite3 in $try" >&5
-$as_echo_n "checking for sqlite3_open_v2 in -lsqlite3 in $try... " >&6; }
-    LIBS="-L$try -lsqlite3 $old_LIBS -Wl,-rpath,$try"
-    cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-extern char sqlite3_open_v2();
-int
-main ()
-{
-sqlite3_open_v2()
-  ;
-  return 0;
-}
+do :
+  as_ac_var=`$as_echo "ac_cv_func_$ac_func" | $as_tr_sh`
+ac_fn_c_check_func "$LINENO" "$ac_func" "$as_ac_var"
+if eval test \"x\$"$as_ac_var"\" = x"yes"; then :
+  cat >>confdefs.h <<_ACEOF
+#define `$as_echo "HAVE_$ac_func" | $as_tr_cpp` 1
 _ACEOF
-if ac_fn_c_try_link "$LINENO"; then :
 
-		 smart_lib="-L$try -lsqlite3 -Wl,-rpath,$try"
-		 { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
-$as_echo "yes" >&6; }
-		 break
-
-else
-  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
-$as_echo "no" >&6; }
 fi
-rm -f core conftest.err conftest.$ac_objext \
-    conftest$ac_exeext conftest.$ac_ext
-  done
-  LIBS="$old_LIBS"
-fi
+done
 
-if test "x$smart_lib" = "x"; then
-  { $as_echo "$as_me:${as_lineno-$LINENO}: checking for sqlite3_open_v2 in -lsqlite3" >&5
-$as_echo_n "checking for sqlite3_open_v2 in -lsqlite3... " >&6; }
-  LIBS="-lsqlite3 $old_LIBS"
-  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-extern char sqlite3_open_v2();
-int
-main ()
-{
-sqlite3_open_v2()
-  ;
-  return 0;
-}
-_ACEOF
-if ac_fn_c_try_link "$LINENO"; then :
-
-	        smart_lib="-lsqlite3"
-	        { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
-$as_echo "yes" >&6; }
-
-else
-  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
-$as_echo "no" >&6; }
-fi
-rm -f core conftest.err conftest.$ac_objext \
-    conftest$ac_exeext conftest.$ac_ext
-  LIBS="$old_LIBS"
-fi
-
-if test "x$smart_lib" = "x"; then
-
-
-if test "x$LOCATE" != "x"; then
-        DIRS=
-  file=libsqlite3${libltdl_cv_shlibext}
-
-  for x in `${LOCATE} $file 2>/dev/null`; do
-                                        base=`echo $x | sed "s%/${file}%%"`
-    if test "x$x" = "x$base"; then
-      continue;
-    fi
-
-    dir=`${DIRNAME} $x 2>/dev/null`
-                exclude=`echo ${dir} | ${GREP} /home`
-    if test "x$exclude" != "x"; then
-      continue
-    fi
-
-                    already=`echo \$smart_lib_dir ${DIRS} | ${GREP} ${dir}`
-    if test "x$already" = "x"; then
-      DIRS="$DIRS $dir"
-    fi
-  done
-fi
-
-eval "smart_lib_dir=\"\$smart_lib_dir $DIRS\""
-
-
-
-if test "x$LOCATE" != "x"; then
-        DIRS=
-  file=libsqlite3.a
-
-  for x in `${LOCATE} $file 2>/dev/null`; do
-                                        base=`echo $x | sed "s%/${file}%%"`
-    if test "x$x" = "x$base"; then
-      continue;
-    fi
-
-    dir=`${DIRNAME} $x 2>/dev/null`
-                exclude=`echo ${dir} | ${GREP} /home`
-    if test "x$exclude" != "x"; then
-      continue
-    fi
-
-                    already=`echo \$smart_lib_dir ${DIRS} | ${GREP} ${dir}`
-    if test "x$already" = "x"; then
-      DIRS="$DIRS $dir"
-    fi
-  done
-fi
-
-eval "smart_lib_dir=\"\$smart_lib_dir $DIRS\""
-
-
-  for try in $smart_lib_dir /usr/local/lib /opt/lib; do
-    { $as_echo "$as_me:${as_lineno-$LINENO}: checking for sqlite3_open_v2 in -lsqlite3 in $try" >&5
-$as_echo_n "checking for sqlite3_open_v2 in -lsqlite3 in $try... " >&6; }
-    LIBS="-L$try -lsqlite3 $old_LIBS -Wl,-rpath,$try"
-    cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-extern char sqlite3_open_v2();
-int
-main ()
-{
-sqlite3_open_v2()
-  ;
-  return 0;
-}
-_ACEOF
-if ac_fn_c_try_link "$LINENO"; then :
-
-		  smart_lib="-L$try -lsqlite3 -Wl,-rpath,$try"
-		  { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
-$as_echo "yes" >&6; }
-		  break
-
-else
-  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
-$as_echo "no" >&6; }
-fi
-rm -f core conftest.err conftest.$ac_objext \
-    conftest$ac_exeext conftest.$ac_ext
-  done
-  LIBS="$old_LIBS"
-fi
-
-if test "x$smart_lib" != "x"; then
-  eval "ac_cv_lib_${sm_lib_safe}_${sm_func_safe}=yes"
-  LIBS="$smart_lib $old_LIBS"
-  SMART_LIBS="$smart_lib $SMART_LIBS"
-fi
-
-        if test "x$ac_cv_lib_sqlite3_sqlite3_open_v2" == "xyes"
-	then
-
-$as_echo "#define HAVE_SQLITE_V2_API 1" >>confdefs.h
-
-        fi
     fi
 
 
@@ -2989,15 +2965,28 @@ $as_echo "#define HAVE_SQLITE_V2_API 1" >>confdefs.h
 
 
 ac_safe=`echo "sqlite3.h" | sed 'y%./+-%__pm%'`
-old_CFLAGS="$CFLAGS"
+old_CPPFLAGS="$CPPFLAGS"
 smart_include=
-smart_include_dir=
+smart_include_dir="/usr/local/include /opt/include"
 
-if test "x$smart_try_dir" != "x"; then
-  for try in $smart_try_dir; do
+_smart_try_dir=
+_smart_include_dir=
+
+for _prefix in $smart_prefix ""; do
+  for _dir in $smart_try_dir; do
+    _smart_try_dir="${_smart_try_dir} ${_dir}/${_prefix}"
+  done
+
+  for _dir in $smart_include_dir; do
+    _smart_include_dir="${_smart_include_dir} ${_dir}/${_prefix}"
+  done
+done
+
+if test "x$_smart_try_dir" != "x"; then
+  for try in $_smart_try_dir; do
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for sqlite3.h in $try" >&5
 $as_echo_n "checking for sqlite3.h in $try... " >&6; }
-    CFLAGS="$old_CFLAGS -isystem $try"
+    CPPFLAGS="-isystem $try $old_CPPFLAGS"
     cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
 
@@ -3026,16 +3015,18 @@ $as_echo "no" >&6; }
 fi
 rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
   done
-  CFLAGS="$old_CFLAGS"
+  CPPFLAGS="$old_CPPFLAGS"
 fi
 
 if test "x$smart_include" = "x"; then
-  { $as_echo "$as_me:${as_lineno-$LINENO}: checking for sqlite3.h" >&5
-$as_echo_n "checking for sqlite3.h... " >&6; }
-  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+  for _prefix in $smart_prefix; do
+    { $as_echo "$as_me:${as_lineno-$LINENO}: checking for ${_prefix}/sqlite3.h" >&5
+$as_echo_n "checking for ${_prefix}/sqlite3.h... " >&6; }
+
+    cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
 
-		  #include <sqlite3.h>
+		    #include <sqlite3.h>
 int
 main ()
 {
@@ -3046,15 +3037,49 @@ int a = 1;
 _ACEOF
 if ac_fn_c_try_compile "$LINENO"; then :
 
-		   smart_include=" "
-		   { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+		     smart_include="-isystem ${_prefix}/"
+		     { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
 $as_echo "yes" >&6; }
-		   break
+		     break
 
 else
 
-		   smart_include=
-		   { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+		     smart_include=
+		     { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
+  done
+fi
+
+if test "x$smart_include" = "x"; then
+    { $as_echo "$as_me:${as_lineno-$LINENO}: checking for sqlite3.h" >&5
+$as_echo_n "checking for sqlite3.h... " >&6; }
+
+    cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+		    #include <sqlite3.h>
+int
+main ()
+{
+int a = 1;
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"; then :
+
+		     smart_include=" "
+		     { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+$as_echo "yes" >&6; }
+		     break
+
+else
+
+		     smart_include=
+		     { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
 $as_echo "no" >&6; }
 
 fi
@@ -3062,6 +3087,36 @@ rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
 fi
 
 if test "x$smart_include" = "x"; then
+
+  for prefix in $smart_prefix; do
+
+
+if test "x$LOCATE" != "x"; then
+        DIRS=
+  file="${_prefix}/${1}"
+
+  for x in `${LOCATE} $file 2>/dev/null`; do
+                                        base=`echo $x | sed "s%/${file}%%"`
+    if test "x$x" = "x$base"; then
+      continue;
+    fi
+
+    dir=`${DIRNAME} $x 2>/dev/null`
+                exclude=`echo ${dir} | ${GREP} /home`
+    if test "x$exclude" != "x"; then
+      continue
+    fi
+
+                    already=`echo \$_smart_include_dir ${DIRS} | ${GREP} ${dir}`
+    if test "x$already" = "x"; then
+      DIRS="$DIRS $dir"
+    fi
+  done
+fi
+
+eval "_smart_include_dir=\"\$_smart_include_dir $DIRS\""
+
+  done
 
 
 if test "x$LOCATE" != "x"; then
@@ -3080,19 +3135,20 @@ if test "x$LOCATE" != "x"; then
       continue
     fi
 
-                    already=`echo \$smart_include_dir ${DIRS} | ${GREP} ${dir}`
+                    already=`echo \$_smart_include_dir ${DIRS} | ${GREP} ${dir}`
     if test "x$already" = "x"; then
       DIRS="$DIRS $dir"
     fi
   done
 fi
 
-eval "smart_include_dir=\"\$smart_include_dir $DIRS\""
+eval "_smart_include_dir=\"\$_smart_include_dir $DIRS\""
 
-  for try in $smart_include_dir /usr/local/include /opt/include; do
+
+  for try in $_smart_include_dir; do
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking for sqlite3.h in $try" >&5
 $as_echo_n "checking for sqlite3.h in $try... " >&6; }
-    CFLAGS="$old_CFLAGS -isystem $try"
+    CPPFLAGS="-isystem $try $old_CPPFLAGS"
     cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
 
@@ -3121,20 +3177,34 @@ $as_echo "no" >&6; }
 fi
 rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
   done
-  CFLAGS="$old_CFLAGS"
+  CPPFLAGS="$old_CPPFLAGS"
 fi
 
 if test "x$smart_include" != "x"; then
   eval "ac_cv_header_$ac_safe=yes"
-  CFLAGS="$old_CFLAGS $smart_include"
-  SMART_CFLAGS="$SMART_CFLAGS $smart_include"
+  CPPFLAGS="$smart_include $old_CPPFLAGS"
+  SMART_CPPFLAGS="$smart_include $SMART_CPPFLAGS"
 fi
 
+smart_prefix=
+
     if test "x$ac_cv_header_sqlite3_h" != "xyes"; then
-        { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: Sqlite headers not found. Use --with-sqlite-include-dir=<path>." >&5
+	{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: Sqlite headers not found. Use --with-sqlite-include-dir=<path>." >&5
 $as_echo "$as_me: WARNING: Sqlite headers not found. Use --with-sqlite-include-dir=<path>." >&2;}
-        fail="$fail sqlite.h"
+	fail="$fail sqlite.h"
     fi
+    CFLAGS="$SMART_CPPFLAGS"
+    ac_fn_c_check_type "$LINENO" "sqlite3_int64" "ac_cv_type_sqlite3_int64" "#include <sqlite3.h>
+"
+if test "x$ac_cv_type_sqlite3_int64" = xyes; then :
+
+cat >>confdefs.h <<_ACEOF
+#define HAVE_SQLITE3_INT64 1
+_ACEOF
+
+
+fi
+
 
     targetname=rlm_sql_sqlite
 else
@@ -3155,7 +3225,7 @@ $as_echo "$as_me: WARNING: FAILURE: rlm_sql_sqlite requires:$fail." >&2;};
 fi
 
 mod_ldflags="$SMART_LIBS"
-mod_cflags="$SMART_CFLAGS"
+mod_cflags="$SMART_CPPFLAGS"
 
 
 

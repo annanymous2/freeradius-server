@@ -14,7 +14,7 @@
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
-/*
+/**
  * $Id$
  *
  * @file modules.h
@@ -29,50 +29,33 @@
 RCSIDH(modules_h, "$Id$")
 
 #include <freeradius-devel/conffile.h>
+#include <freeradius-devel/features.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/** Return codes indicating the result of the module call
- *
- * All module functions must return one of the codes listed below (apart from
- * RLM_MODULE_NUMCODES, which is used to check for validity).
- */
-typedef enum rlm_rcodes {
-	RLM_MODULE_REJECT = 0,	//!< Immediately reject the request.
-	RLM_MODULE_FAIL,	//!< Module failed, don't reply.
-	RLM_MODULE_OK,		//!< The module is OK, continue.
-	RLM_MODULE_HANDLED,	//!< The module handled the request, so stop.
-	RLM_MODULE_INVALID,	//!< The module considers the request invalid.
-	RLM_MODULE_USERLOCK,	//!< Reject the request (user is locked out).
-	RLM_MODULE_NOTFOUND,	//!< User not found.
-	RLM_MODULE_NOOP,	//!< Module succeeded without doing anything.
-	RLM_MODULE_UPDATED,	//!< OK (pairs modified).
-	RLM_MODULE_NUMCODES,	//!< How many valid return codes there are.
-	RLM_MODULE_UNKNOWN	//!< Error resolving rcode (should not be
-				//!< returned by modules).
-} rlm_rcode_t;
 
 /** The different section components of the server
  *
  * Used as indexes in the methods array in the module_t struct.
  */
 typedef enum rlm_components {
-	RLM_COMPONENT_AUTH = 0,	//!< 0 methods index for authenticate section.
-	RLM_COMPONENT_AUTZ,	//!< 1 methods index for authorize section.
-	RLM_COMPONENT_PREACCT,	//!< 2 methods index for preacct section.
-	RLM_COMPONENT_ACCT,	//!< 3 methods index for accounting section.
-	RLM_COMPONENT_SESS,	//!< 4 methods index for checksimul section.
-	RLM_COMPONENT_PRE_PROXY,//!< 5 methods index for preproxy section.
-	RLM_COMPONENT_POST_PROXY, //!< 6 methods index for postproxy section.
-	RLM_COMPONENT_POST_AUTH,//!< 7 methods index for postauth section.
+	MOD_AUTHENTICATE = 0,	//!< 0 methods index for authenticate section.
+	MOD_AUTHORIZE,		//!< 1 methods index for authorize section.
+	MOD_PREACCT,		//!< 2 methods index for preacct section.
+	MOD_ACCOUNTING,		//!< 3 methods index for accounting section.
+	MOD_SESSION,		//!< 4 methods index for checksimul section.
+	MOD_PRE_PROXY,		//!< 5 methods index for preproxy section.
+	MOD_POST_PROXY,		//!< 6 methods index for postproxy section.
+	MOD_POST_AUTH,		//!< 7 methods index for postauth section.
 #ifdef WITH_COA
-	RLM_COMPONENT_RECV_COA,	//!< 8 methods index for recvcoa section.
-	RLM_COMPONENT_SEND_COA,	//!< 9 methods index for sendcoa section.
+	MOD_RECV_COA,		//!< 8 methods index for recvcoa section.
+	MOD_SEND_COA,		//!< 9 methods index for sendcoa section.
 #endif
-	RLM_COMPONENT_COUNT	//!< 10 how many components there are.
+	MOD_COUNT		//!< 10 how many components there are.
 } rlm_components_t;
+
+extern const FR_NAME_NUMBER mod_rcode_table[];
 
 /** Map a section name, to a section typename, to an attribute number
  *
@@ -95,18 +78,14 @@ extern const section_type_value_t section_type_value[];
 #define RLM_TYPE_THREAD_UNSAFE	(1 << 0) 	//!< Module is not threadsafe.
 						//!< Server will protect calls
 						//!< with mutex.
-#define RLM_TYPE_CHECK_CONFIG_SAFE (1 << 1) 	//!< Instantiate module on -C.
-						//!< Module will be
-						//!< instantiated if the server
-						//!< is started in config
-						//!< check mode.
 #define RLM_TYPE_HUP_SAFE	(1 << 2) 	//!< Will be restarted on HUP.
 						//!< Server will instantiated
 						//!< new instance, and then
 						//!< destroy old instance.
 
-#define RLM_MODULE_MAGIC_NUMBER ((uint32_t) (0xf4ee4ad3))
-#define RLM_MODULE_INIT RLM_MODULE_MAGIC_NUMBER
+
+/* Stop people using different module/library/server versions together */
+#define RLM_MODULE_INIT RADIUSD_MAGIC_NUMBER
 
 /** Module section callback
  *
@@ -151,22 +130,20 @@ typedef int (*detach_t)(void *instance);
  * within the module to different sections.
  */
 typedef struct module_t {
-	uint32_t 		magic;				//!< Used to validate module struct.
-	char const		*name;				//!< The name of the module (without rlm_ prefix).
-	int			type;				//!< One or more of the RLM_TYPE_* constants.
-	size_t			inst_size;			//!< Size of the instance data
-	CONF_PARSER const	*config;			//!< Configuration information
-	instantiate_t		instantiate;			//!< Function to use for instantiation.
-	detach_t		detach;				//!< Function to use to free module instance.
-	packetmethod		methods[RLM_COMPONENT_COUNT];	//!< Pointers to the various section functions, ordering
-								//!< determines which function is mapped to
-								//!< which section.
-
+	uint64_t 		magic;			//!< Used to validate module struct.
+	char const		*name;			//!< The name of the module (without rlm_ prefix).
+	int			type;			//!< One or more of the RLM_TYPE_* constants.
+	size_t			inst_size;		//!< Size of the instance data
+	CONF_PARSER const	*config;		//!< Configuration information
+	instantiate_t		bootstrap;		//!< register dynamic attrs, etc.
+	instantiate_t		instantiate;		//!< Function to use for instantiation.
+	detach_t		detach;			//!< Function to use to free module instance.
+	packetmethod		methods[MOD_COUNT];	//!< Pointers to the various section functions.
 } module_t;
 
-int setup_modules(int, CONF_SECTION *);
-int detach_modules(void);
-int module_hup(CONF_SECTION *modules);
+int modules_init(CONF_SECTION *);
+int modules_free(void);
+int modules_hup(CONF_SECTION *modules);
 rlm_rcode_t process_authorize(int type, REQUEST *request);
 rlm_rcode_t process_authenticate(int type, REQUEST *request);
 rlm_rcode_t module_preacct(REQUEST *request);
@@ -183,7 +160,7 @@ rlm_rcode_t process_send_coa(int type, REQUEST *request);
 #define MODULE_NULL_COA_FUNCS
 #endif
 
-rlm_rcode_t indexed_modcall(int comp, int idx, REQUEST *request);
+rlm_rcode_t indexed_modcall(rlm_components_t comp, int idx, REQUEST *request);
 
 /*
  *	For now, these are strongly tied together.

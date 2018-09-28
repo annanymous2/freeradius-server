@@ -23,9 +23,14 @@
 RCSID("$Id$")
 
 #include <freeradius-devel/libradius.h>
+
+typedef struct REQUEST REQUEST;
+
 #include <freeradius-devel/parser.h>
+#include <freeradius-devel/xlat.h>
 #include <freeradius-devel/conf.h>
 #include <freeradius-devel/radpaths.h>
+#include <freeradius-devel/dhcp.h>
 
 #include <ctype.h>
 
@@ -35,19 +40,11 @@ RCSID("$Id$")
 
 #include <assert.h>
 
-typedef struct REQUEST REQUEST;
-
 #include <freeradius-devel/log.h>
-log_debug_t debug_flag = 0;
+extern log_lvl_t rad_debug_lvl;
 
-/**********************************************************************
- *	Hacks for xlat
- */
-typedef size_t (*RADIUS_ESCAPE_STRING)(REQUEST *, char *out, size_t outlen, char const *in, void *arg);
-typedef ssize_t (*RAD_XLAT_FUNC)(void *instance, REQUEST *, char const *, char *, size_t);
-int            xlat_register(char const *module, RAD_XLAT_FUNC func, RADIUS_ESCAPE_STRING escape,
-			     void *instance);
 #include <sys/wait.h>
+#ifdef HAVE_PTHREAD_H
 pid_t rad_fork(void);
 pid_t rad_waitpid(pid_t pid, int *status);
 
@@ -60,12 +57,31 @@ pid_t rad_waitpid(pid_t pid, int *status)
 {
 	return waitpid(pid, status, 0);
 }
+#endif
 
 static ssize_t xlat_test(UNUSED void *instance, UNUSED REQUEST *request,
 			 UNUSED char const *fmt, UNUSED char *out, UNUSED size_t outlen)
 {
 	return 0;
 }
+
+static RADIUS_PACKET my_original = {
+	.sockfd = -1,
+	.id = 0,
+	.code = PW_CODE_ACCESS_REQUEST,
+	.vector = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f },
+};
+
+
+static RADIUS_PACKET my_packet = {
+	.sockfd = -1,
+	.id = 0,
+	.code = PW_CODE_ACCESS_ACCEPT,
+	.vector = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f },
+};
+
+
+static char const *my_secret = "testing123";
 
 /*
  *	End of hacks for xlat
@@ -74,7 +90,7 @@ static ssize_t xlat_test(UNUSED void *instance, UNUSED REQUEST *request,
 
 static int encode_tlv(char *buffer, uint8_t *output, size_t outlen);
 
-static char const *hextab = "0123456789abcdef";
+static char const hextab[] = "0123456789abcdef";
 
 static int encode_data_string(char *buffer,
 			      uint8_t *output, size_t outlen)
@@ -538,7 +554,7 @@ static void parse_xlat(char const *input, char *output, size_t outlen)
 {
 	ssize_t slen;
 	char const *error = NULL;
-	char *fmt = talloc_strdup(NULL, input);
+	char *fmt = talloc_typed_strdup(NULL, input);
 	xlat_exp_t *head;
 
 	slen = xlat_tokenize(fmt, fmt, &head, &error);
@@ -556,7 +572,7 @@ static void parse_xlat(char const *input, char *output, size_t outlen)
 	talloc_free(fmt);
 }
 
-static void process_file(char const *filename)
+static void process_file(const char *root_dir, char const *filename)
 {
 	int lineno;
 	size_t i, outlen;
@@ -564,19 +580,28 @@ static void process_file(char const *filename)
 	FILE *fp;
 	char input[8192], buffer[8192];
 	char output[8192];
+	char directory[8192];
 	uint8_t *attr, data[2048];
 
 	if (strcmp(filename, "-") == 0) {
 		fp = stdin;
-		filename = "<stdin>";
+		directory[0] = '\0';
 
 	} else {
-		fp = fopen(filename, "r");
+		if (root_dir && *root_dir) {
+			snprintf(directory, sizeof(directory), "%s/%s", root_dir, filename);
+		} else {
+			strlcpy(directory, filename, sizeof(directory));
+		}
+
+		fp = fopen(directory, "r");
 		if (!fp) {
 			fprintf(stderr, "Error opening %s: %s\n",
-				filename, strerror(errno));
+				directory, fr_syserror(errno));
 			exit(1);
 		}
+
+		filename = directory;
 	}
 
 	lineno = 0;
@@ -585,15 +610,16 @@ static void process_file(char const *filename)
 
 	while (fgets(buffer, sizeof(buffer), fp) != NULL) {
 		char *p = strchr(buffer, '\n');
-		VALUE_PAIR *vp, *head = NULL;
+		VALUE_PAIR *vp, *head;
 		VALUE_PAIR **tail = &head;
 
 		lineno++;
+		head = NULL;
 
 		if (!p) {
 			if (!feof(fp)) {
 				fprintf(stderr, "Line %d too long in %s\n",
-					lineno, filename);
+					lineno, directory);
 				exit(1);
 			}
 		} else {
@@ -611,13 +637,15 @@ static void process_file(char const *filename)
 		while (isspace((int) *p)) p++;
 		if (!*p) continue;
 
+		DEBUG2("%s[%d]: %s\n", filename, lineno, buffer);
+
 		strlcpy(input, p, sizeof(input));
 
 		if (strncmp(p, "raw ", 4) == 0) {
 			outlen = encode_rfc(p + 4, data, sizeof(data));
 			if (outlen == 0) {
 				fprintf(stderr, "Parse error in line %d of %s\n",
-					lineno, filename);
+					lineno, directory);
 				exit(1);
 			}
 
@@ -627,9 +655,17 @@ static void process_file(char const *filename)
 				continue;
 			}
 
+			if (outlen > sizeof(data)) outlen = sizeof(data);
+
+			if (outlen >= (sizeof(output) / 2)) {
+				outlen = (sizeof(output) / 2) - 1;
+			}
+
 			data_len = outlen;
 			for (i = 0; i < outlen; i++) {
-				snprintf(output + 3*i, sizeof(output),
+				if (sizeof(output) < (3*i)) break;
+
+				snprintf(output + 3*i, sizeof(output) - (3*i) - 1,
 					 "%02x ", data[i]);
 			}
 			outlen = strlen(output);
@@ -639,8 +675,8 @@ static void process_file(char const *filename)
 
 		if (strncmp(p, "data ", 5) == 0) {
 			if (strcmp(p + 5, output) != 0) {
-				fprintf(stderr, "Mismatch in line %d of %s, expected: %s\n",
-					lineno, filename, output);
+				fprintf(stderr, "Mismatch at line %d of %s\n\tgot      : %s\n\texpected : %s\n",
+					lineno, directory, output, p + 5);
 				exit(1);
 			}
 			continue;
@@ -653,17 +689,21 @@ static void process_file(char const *filename)
 				p += 7;
 			}
 
-			if (userparse(NULL, p, &head) != T_EOL) {
+			if (fr_pair_list_afrom_str(NULL, p, &head) != T_EOL) {
 				strlcpy(output, fr_strerror(), sizeof(output));
 				continue;
 			}
 
 			attr = data;
 			vp = head;
-			len = 0;
 			while (vp) {
-				len = rad_vp2attr(NULL, NULL, NULL, (VALUE_PAIR const **)(void **)&vp,
-						  attr, sizeof(data) - (attr - data));
+				VALUE_PAIR **pvp = &vp;
+				VALUE_PAIR const **qvp;
+
+				memcpy(&qvp, &pvp, sizeof(pvp));
+
+				len = rad_vp2attr(&my_packet, &my_original, my_secret, qvp,
+						  attr, data + sizeof(data) - attr);
 				if (len < 0) {
 					fprintf(stderr, "Failed encoding %s: %s\n",
 						vp->da->name, fr_strerror());
@@ -674,8 +714,8 @@ static void process_file(char const *filename)
 				if (len == 0) break;
 			}
 
-			pairfree(&head);
-			outlen = len;
+			fr_pair_list_free(&head);
+			outlen = attr - data;
 			goto print_hex;
 		}
 
@@ -689,7 +729,7 @@ static void process_file(char const *filename)
 				attr = data;
 				len = encode_hex(p + 7, data, sizeof(data));
 				if (len == 0) {
-					fprintf(stderr, "Failed decoding hex string at line %d of %s\n", lineno, filename);
+					fprintf(stderr, "Failed decoding hex string at line %d of %s\n", lineno, directory);
 					exit(1);
 				}
 			}
@@ -697,10 +737,9 @@ static void process_file(char const *filename)
 			my_len = 0;
 			while (len > 0) {
 				vp = NULL;
-				my_len = rad_attr2vp(NULL, NULL, NULL,
-						     attr, len, &vp);
+				my_len = rad_attr2vp(NULL, &my_packet, &my_original, my_secret, attr, len, &vp);
 				if (my_len < 0) {
-					pairfree(&head);
+					fr_pair_list_free(&head);
 					break;
 				}
 
@@ -726,9 +765,9 @@ static void process_file(char const *filename)
 			if (head) {
 				vp_cursor_t cursor;
 				p = output;
-				for (vp = paircursor(&cursor, &head);
+				for (vp = fr_cursor_init(&cursor, &head);
 				     vp;
-				     vp = pairnext(&cursor)) {
+				     vp = fr_cursor_next(&cursor)) {
 					vp_prints(p, sizeof(output) - (p - output), vp);
 					p += strlen(p);
 
@@ -737,7 +776,7 @@ static void process_file(char const *filename)
 					}
 				}
 
-				pairfree(&head);
+				fr_pair_list_free(&head);
 			} else if (my_len < 0) {
 				strlcpy(output, fr_strerror(), sizeof(output));
 
@@ -747,11 +786,115 @@ static void process_file(char const *filename)
 			continue;
 		}
 
+		/*
+		 *	And some DHCP tests
+		 */
+		if (strncmp(p, "encode-dhcp ", 12) == 0) {
+			vp_cursor_t cursor;
+
+			if (strcmp(p + 12, "-") == 0) {
+				p = output;
+			} else {
+				p += 12;
+			}
+
+			if (fr_pair_list_afrom_str(NULL, p, &head) != T_EOL) {
+				strlcpy(output, fr_strerror(), sizeof(output));
+				continue;
+			}
+
+			fr_cursor_init(&cursor, &head);
+
+
+			attr = data;
+			vp = head;
+
+			while ((vp = fr_cursor_current(&cursor))) {
+				len = fr_dhcp_encode_option(NULL, attr, data + sizeof(data) - attr, &cursor);
+				if (len < 0) {
+					fprintf(stderr, "Failed encoding %s: %s\n",
+						vp->da->name, fr_strerror());
+					exit(1);
+				}
+				attr += len;
+			};
+
+			fr_pair_list_free(&head);
+			outlen = attr - data;
+			goto print_hex;
+		}
+
+		if (strncmp(p, "decode-dhcp ", 12) == 0) {
+			ssize_t my_len;
+
+			if (strcmp(p + 12, "-") == 0) {
+				attr = data;
+				len = data_len;
+			} else {
+				attr = data;
+				len = encode_hex(p + 12, data, sizeof(data));
+				if (len == 0) {
+					fprintf(stderr, "Failed decoding hex string at line %d of %s\n", lineno, directory);
+					exit(1);
+				}
+			}
+
+			my_len = fr_dhcp_decode_options(NULL, &head, attr, len);
+
+			/*
+			 *	Output may be an error, and we ignore
+			 *	it if so.
+			 */
+			if (head) {
+				vp_cursor_t cursor;
+				p = output;
+				for (vp = fr_cursor_init(&cursor, &head);
+				     vp;
+				     vp = fr_cursor_next(&cursor)) {
+					vp_prints(p, sizeof(output) - (p - output), vp);
+					p += strlen(p);
+
+					if (vp->next) {strcpy(p, ", ");
+						p += 2;
+					}
+				}
+
+				fr_pair_list_free(&head);
+			} else if (my_len < 0) {
+				strlcpy(output, fr_strerror(), sizeof(output));
+
+			} else { /* zero-length attribute */
+				*output = '\0';
+			}
+			continue;
+		}
+
+		if (strncmp(p, "attribute ", 10) == 0) {
+			p += 10;
+
+			if (fr_pair_list_afrom_str(NULL, p, &head) != T_EOL) {
+				strlcpy(output, fr_strerror(), sizeof(output));
+				continue;
+			}
+
+			vp_prints(output, sizeof(output), head);
+			continue;
+		}
+
 		if (strncmp(p, "$INCLUDE ", 9) == 0) {
+			char *q;
+
 			p += 9;
 			while (isspace((int) *p)) p++;
 
-			process_file(p);
+			q = strrchr(directory, '/');
+			if (q) {
+				*q = '\0';
+				process_file(directory, p);
+				*q = '/';
+			} else {
+				process_file(NULL, p);
+			}
 			continue;
 		}
 
@@ -768,62 +911,95 @@ static void process_file(char const *filename)
 		}
 
 		fprintf(stderr, "Unknown input at line %d of %s\n",
-			lineno, filename);
+			lineno, directory);
 		exit(1);
 	}
 
 	if (fp != stdin) fclose(fp);
 }
 
+static void NEVER_RETURNS usage(void)
+{
+	fprintf(stderr, "usage: radattr [OPTS] filename\n");
+	fprintf(stderr, "  -d <raddb>             Set user dictionary directory (defaults to " RADDBDIR ").\n");
+	fprintf(stderr, "  -D <dictdir>           Set main dictionary directory (defaults to " DICTDIR ").\n");
+	fprintf(stderr, "  -x                     Debugging mode.\n");
+	fprintf(stderr, "  -M                     Show talloc memory report.\n");
+
+	exit(1);
+}
+
 int main(int argc, char *argv[])
 {
 	int c;
-	int report = false;
+	bool report = false;
 	char const *radius_dir = RADDBDIR;
+	char const *dict_dir = DICTDIR;
+	int *inst = &c;
 
-	while ((c = getopt(argc, argv, "d:xM")) != EOF) switch(c) {
+	cf_new_escape = true;	/* fix the tests */
+
+#ifndef NDEBUG
+	if (fr_fault_setup(getenv("PANIC_ACTION"), argv[0]) < 0) {
+		fr_perror("radattr");
+		exit(EXIT_FAILURE);
+	}
+#endif
+
+	while ((c = getopt(argc, argv, "d:D:xMh")) != EOF) switch (c) {
 		case 'd':
 			radius_dir = optarg;
 			break;
-	  	case 'x':
-			fr_debug_flag++;
-			debug_flag = fr_debug_flag;
+		case 'D':
+			dict_dir = optarg;
+			break;
+		case 'x':
+			fr_debug_lvl++;
+			rad_debug_lvl = fr_debug_lvl;
 			break;
 		case 'M':
 			report = true;
 			break;
+		case 'h':
 		default:
-			fprintf(stderr, "usage: radattr [OPTS] filename\n");
-			exit(1);
+			usage();
 	}
 	argc -= (optind - 1);
 	argv += (optind - 1);
 
-	if (report) {
-		talloc_enable_null_tracking();
-	}
-	talloc_set_log_fn(log_talloc);
-
-	if (dict_init(radius_dir, RADIUS_DICTIONARY) < 0) {
+	/*
+	 *	Mismatch between the binary and the libraries it depends on
+	 */
+	if (fr_check_lib_magic(RADIUSD_MAGIC_NUMBER) < 0) {
 		fr_perror("radattr");
 		return 1;
 	}
 
-	if (xlat_register("test", xlat_test, NULL, NULL) < 0) {
+	if (dict_init(dict_dir, RADIUS_DICTIONARY) < 0) {
+		fr_perror("radattr");
+		return 1;
+	}
+
+	if (dict_read(radius_dir, RADIUS_DICTIONARY) == -1) {
+		fr_perror("radattr");
+		return 1;
+	}
+
+	if (xlat_register("test", xlat_test, NULL, inst) < 0) {
 		fprintf(stderr, "Failed registering xlat");
 		return 1;
 	}
 
 	if (argc < 2) {
-		process_file("-");
+		process_file(NULL, "-");
 
 	} else {
-		process_file(argv[1]);
+		process_file(NULL, argv[1]);
 	}
 
 	if (report) {
 		dict_free();
-		log_talloc_report(NULL);
+		fr_log_talloc_report(NULL);
 	}
 
 	return 0;

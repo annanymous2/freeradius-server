@@ -191,6 +191,29 @@ struct tm *gmtime_r(time_t const *l_clock, struct tm *result)
 }
 #endif
 
+#ifndef HAVE_VDPRINTF
+int vdprintf (int fd, char const *format, va_list args)
+{
+	int     ret;
+	FILE    *fp;
+	int	dup_fd;
+
+	dup_fd = dup(fd);
+	if (dup_fd < 0) return -1;
+
+	fp = fdopen(fd, "w");
+	if (!fp) {
+		close(dup_fd);
+		return -1;
+	}
+
+	ret = vfprintf(fp, format, args);
+	fclose(fp);	/* Also closes dup_fd */
+
+	return ret;
+}
+#endif
+
 #ifndef HAVE_GETTIMEOFDAY
 #ifdef WIN32
 /*
@@ -272,3 +295,149 @@ ntp2timeval(struct timeval *tv, char const *ntp)
 	tv->tv_sec = sec - NTP_EPOCH_OFFSET;
 	tv->tv_usec = usec / 4295; /* close enough */
 }
+
+#if !defined(HAVE_128BIT_INTEGERS) && defined(FR_LITTLE_ENDIAN)
+/** Swap byte order of 128 bit integer
+ *
+ * @param num 128bit integer to swap.
+ * @return 128bit integer reversed.
+ */
+uint128_t ntohlll(uint128_t const num)
+{
+	uint64_t const *p = (uint64_t const *) &num;
+	uint64_t ret[2];
+
+	/* swapsies */
+	ret[1] = ntohll(p[0]);
+	ret[0] = ntohll(p[1]);
+
+	return *(uint128_t *)ret;
+}
+#endif
+
+#ifdef HAVE_OPENSSL_HMAC_H
+#  ifndef HAVE_HMAC_CTX_NEW
+HMAC_CTX *HMAC_CTX_new(void)
+{
+	HMAC_CTX *ctx;
+	ctx = OPENSSL_malloc(sizeof(*ctx));
+	if (!ctx) return NULL;
+
+	memset(ctx, 0, sizeof(*ctx));
+        HMAC_CTX_init(ctx);
+	return ctx;
+}
+#  endif
+#  ifndef HAVE_HMAC_CTX_FREE
+void HMAC_CTX_free(HMAC_CTX *ctx)
+{
+        if (ctx == NULL) {
+                return;
+        }
+        HMAC_CTX_cleanup(ctx);
+        OPENSSL_free(ctx);
+}
+#  endif
+#endif
+
+#ifdef HAVE_OPENSSL_SSL_H
+#  ifndef HAVE_SSL_GET_CLIENT_RANDOM
+size_t SSL_get_client_random(const SSL *s, unsigned char *out, size_t outlen)
+{
+	if (!outlen) return sizeof(s->s3->client_random);
+
+	if (outlen > sizeof(s->s3->client_random)) outlen = sizeof(s->s3->client_random);
+
+	memcpy(out, s->s3->client_random, outlen);
+	return outlen;
+}
+#  endif
+#  ifndef HAVE_SSL_GET_SERVER_RANDOM
+size_t SSL_get_server_random(const SSL *s, unsigned char *out, size_t outlen)
+{
+	if (!outlen) return sizeof(s->s3->server_random);
+
+	if (outlen > sizeof(s->s3->server_random)) outlen = sizeof(s->s3->server_random);
+
+	memcpy(out, s->s3->server_random, outlen);
+	return outlen;
+}
+#  endif
+#  ifndef HAVE_SSL_SESSION_GET_MASTER_KEY
+size_t SSL_SESSION_get_master_key(const SSL_SESSION *s,
+				  unsigned char *out, size_t outlen)
+{
+	if (!outlen) return s->master_key_length;
+
+	if (outlen > (size_t)s->master_key_length) outlen = (size_t)s->master_key_length;
+
+	memcpy(out, s->master_key, outlen);
+	return outlen;
+}
+#  endif
+#endif
+
+/** Call talloc strdup, setting the type on the new chunk correctly
+ *
+ * For some bizarre reason the talloc string functions don't set the
+ * memory chunk type to char, which causes all kinds of issues with
+ * verifying VALUE_PAIRs.
+ *
+ * @param[in] t The talloc context to hang the result off.
+ * @param[in] p The string you want to duplicate.
+ * @return The duplicated string, NULL on error.
+ */
+char *talloc_typed_strdup(void const *t, char const *p)
+{
+	char *n;
+
+	n = talloc_strdup(t, p);
+	if (!n) return NULL;
+	talloc_set_type(n, char);
+
+	return n;
+}
+
+/** Call talloc vasprintf, setting the type on the new chunk correctly
+ *
+ * For some bizarre reason the talloc string functions don't set the
+ * memory chunk type to char, which causes all kinds of issues with
+ * verifying VALUE_PAIRs.
+ *
+ * @param[in] t The talloc context to hang the result off.
+ * @param[in] fmt The format string.
+ * @return The formatted string, NULL on error.
+ */
+char *talloc_typed_asprintf(void const *t, char const *fmt, ...)
+{
+	char *n;
+	va_list ap;
+
+	va_start(ap, fmt);
+	n = talloc_vasprintf(t, fmt, ap);
+	va_end(ap);
+	if (!n) return NULL;
+	talloc_set_type(n, char);
+
+	return n;
+}
+
+/** Binary safe strndup function
+ *
+ * @param[in] t The talloc context o allocate new buffer in.
+ * @param[in] in String to dup, may contain embedded '\0'.
+ * @param[in] inlen Number of bytes to dup.
+ * @return duped string.
+ */
+char *talloc_bstrndup(void const *t, char const *in, size_t inlen)
+{
+	char *p;
+
+	p = talloc_array(t, char, inlen + 1);
+	if (!p) return NULL;
+	memcpy(p, in, inlen);
+	p[inlen] = '\0';
+
+	return p;
+}
+

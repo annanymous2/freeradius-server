@@ -37,26 +37,28 @@ RCSID("$Id$")
  * len = header + type + leap_methoddata
  * leap_methoddata = value_size + value
  */
-static int leap_initiate(UNUSED void *instance, eap_handler_t *handler)
+static int CC_HINT(nonnull) mod_session_init(UNUSED void *instance, eap_handler_t *handler)
 {
+	REQUEST 	*request = handler->request;
 	leap_session_t	*session;
 	leap_packet_t	*reply;
 
-	DEBUG2("  rlm_eap_leap: Stage 2");
+	RDEBUG2("Stage 2");
 
 	/*
 	 *	LEAP requires a User-Name attribute
 	 */
 	if (!handler->request->username) {
-		DEBUG2("  rlm_eap_leap: User-Name is required for EAP-LEAP authentication.");
+		REDEBUG("User-Name is required for EAP-LEAP authentication");
 		return 0;
 	}
 
-	reply = eapleap_initiate(handler->eap_ds, handler->request->username);
-	if (!reply)
+	reply = eapleap_initiate(request, handler->eap_ds, handler->request->username);
+	if (!reply) {
 		return 0;
+	}
 
-	eapleap_compose(handler->eap_ds, reply);
+	eapleap_compose(request, handler->eap_ds, reply);
 
 	handler->opaque = session = talloc(handler, leap_session_t);
 	if (!handler->opaque) {
@@ -74,46 +76,51 @@ static int leap_initiate(UNUSED void *instance, eap_handler_t *handler)
 	session->stage = 4;	/* the next stage we're in */
 	memcpy(session->peer_challenge, reply->challenge, reply->count);
 
-	DEBUG2("  rlm_eap_leap: Successfully initiated");
+	REDEBUG2("Successfully initiated");
 
 	/*
 	 *	The next stage to process the packet.
 	 */
-	handler->stage = AUTHENTICATE;
+	handler->stage = PROCESS;
 
 	talloc_free(reply);
 	return 1;
 }
 
-static int mod_authenticate(UNUSED void *instance, eap_handler_t *handler)
+static int CC_HINT(nonnull) mod_process(UNUSED void *instance, eap_handler_t *handler)
 {
 	int		rcode;
+	REQUEST 	*request = handler->request;
 	leap_session_t	*session;
 	leap_packet_t	*packet;
 	leap_packet_t	*reply;
 	VALUE_PAIR	*password;
 
 	if (!handler->opaque) {
-		ERROR("rlm_eap_leap: Cannot authenticate without LEAP history");
+		REDEBUG("Cannot authenticate without LEAP history");
 		return 0;
 	}
-	session = (leap_session_t *) handler->opaque;
+	session = talloc_get_type_abort(handler->opaque, leap_session_t);
 	reply = NULL;
 
 	/*
 	 *	Extract the LEAP packet.
 	 */
-	if (!(packet = eapleap_extract(handler->eap_ds)))
+	if (!(packet = eapleap_extract(request, handler->eap_ds))) {
 		return 0;
+	}
 
 	/*
 	 *	The password is never sent over the wire.
 	 *	Always get the configured password, for each user.
 	 */
-	password = pairfind(handler->request->config_items, PW_CLEARTEXT_PASSWORD, 0, TAG_ANY);
-	if (!password) password = pairfind(handler->request->config_items, PW_NT_PASSWORD, 0, TAG_ANY);
+	password = fr_pair_find_by_num(handler->request->config, PW_CLEARTEXT_PASSWORD, 0, TAG_ANY);
 	if (!password) {
-		DEBUG2("rlm_eap_leap: No Cleartext-Password or NT-Password configured for this user");
+		password = fr_pair_find_by_num(handler->request->config, PW_NT_PASSWORD, 0, TAG_ANY);
+	}
+
+	if (!password) {
+		REDEBUG("No Cleartext-Password or NT-Password configured for this user");
 		talloc_free(packet);
 		return 0;
 	}
@@ -124,8 +131,8 @@ static int mod_authenticate(UNUSED void *instance, eap_handler_t *handler)
 	 */
 	switch (session->stage) {
 	case 4:			/* Verify NtChallengeResponse */
-		DEBUG2("  rlm_eap_leap: Stage 4");
-		rcode = eapleap_stage4(packet, password, session);
+		RDEBUG2("Stage 4");
+		rcode = eapleap_stage4(request, packet, password, session);
 		session->stage = 6;
 
 		/*
@@ -152,15 +159,13 @@ static int mod_authenticate(UNUSED void *instance, eap_handler_t *handler)
 		 *	by eap_compose() in eap.c, when the EAP reply code
 		 *	is EAP_SUCCESS.
 		 */
-		handler->request->reply->code = PW_ACCESS_CHALLENGE;
+		handler->request->reply->code = PW_CODE_ACCESS_CHALLENGE;
 		talloc_free(packet);
 		return 1;
 
 	case 6:			/* Issue session key */
-		DEBUG2("  rlm_eap_leap: Stage 6");
-		reply = eapleap_stage6(packet, handler->request,
-				       handler->request->username, password,
-				       session);
+		RDEBUG2("Stage 6");
+		reply = eapleap_stage6(request, packet, handler->request->username, password, session);
 		break;
 
 		/*
@@ -168,7 +173,7 @@ static int mod_authenticate(UNUSED void *instance, eap_handler_t *handler)
 		 *	Stage 2 is handled by initiate()
 		 */
 	default:
-		ERROR("  rlm_eap_leap: Internal sanity check failed on stage");
+		RDEBUG("Internal sanity check failed on stage");
 		break;
 	}
 
@@ -182,7 +187,7 @@ static int mod_authenticate(UNUSED void *instance, eap_handler_t *handler)
 		return 0;
 	}
 
-	eapleap_compose(handler->eap_ds, reply);
+	eapleap_compose(request, handler->eap_ds, reply);
 	talloc_free(reply);
 	return 1;
 }
@@ -191,11 +196,9 @@ static int mod_authenticate(UNUSED void *instance, eap_handler_t *handler)
  *	The module name should be the only globally exported symbol.
  *	That is, everything else should be 'static'.
  */
+extern rlm_eap_module_t rlm_eap_leap;
 rlm_eap_module_t rlm_eap_leap = {
-	"eap_leap",
-	NULL,			/* attach */
-	leap_initiate,		/* Start the initial request, after Identity */
-	NULL,			/* authorization */
-	mod_authenticate,	/* authentication */
-	NULL,			/* detach */
+	.name		= "eap_leap",
+	.session_init	= mod_session_init,	/* Initialise a new EAP session */
+	.process	= mod_process		/* Process next round of EAP method */
 };

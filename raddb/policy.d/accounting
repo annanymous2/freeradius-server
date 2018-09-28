@@ -32,9 +32,14 @@ acct_unique {
 	#  initial authentication session (Common in a
 	#  wireless environment).
 	#
-	if("%{string:Class}" =~ /${policy.class_value_prefix}([0-9a-f]{32})/i) {
+	update request {
+	       &Tmp-String-9 := "${policy.class_value_prefix}"
+	}
+
+	if (("%{hex:&Class}" =~ /^%{hex:&Tmp-String-9}/) && \
+	    ("%{string:&Class}" =~ /^${policy.class_value_prefix}([0-9a-f]{32})/i)) {
 		update request {
-			Acct-Unique-Session-Id := "%{md5:%{1},%{Acct-Session-ID}}"
+			&Acct-Unique-Session-Id := "%{md5:%{1},%{Acct-Session-ID}}"
 		}
 	}
 
@@ -46,7 +51,7 @@ acct_unique {
 	#
 	else {
 		update request {
-			Acct-Unique-Session-Id := "%{md5:%{User-Name},%{Acct-Session-ID},%{NAS-IP-Address},%{NAS-Identifier},%{NAS-Port-ID},%{NAS-Port}}"
+			&Acct-Unique-Session-Id := "%{md5:%{User-Name},%{Acct-Session-ID},%{%{NAS-IPv6-Address}:-%{NAS-IP-Address}},%{NAS-Identifier},%{NAS-Port-ID},%{NAS-Port}}"
 		 }
 	}
 }
@@ -56,7 +61,57 @@ acct_unique {
 #
 insert_acct_class {
 	update reply {
-		Class = "${policy.class_value_prefix}%{md5:%t,%I,%{Packet-Src-Port},%{Packet-Src-IP-Address},%{NAS-IP-Address},%{Calling-Station-ID},%{User-Name}}"
+		&Class = "${policy.class_value_prefix}%{md5:%t,%I,%{Packet-Src-Port},%{%{Packet-Src-IP-Address}:-%{Packet-Src-IPv6-Address}},%{NAS-IP-Address},%{Calling-Station-ID},%{User-Name}}"
 	}
 }
 
+#
+#	Merges Acct-[Input|Output]-Octets and Acct-[Input|Output]-Gigawords into Acct-[Input|Output]-Octets64
+#
+#	If the &Attr-Foo doesn't exist, it's value is taken as zero.
+#
+acct_counters64.preacct {
+	update request {
+		&Acct-Input-Octets64 = "%{expr:(&Acct-Input-Gigawords << 32) | &Acct-Input-Octets}"
+		&Acct-Output-Octets64 = "%{expr:(&Acct-Output-Gigawords << 32) | &Acct-Output-Octets}"
+	}
+}
+
+#
+#  There is a delay between sending the Access-Accept and receiving
+#  the corresponding Accounting-Request "start" packet.  This delay
+#  can be leveraged by a user to bypass Simultaneous-Use checks.
+#
+#  The user can start up multiple sessions at the same time.  When
+#  that happens, both Simultaneous-Use checks are performed before any
+#  Accounting-Request packet is received.  Both Simultaneous-Use
+#  checks will result in "no user session" in the radacct table, and
+#  both sessions will be allowed.  At some point later in time, the
+#  Accounting-Request packets are received.  But by then it's too
+#  late.
+#
+#  The solution is to insert a temporary session into the "radacct"
+#  table, during the "post-auth" section.  This is done by
+#  uncommenting the "sql_session_start" entry in
+#  sites-enabled/default.  Then, reading
+#  raddb/mods-config/sql/main/*/queries.conf, and looking for the
+#  "sql_session_start" comments.  Follow the instructions there to
+#  finalize the configuration.
+#
+#  The server will then create a temporary entry in "radacct" before
+#  it returns the Access-Request.  Any other Access-Request which is
+#  received at the same time will then have it's Simultaneous-Use
+#  check see that entry, and will be rejected.
+#
+#  Subsequent Accounting-Request packets for the first session will
+#  then UPDATE (not INSERT) the data for the session.
+#
+#  There is still a small race condition as the Simultaneous-Use
+#  checks are not done at the same time as updating radacct.  But the
+#  window of opportunity is much smaller.  i.e. milliseconds, instead
+#  of seconds.
+#
+sql_session_start.post-auth {
+	acct_unique
+	sql.accounting
+}

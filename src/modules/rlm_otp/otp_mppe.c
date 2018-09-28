@@ -46,21 +46,22 @@ void otp_mppe(REQUEST *request, otp_pwe_t pwe, rlm_otp_t const *opt, char const 
 {
 	VALUE_PAIR *cvp, *rvp;
 
-	cvp = pairfind(request->packet->vps, pwattr[pwe - 1]->attr, pwattr[pwe - 1]->vendor, TAG_ANY);
-	rvp = pairfind(request->packet->vps, pwattr[pwe]->attr, pwattr[pwe]->vendor, TAG_ANY);
+	cvp = fr_pair_find_by_da(request->packet->vps, pwattr[pwe - 1], TAG_ANY);
+	rvp = fr_pair_find_by_da(request->packet->vps, pwattr[pwe], TAG_ANY);
 	if (!cvp || !rvp) {
 		return;
 	}
 
 	switch (pwe) {
+	case PWE_NONE:
 	case PWE_PAP:
 	case PWE_CHAP:
 		return;
 
 	case PWE_MSCHAP:
 		/* First, set some related attributes. */
-		pairmake_reply("MS-MPPE-Encryption-Policy", otp_mppe_policy[opt->mschap_mppe_policy], T_OP_EQ);
-		pairmake_reply("MS-MPPE-Encryption-Types", otp_mppe_types[opt->mschap_mppe_types], T_OP_EQ);
+		pair_make_reply("MS-MPPE-Encryption-Policy", otp_mppe_policy[opt->mschap_mppe_policy], T_OP_EQ);
+		pair_make_reply("MS-MPPE-Encryption-Types", otp_mppe_types[opt->mschap_mppe_types], T_OP_EQ);
 
 		/* If no MPPE, we're done. */
 		if (!opt->mschap_mppe_policy) {
@@ -108,7 +109,7 @@ void otp_mppe(REQUEST *request, otp_pwe_t pwe, rlm_otp_t const *opt, char const 
 			/* second md4 */
 			(void) MD4(password_md, MD4_DIGEST_LENGTH, &mppe_keys[8]);
 
-			/* Whew. Now stringify it for pairmake(). */
+			/* Whew. Now stringify it for fr_pair_make(). */
 			mppe_keys_string[0] = '0';
 			mppe_keys_string[1] = 'x';
 
@@ -116,7 +117,7 @@ void otp_mppe(REQUEST *request, otp_pwe_t pwe, rlm_otp_t const *opt, char const 
 				(void) sprintf(&mppe_keys_string[i*2+2], "%02X", mppe_keys[i]);
 			}
 
-			pairmake_reply("MS-CHAP-MPPE-Keys", mppe_keys_string, T_OP_EQ);
+			pair_make_reply("MS-CHAP-MPPE-Keys", mppe_keys_string, T_OP_EQ);
 		} /* (doing mppe) */
 	break; /* PWE_MSCHAP */
 
@@ -149,14 +150,14 @@ void otp_mppe(REQUEST *request, otp_pwe_t pwe, rlm_otp_t const *opt, char const 
 			/*
 			 * ugh.	The ASCII authenticator (auth_md_string) is sent
 			 * along with a single (useless) binary byte (the ID).
-			 * So we must "stringify" it again (for pairmake()) since the
+			 * So we must "stringify" it again (for fr_pair_make()) since the
 			 * binary byte requires the attribute to be of type "octets".
 			 */
 			/* 0x(ID)(ASCII("S="ASCII(auth_md))) */
 			char auth_octet_string[2 + 2 + (2 * sizeof(auth_md_string))];
 
 			char const *username = request->username->vp_strvalue;
-			int username_len = request->username->length;
+			int username_len = request->username->vp_length;
 
 			/* "Magic server to client signing constant" */
 			uint8_t magic1[39] = {
@@ -227,14 +228,14 @@ void otp_mppe(REQUEST *request, otp_pwe_t pwe, rlm_otp_t const *opt, char const 
 				(void) sprintf(&auth_octet_string[i * 2 +4], "%02X", auth_md_string[i]);
 			}
 
-			pairmake_reply("MS-CHAP2-Success", auth_octet_string, T_OP_EQ);
+			pair_make_reply("MS-CHAP2-Success", auth_octet_string, T_OP_EQ);
 		} /* Generate mutual auth info. */
 
 		/*
 		 * Now, set some MPPE related attributes.
 		 */
-		pairmake_reply("MS-MPPE-Encryption-Policy", otp_mppe_policy[opt->mschapv2_mppe_policy], T_OP_EQ);
-		pairmake_reply("MS-MPPE-Encryption-Types", otp_mppe_types[opt->mschapv2_mppe_types], T_OP_EQ);
+		pair_make_reply("MS-MPPE-Encryption-Policy", otp_mppe_policy[opt->mschapv2_mppe_policy], T_OP_EQ);
+		pair_make_reply("MS-MPPE-Encryption-Types", otp_mppe_types[opt->mschapv2_mppe_types], T_OP_EQ);
 
 		/* If no MPPE, we're done. */
 		if (!opt->mschapv2_mppe_policy) {
@@ -352,7 +353,7 @@ void otp_mppe(REQUEST *request, otp_pwe_t pwe, rlm_otp_t const *opt, char const 
 				(void) sprintf(&mppe_key_string[i*2+2], "%02X", MasterSendKey[i]);
 			}
 
-			pairmake_reply("MS-MPPE-Send-Key", mppe_key_string, T_OP_EQ);
+			pair_make_reply("MS-MPPE-Send-Key", mppe_key_string, T_OP_EQ);
 
 			/*
 			 * Generate the MS-MPPE-Recv-Key attribute.
@@ -362,7 +363,7 @@ void otp_mppe(REQUEST *request, otp_pwe_t pwe, rlm_otp_t const *opt, char const 
 			for (i = 0; i < sizeof(MasterReceiveKey); ++i) {
 				(void) sprintf(&mppe_key_string[i*2+2], "%02X", MasterReceiveKey[i]);
 			}
-			pairmake_reply("MS-MPPE-Recv-Key", mppe_key_string, T_OP_EQ);
+			pair_make_reply("MS-MPPE-Recv-Key", mppe_key_string, T_OP_EQ);
 		} /* (doing mppe) */
 
 		break; /* PWE_MSCHAP2 */

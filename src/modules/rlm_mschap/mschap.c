@@ -41,30 +41,26 @@ RCSID("$Id$")
 #include	"smbdes.h"
 #include	"mschap.h"
 
-/*
- *	ntpwdhash converts Unicode password to 16-byte NT hash
- *	with MD4
+/** Converts Unicode password to 16-byte NT hash with MD4
+ *
+ * @param[out] out Pointer to 16 byte output buffer.
+ * @param[in] password to encode.
+ * @return 0 on success else -1 on failure.
  */
-void mschap_ntpwdhash (uint8_t *szHash, char const *szPassword)
+int mschap_ntpwdhash(uint8_t *out, char const *password)
 {
-	char szUnicodePass[513];
-	int nPasswordLen;
-	int i;
+	ssize_t len;
+	uint8_t ucs2_password[512];
 
-	/*
-	 *	NT passwords are unicode.  Convert plain text password
-	 *	to unicode by inserting a zero every other byte
-	 */
-	nPasswordLen = strlen(szPassword);
-	for (i = 0; i < nPasswordLen; i++) {
-		szUnicodePass[i << 1] = szPassword[i];
-		szUnicodePass[(i << 1) + 1] = 0;
+	len = fr_utf8_to_ucs2(ucs2_password, sizeof(ucs2_password), password, strlen(password));
+	if (len < 0) {
+		*out = '\0';
+		return -1;
 	}
+	fr_md4_calc(out, (uint8_t *) ucs2_password, len);
 
-	/* Encrypt Unicode password to a 16-byte MD4 hash */
-	fr_md4_calc(szHash, (uint8_t *) szUnicodePass, (nPasswordLen<<1) );
+	return 0;
 }
-
 
 /*
  *	challenge_hash() is used by mschap2() and auth_response()
@@ -75,15 +71,15 @@ void mschap_challenge_hash(uint8_t const *peer_challenge,
 			    uint8_t const *auth_challenge,
 			    char const *user_name, uint8_t *challenge )
 {
-	fr_SHA1_CTX Context;
+	fr_sha1_ctx Context;
 	uint8_t hash[20];
 
-	fr_SHA1Init(&Context);
-	fr_SHA1Update(&Context, peer_challenge, 16);
-	fr_SHA1Update(&Context, auth_challenge, 16);
-	fr_SHA1Update(&Context, (uint8_t const *) user_name,
+	fr_sha1_init(&Context);
+	fr_sha1_update(&Context, peer_challenge, 16);
+	fr_sha1_update(&Context, auth_challenge, 16);
+	fr_sha1_update(&Context, (uint8_t const *) user_name,
 		      strlen(user_name));
-	fr_SHA1Final(hash, &Context);
+	fr_sha1_final(hash, &Context);
 	memcpy(challenge, hash, 8);
 }
 
@@ -98,7 +94,7 @@ void mschap_auth_response(char const *username,
 			  uint8_t const *peer_challenge, uint8_t const *auth_challenge,
 			  char *response)
 {
-	fr_SHA1_CTX Context;
+	fr_sha1_ctx Context;
 	static const uint8_t magic1[39] =
 	{0x4D, 0x61, 0x67, 0x69, 0x63, 0x20, 0x73, 0x65, 0x72, 0x76,
 	 0x65, 0x72, 0x20, 0x74, 0x6F, 0x20, 0x63, 0x6C, 0x69, 0x65,
@@ -112,23 +108,23 @@ void mschap_auth_response(char const *username,
 	 0x65, 0x20, 0x69, 0x74, 0x65, 0x72, 0x61, 0x74, 0x69, 0x6F,
 	 0x6E};
 
-	static char const hex[16] = "0123456789ABCDEF";
+	static char const hex[] = "0123456789ABCDEF";
 
 	size_t i;
 	uint8_t challenge[8];
 	uint8_t digest[20];
 
-	fr_SHA1Init(&Context);
-	fr_SHA1Update(&Context, nt_hash_hash, 16);
-	fr_SHA1Update(&Context, ntresponse, 24);
-	fr_SHA1Update(&Context, magic1, 39);
-	fr_SHA1Final(digest, &Context);
+	fr_sha1_init(&Context);
+	fr_sha1_update(&Context, nt_hash_hash, 16);
+	fr_sha1_update(&Context, ntresponse, 24);
+	fr_sha1_update(&Context, magic1, 39);
+	fr_sha1_final(digest, &Context);
 	mschap_challenge_hash(peer_challenge, auth_challenge, username, challenge);
-	fr_SHA1Init(&Context);
-	fr_SHA1Update(&Context, digest, 20);
-	fr_SHA1Update(&Context, challenge, 8);
-	fr_SHA1Update(&Context, magic2, 41);
-	fr_SHA1Final(digest, &Context);
+	fr_sha1_init(&Context);
+	fr_sha1_update(&Context, digest, 20);
+	fr_sha1_update(&Context, challenge, 8);
+	fr_sha1_update(&Context, magic2, 41);
+	fr_sha1_final(digest, &Context);
 
 	/*
 	 *	Encode the value of 'Digest' as "S=" followed by
@@ -137,7 +133,7 @@ void mschap_auth_response(char const *username,
 	 *	For example,
 	 *	"S=0123456789ABCDEF0123456789ABCDEF01234567"
 	 */
- 	response[0] = 'S';
+	response[0] = 'S';
 	response[1] = '=';
 
 	/*

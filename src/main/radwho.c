@@ -28,12 +28,8 @@ RCSID("$Id$")
 #include <freeradius-devel/sysutmp.h>
 #include <freeradius-devel/radutmp.h>
 
-#ifdef HAVE_PWD_H
 #include <pwd.h>
-#endif
-
 #include <sys/stat.h>
-
 #include <ctype.h>
 
 /*
@@ -49,24 +45,24 @@ static char const *eol = "\n";
 static int showname = -1;
 static int showptype = 0;
 static int showcid = 0;
-log_debug_t debug_flag = 0;
-char const *progname = "radwho";
+static char const *progname = "radwho";
 char const *radlog_dir = NULL;
-char const *radutmp_file = NULL;
-int check_config = false;
 
-char const *raddb_dir = NULL;
+static char const *radutmp_file = NULL;
+static char const *raddb_dir = RADDBDIR;
+static char const *dict_dir = DICTDIR;
+
 char const *radacct_dir = NULL;
-char const *radlib_dir = NULL;
-uint32_t myip = INADDR_ANY;
-int log_stripped_names;
+
+bool log_stripped_names;
 
 /*
  *	Global, for log.c to use.
  */
-struct main_config_t mainconfig;
+main_config_t main_config;
 
 #include <sys/wait.h>
+#ifdef HAVE_PTHREAD_H
 pid_t rad_fork(void)
 {
 	return fork();
@@ -76,14 +72,15 @@ pid_t rad_waitpid(pid_t pid, int *status)
 {
 	return waitpid(pid, status, 0);
 }
+#endif
 
-struct radutmp_config_t {
-  char *radutmp_fn;
+static struct radutmp_config_t {
+	char const *radutmp_fn;
 } radutmpconfig;
 
 static const CONF_PARSER module_config[] = {
-  { "filename", PW_TYPE_FILE_INPUT, 0, &radutmpconfig.radutmp_fn,  RADUTMP },
-  { NULL, -1, 0, NULL, NULL }
+	{ "filename", FR_CONF_POINTER(PW_TYPE_FILE_INPUT, &radutmpconfig.radutmp_fn), RADUTMP },
+	CONF_PARSER_TERMINATOR
 };
 
 /*
@@ -91,7 +88,7 @@ static const CONF_PARSER module_config[] = {
  */
 static char *fullname(char *username)
 {
-#ifdef HAVE_PWD_Hx
+#ifdef HAVE_PWD_H
 	struct passwd *pwd;
 	char *s;
 
@@ -218,18 +215,28 @@ int main(int argc, char **argv)
 
 	raddb_dir = RADIUS_DIR;
 
+#ifndef NDEBUG
+	if (fr_fault_setup(getenv("PANIC_ACTION"), argv[0]) < 0) {
+		fr_perror("radwho");
+		exit(EXIT_FAILURE);
+	}
+#endif
+
 	talloc_set_log_stderr();
 
-	while((c = getopt(argc, argv, "d:fF:nN:sSipP:crRu:U:Z")) != EOF) switch(c) {
+	while((c = getopt(argc, argv, "d:D:fF:nN:sSipP:crRu:U:Z")) != EOF) switch (c) {
 		case 'd':
 			raddb_dir = optarg;
+			break;
+		case 'D':
+			dict_dir = optarg;
 			break;
 		case 'F':
 			radutmp_file = optarg;
 			break;
 		case 'h':
-			usage(0);
-			break;
+			usage(0);	/* never returns */
+
 		case 'S':
 			hideshell = 1;
 			break;
@@ -275,10 +282,29 @@ int main(int argc, char **argv)
 		case 'Z':
 			zap = 1;
 			break;
+
 		default:
-			usage(1);
-			break;
+			usage(1);	/* never returns */
 	}
+
+	/*
+	 *	Mismatch between the binary and the libraries it depends on
+	 */
+	if (fr_check_lib_magic(RADIUSD_MAGIC_NUMBER) < 0) {
+		fr_perror("radwho");
+		return 1;
+	}
+
+	if (dict_init(dict_dir, RADIUS_DICTIONARY) < 0) {
+		fr_perror("radwho");
+		return 1;
+	}
+
+	if (dict_read(raddb_dir, RADIUS_DICTIONARY) == -1) {
+		fr_perror("radwho");
+		return 1;
+	}
+	fr_strerror();	/* Clear the error buffer */
 
 	/*
 	 *	Be safe.
@@ -304,23 +330,30 @@ int main(int argc, char **argv)
 	if (radutmp_file) goto have_radutmp;
 
 	/*
-	 *	Initialize mainconfig
+	 *	Initialize main_config
 	 */
-	memset(&mainconfig, 0, sizeof(mainconfig));
+	memset(&main_config, 0, sizeof(main_config));
 
 	/* Read radiusd.conf */
+	maincs = cf_section_alloc(NULL, "main", NULL);
+	if (!maincs) exit(1);
+
 	snprintf(buffer, sizeof(buffer), "%.200s/radiusd.conf", raddb_dir);
-	maincs = cf_file_read(buffer);
-	if (!maincs) {
-		fprintf(stderr, "%s: Error reading or parsing radiusd.conf.\n", argv[0]);
+	if (cf_file_read(maincs, buffer) < 0) {
+		fprintf(stderr, "%s: Error reading or parsing radiusd.conf\n", argv[0]);
+		talloc_free(maincs);
 		exit(1);
 	}
 
+	cs = cf_section_sub_find(maincs, "modules");
+	if (!cs) {
+		fprintf(stderr, "%s: No modules section found in radiusd.conf\n", argv[0]);
+		exit(1);
+	}
 	/* Read the radutmp section of radiusd.conf */
-	cs = cf_section_find_name2(cf_section_sub_find(maincs, "modules"), "radutmp", NULL);
-	if(!cs) {
-		fprintf(stderr, "%s: No configuration information in radutmp section of radiusd.conf!\n",
-			argv[0]);
+	cs = cf_section_sub_find_name2(cs, "radutmp", NULL);
+	if (!cs) {
+		fprintf(stderr, "%s: No configuration information in radutmp section of radiusd.conf\n", argv[0]);
 		exit(1);
 	}
 
@@ -337,7 +370,7 @@ int main(int argc, char **argv)
 	 */
 	if ((fp = fopen(radutmp_file, "r")) == NULL) {
 		fprintf(stderr, "%s: Error reading %s: %s\n",
-			progname, radutmp_file, strerror(errno));
+			progname, radutmp_file, fr_syserror(errno));
 		return 0;
 	}
 
@@ -408,12 +441,10 @@ int main(int argc, char **argv)
 			memcpy(nasname, rt.login, sizeof(rt.login));
 			nasname[sizeof(rt.login)] = '\0';
 
-			fr_print_string(nasname, 0, buffer,
-					 sizeof(buffer));
+			fr_prints(buffer, sizeof(buffer), nasname, -1, '"');
 			printf("User-Name = \"%s\"\n", buffer);
 
-			fr_print_string(session_id, 0, buffer,
-					 sizeof(buffer));
+			fr_prints(buffer, sizeof(buffer), session_id, -1, '"');
 			printf("Acct-Session-Id = \"%s\"\n", buffer);
 
 			if (zap) printf("Acct-Status-Type = Stop\n");
@@ -424,17 +455,19 @@ int main(int argc, char **argv)
 			printf("NAS-Port = %u\n", rt.nas_port);
 
 			switch (rt.proto) {
-				case 'S':
-					printf("Service-Type = Framed-User\n");
-					printf("Framed-Protocol = SLIP\n");
-					break;
-				case 'P':
-					printf("Service-Type = Framed-User\n");
-					printf("Framed-Protocol = PPP\n");
-					break;
-				default:
-					printf("Service-type = Login-User\n");
-					break;
+			case 'S':
+				printf("Service-Type = Framed-User\n");
+				printf("Framed-Protocol = SLIP\n");
+				break;
+
+			case 'P':
+				printf("Service-Type = Framed-User\n");
+				printf("Framed-Protocol = PPP\n");
+				break;
+
+			default:
+				printf("Service-type = Login-User\n");
+				break;
 			}
 			if (rt.framed_address != INADDR_NONE) {
 				printf("Framed-IP-Address = %s\n",
@@ -455,8 +488,7 @@ int main(int argc, char **argv)
 				       sizeof(rt.caller_id));
 				nasname[sizeof(rt.caller_id)] = '\0';
 
-				fr_print_string(nasname, 0, buffer,
-						 sizeof(buffer));
+				fr_prints(buffer, sizeof(buffer), nasname, -1, '"');
 				printf("Calling-Station-Id = \"%s\"\n", buffer);
 			}
 

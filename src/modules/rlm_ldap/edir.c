@@ -1,7 +1,8 @@
 /*
  *   This program is is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License, version 2 if the
- *   License as published by the Free Software Foundation.
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation; either version 2 of the License, or (at
+ *   your option) any later version.
  *
  *   This program is distributed in the hope that it will be useful,
  *   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -31,22 +32,20 @@ RCSID("$Id$")
 #include	<freeradius-devel/radiusd.h>
 #include	<freeradius-devel/rad_assert.h>
 
-#include <ldap.h>
-#include <lber.h>
 #include "ldap.h"
 
 /* NMAS error codes */
 #define NMAS_E_BASE	(-1600)
 
-#define NMAS_SUCCESS	0
-
-#define NMAS_E_FRAG_FAILURE		(NMAS_E_BASE-31)     /* -1631 0xFFFFF9A1 */
-#define NMAS_E_BUFFER_OVERFLOW		(NMAS_E_BASE-33)     /* -1633 0xFFFFF99F */
-#define NMAS_E_SYSTEM_RESOURCES		(NMAS_E_BASE-34)     /* -1634 0xFFFFF99E */
-#define NMAS_E_INSUFFICIENT_MEMORY	(NMAS_E_BASE-35)     /* -1635 0xFFFFF99D */
-#define NMAS_E_NOT_SUPPORTED		(NMAS_E_BASE-36)     /* -1636 0xFFFFF99C */
-#define NMAS_E_INVALID_PARAMETER	(NMAS_E_BASE-43)     /* -1643 0xFFFFF995 */
-#define NMAS_E_INVALID_VERSION		(NMAS_E_BASE-52)     /* -1652 0xFFFFF98C */
+#define NMAS_E_FRAG_FAILURE		(NMAS_E_BASE-31)	/* -1631 0xFFFFF9A1 */
+#define NMAS_E_BUFFER_OVERFLOW		(NMAS_E_BASE-33)	/* -1633 0xFFFFF99F */
+#define NMAS_E_SYSTEM_RESOURCES		(NMAS_E_BASE-34)	/* -1634 0xFFFFF99E */
+#define NMAS_E_INSUFFICIENT_MEMORY	(NMAS_E_BASE-35)	/* -1635 0xFFFFF99D */
+#define NMAS_E_NOT_SUPPORTED		(NMAS_E_BASE-36)	/* -1636 0xFFFFF99C */
+#define NMAS_E_INVALID_PARAMETER	(NMAS_E_BASE-43)	/* -1643 0xFFFFF995 */
+#define NMAS_E_INVALID_VERSION		(NMAS_E_BASE-52)	/* -1652 0xFFFFF98C */
+#define NMAS_E_ACCESS_NOT_ALLOWED	(NMAS_E_BASE-59)	/* -1659 0xFFFFF985 */
+#define NMAS_E_INVALID_SPM_REQUEST	(NMAS_E_BASE-97)	/* -1697 0xFFFFF95F */
 
 /* OID of LDAP extenstion calls to read Universal Password */
 #define NMASLDAP_GET_PASSWORD_REQUEST     "2.16.840.1.113719.1.39.42.100.13"
@@ -64,7 +63,9 @@ RCSID("$Id$")
  *
  * @param[out] request_bv where to write the request BER value (must be freed with ber_bvfree).
  * @param[in] dn to query for.
- * @return 0 on success, and < 0 on error.
+ * @return
+ *	- 0 on success.
+ *	- < 0 on error.
  */
 static int ber_encode_request_data(char const *dn, struct berval **request_bv)
 {
@@ -120,7 +121,9 @@ finish:
  * @param[out] server_version that responded.
  * @param[out] out data.
  * @param[out] outlen Length of data written to out.
- * @return 0 on success, and < 0 on error.
+ * @return
+ *	- 0 on success.
+ *	- < 0 on error.
  */
 static int ber_decode_login_data(struct berval *reply_bv, int *server_version, void *out, size_t *outlen)
 {
@@ -144,7 +147,7 @@ static int ber_decode_login_data(struct berval *reply_bv, int *server_version, v
 
 finish:
 
-	if(reply_ber) ber_free(reply_ber, 1);
+	if (reply_ber) ber_free(reply_ber, 1);
 
 	return err;
 }
@@ -155,7 +158,9 @@ finish:
  * @param[in] dn of user we want to retrieve the password for.
  * @param[out] password Where to write the retrieved password.
  * @param[out] passlen Length of data written to the password buffer.
- * @return 0 on success and < 0 on failure.
+ * @return
+ *	- 0 on success.
+ *	- < 0 on failure.
  */
 int nmasldap_get_password(LDAP *ld, char const *dn, char *password, size_t *passlen)
 {
@@ -235,4 +240,36 @@ finish:
 	}
 
 	return err;
+}
+
+char const *edir_errstr(int code) {
+	switch (code) {
+	case NMAS_E_FRAG_FAILURE:
+		return "BER manipulation failed";
+
+	case NMAS_E_BUFFER_OVERFLOW:
+		return "Insufficient buffer space to write retrieved password";
+
+	case NMAS_E_SYSTEM_RESOURCES:
+	case NMAS_E_INSUFFICIENT_MEMORY:
+		return "Insufficient memory or system resources";
+
+	case NMAS_E_NOT_SUPPORTED:
+		return "Server response indicated Universal Password is not supported (missing password response OID)";
+
+	case NMAS_E_INVALID_PARAMETER:
+		return "Bad arguments passed to eDir functions";
+
+	case NMAS_E_INVALID_VERSION:
+		return "LDAP EXT version does not match expected version" STRINGIFY(NMAS_LDAP_EXT_VERSION);
+
+	case NMAS_E_ACCESS_NOT_ALLOWED:
+		return "Bound user does not have sufficient rights to read the Universal Password of users";
+
+	case NMAS_E_INVALID_SPM_REQUEST:
+		return "Universal password is not enabled for the container of this user object";
+
+	default:
+		return ldap_err2string(code);
+	}
 }

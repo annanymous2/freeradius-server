@@ -26,6 +26,18 @@
 *.patch
 .pc
 
+# Editor projects
+*.kdev4
+*.cproject
+*.project
+*.bbprojectd
+
+# Exuberant ctags
+tags
+
+# Local icon files
+icon.png
+
 # OS specific cruft
 .DS_Store
 
@@ -47,7 +59,9 @@ autom4te.cache
 config.guess
 config.sub
 config.h
-debian/*
 src/main/radattr
 src/modules/lib/
 warnings.txt
+
+# Analyzer output
+/*.plist

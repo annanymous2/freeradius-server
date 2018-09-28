@@ -11,7 +11,7 @@ if test x$with_[]modname != xno; then
 	dnl set $fail to what's missing, on fatal errors.
 	dnl use AC_MSG_WARN() on important messages.
 	FR_SMART_CHECK_LIB(c, printf)
-        if test "x$ac_cv_lib_c_printf" != "xyes"; then
+	if test "x$ac_cv_lib_c_printf" != "xyes"; then
 		fail="$fail libc"
 	fi
 
@@ -36,7 +36,7 @@ if test x"$fail" != x""; then
 fi
 
 mod_ldflags="${SMART_LIBS}"
-mod_cflags="${SMART_CFLAGS}"
+mod_cflags="${SMART_CPPFLAGS}"
 
 AC_SUBST(mod_cflags)
 AC_SUBST(mod_ldflags)

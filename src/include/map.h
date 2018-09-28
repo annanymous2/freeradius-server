@@ -15,95 +15,24 @@
  */
 #ifndef MAP_H
 #define MAP_H
-/*
+/**
  * $Id$
  *
  * @file map.h
- * @brief Structures and prototypes for templates / maps
+ * @brief Structures and prototypes for maps
  *
- * @copyright 2013  The FreeRADIUS server project
+ * @copyright 2015 The FreeRADIUS server project
+ * @copyright 2015 Arran Cudbard-bell <a.cudbardb@freeradius.org>
  */
 
 RCSIDH(map_h, "$Id$")
 
 #include <freeradius-devel/conffile.h>
+#include <freeradius-devel/tmpl.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-typedef enum pair_lists {
-	PAIR_LIST_UNKNOWN = 0,
-	PAIR_LIST_REQUEST,
-	PAIR_LIST_REPLY,
-	PAIR_LIST_CONTROL,
-#ifdef WITH_PROXY
-	PAIR_LIST_PROXY_REQUEST,
-	PAIR_LIST_PROXY_REPLY,
-#endif
-#ifdef WITH_COA
-	PAIR_LIST_COA,
-	PAIR_LIST_COA_REPLY,
-	PAIR_LIST_DM,
-	PAIR_LIST_DM_REPLY
-#endif
-} pair_lists_t;
-
-extern const FR_NAME_NUMBER pair_lists[];
-
-typedef enum requests {
-	REQUEST_UNKNOWN = 0,
-	REQUEST_OUTER,
-	REQUEST_CURRENT,
-	REQUEST_PARENT	/* For future use */
-} request_refs_t;
-
-extern const FR_NAME_NUMBER request_refs[];
-
-typedef struct pair_list {
-	char const		*name;
-	VALUE_PAIR		*check;
-	VALUE_PAIR		*reply;
-	int			lineno;
-	int			order;
-	struct pair_list	*next;
-	struct pair_list	*lastdefault;
-} PAIR_LIST;
-
-typedef enum vpt_type {
-	VPT_TYPE_UNKNOWN = 0,
-	VPT_TYPE_LITERAL,		//!< Is a literal string.
-	VPT_TYPE_XLAT,			//!< Needs to be expanded.
-	VPT_TYPE_ATTR,			//!< Is a dictionary attribute.
-	VPT_TYPE_LIST,			//!< Is a list.
-	VPT_TYPE_REGEX,			//!< Is a regex.
-	VPT_TYPE_EXEC,			//!< Needs to be executed.
-	VPT_TYPE_DATA			//!< is a value_data_t
-} vpt_type_t;
-
-extern const FR_NAME_NUMBER vpt_types[];
-
-/** A pre-parsed template attribute
- *
- *  Value pair template, used when processing various mappings sections
- *  to create a real valuepair later.
- *
- * @see value_pair_map_t
- */
-typedef struct value_pair_tmpl_t {
-	vpt_type_t		type;	 //!< What type of value tmpl refers to.
-	char const		*name;   //!< Original attribute ref string, or
-					 //!< where this refers to a none FR
-					 //!< attribute, just the string id for
-					 //!< the attribute.
-
-	request_refs_t		request; //!< Request to search or insert in.
-	pair_lists_t		list;	 //!< List to search or insert in.
-
-	DICT_ATTR const		*da;	 //!< Resolved dictionary attribute.
-	value_data_t const	*vpd;	 //!< actual data
-	size_t			length;  //!< of the vpd data
-} value_pair_tmpl_t;
 
 /** Value pair map
  *
@@ -113,50 +42,68 @@ typedef struct value_pair_tmpl_t {
  * Neither src or dst need to be an FR attribute, and their type can be inferred
  * from whether map->da is NULL (not FR).
  *
- * @see value_pair_tmpl_t
+ * @see vp_tmpl_t
  */
-typedef struct value_pair_map {
-	value_pair_tmpl_t	*dst;	//!< Typically describes the attribute
-					//!< to add or modify.
-	value_pair_tmpl_t	*src;   //!< Typically describes a value or a
-					//!< src attribute to copy.
+typedef struct vp_map {
+	vp_tmpl_t		*lhs;	//!< Typically describes the attribute to add, modify or compare.
+	vp_tmpl_t		*rhs;   //!< Typically describes a literal value or a src attribute to copy or compare.
 
-	FR_TOKEN		op; 	//!< The operator that controls
-					//!< insertion of the dst attribute.
+	FR_TOKEN		op; 	//!< The operator that controls insertion of the dst attribute.
 
-	CONF_ITEM		*ci;	//!< Config item that the map was
-					//!< created from. Mainly used for
+	CONF_ITEM		*ci;	//!< Config item that the map was created from. Mainly used for
 					//!< logging validation errors.
 
-	struct value_pair_map	*next;	//!< The next valuepair map.
-} value_pair_map_t;
+	struct vp_map		*next;	//!< The next valuepair map.
+} vp_map_t;
 
-void radius_tmplfree(value_pair_tmpl_t **tmpl);
-int radius_parse_attr(char const *name, value_pair_tmpl_t *vpt,
-		      request_refs_t request_def,
-		      pair_lists_t list_def);
-value_pair_tmpl_t *radius_attr2tmpl(TALLOC_CTX *ctx, char const *name,
-				    request_refs_t request_def,
-				    pair_lists_t list_def);
+#ifndef WITH_VERIFY_PTR
+#  define VERIFY_MAP(_x) rad_assert((_x)->lhs)
+#else
+#  define VERIFY_MAP(_x) do { \
+	VERIFY_TMPL((_x)->lhs); \
+	if ((_x)->rhs) VERIFY_TMPL((_x)->rhs); \
+} while (0)
+#endif
 
-value_pair_tmpl_t *radius_str2tmpl(TALLOC_CTX *ctx, char const *name, FR_TOKEN type);
-size_t radius_tmpl2str(char *buffer, size_t bufsize, value_pair_tmpl_t const *vpt);
-int radius_attrmap(CONF_SECTION *cs, value_pair_map_t **head,
-		   pair_lists_t dst_list_def, pair_lists_t src_list_def,
-		   unsigned int max);
-value_pair_map_t *radius_str2map(TALLOC_CTX *ctx, char const *lhs, FR_TOKEN lhs_type,
+typedef int (*map_validate_t)(vp_map_t *map, void *ctx);
+typedef int (*radius_map_getvalue_t)(TALLOC_CTX *ctx, VALUE_PAIR **out, REQUEST *request,
+				     vp_map_t const *map, void *uctx);
+
+int		map_afrom_cp(TALLOC_CTX *ctx, vp_map_t **out, CONF_PAIR *cp,
+			     request_refs_t dst_request_def, pair_lists_t dst_list_def,
+			     request_refs_t src_request_def, pair_lists_t src_list_def);
+
+int		map_afrom_fields(TALLOC_CTX *ctx, vp_map_t **out, char const *lhs, FR_TOKEN lhs_type,
 				 FR_TOKEN op, char const *rhs, FR_TOKEN rhs_type,
-				 request_refs_t dst_request_def,
-				 pair_lists_t dst_list_def,
-				 request_refs_t src_request_def,
-				 pair_lists_t src_list_def);
-size_t radius_map2str(char *buffer, size_t bufsize, value_pair_map_t const *map);
-value_pair_map_t *radius_cp2map(TALLOC_CTX *ctx, CONF_PAIR *cp,
-				request_refs_t dst_request_def,
-				pair_lists_t dst_list_def,
-				request_refs_t src_request_def,
-				pair_lists_t src_list_def);
+				 request_refs_t dst_request_def, pair_lists_t dst_list_def,
+				 request_refs_t src_request_def, pair_lists_t src_list_def);
 
+int		map_afrom_cs(vp_map_t **out, CONF_SECTION *cs,
+			     pair_lists_t dst_list_def, pair_lists_t src_list_def,
+			     map_validate_t validate, void *ctx, unsigned int max) CC_HINT(nonnull(1, 2));
+
+int		map_afrom_attr_str(TALLOC_CTX *ctx, vp_map_t **out, char const *raw,
+				   request_refs_t dst_request_def, pair_lists_t dst_list_def,
+				   request_refs_t src_request_def, pair_lists_t src_list_def);
+
+int8_t		map_cmp_by_lhs_attr(void const *a, void const *b);
+
+void		map_sort(vp_map_t **maps, fr_cmp_t cmp);
+
+int		map_to_vp(TALLOC_CTX *ctx, VALUE_PAIR **out, REQUEST *request,
+			  vp_map_t const *map, void *uctx) CC_HINT(nonnull (2,3,4));
+
+int		map_to_request(REQUEST *request, vp_map_t const *map,
+			       radius_map_getvalue_t func, void *ctx);
+
+bool		map_dst_valid(REQUEST *request, vp_map_t const *map);
+
+size_t		map_prints(char *buffer, size_t bufsize, vp_map_t const *map);
+
+void		map_debug_log(REQUEST *request, vp_map_t const *map,
+			      VALUE_PAIR const *vp) CC_HINT(nonnull(1, 2));
+
+bool		map_cast_from_hex(vp_map_t *map, FR_TOKEN rhs_type, char const *rhs);
 #ifdef __cplusplus
 }
 #endif

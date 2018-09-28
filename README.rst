@@ -1,28 +1,27 @@
 The FreeRADIUS server
 =====================
 
-0. BRANCH STATE
----------------
-|BuildStatus|_
+|BuildStatus|_ |CoverityStatus|_
 
-.. |BuildStatus| image:: https://travis-ci.org/FreeRADIUS/freeradius-server.png
-.. _BuildStatus: https://travis-ci.org/FreeRADIUS/freeradius-server
+.. contents::
+   :local:
 
-1. INTRODUCTION
----------------
+Introduction
+------------
 
 The FreeRADIUS Server Project is a high performance and highly
-configurable RADIUS server that is available under the terms of the
-GNU GPLv2.  Using RADIUS allows authentication and authorization for a
-network to be centralized, and minimizes the number of changes that
-have to be done when adding or deleting new users to a network.
+configurable multi-protocol policy server, supporting RADIUS, DHCPv4
+and VMPS. It is available under the terms of the GNU GPLv2.
+Using RADIUS allows authentication and authorization for a network
+to be centralized, and minimizes the number of changes that have to
+be done when adding or deleting new users to a network.
 
 FreeRADIUS can authenticate users on systems such as 802.1x (WiFi),
 dialup, PPPoE, VPN's, VoIP, and many others.  It supports back-end
 databases such as MySQL, PostgreSQL, Oracle, Microsoft Active
-Directory, OpenLDAP, and many more.  It is used daily to authenticate
-the Internet access for hundreds of millions of people, in sites
-ranging from 10 users, to 10 million and more users.
+Directory, Redis, OpenLDAP, and many more.  It is used daily to
+authenticate the Internet access for hundreds of millions of people,
+in sites ranging from 10 to 10 million+ users.
 
 Version 3.0 of the server is largely compatible with version 2.x, but
 we highly recommend that you recreate your configuration, rather than
@@ -39,66 +38,17 @@ existing configuration should be carefully migrated to the new
 version, in order to take advantage of the new features which can
 greatly simply configuration.
 
-Please see http://freeradius.org and http://wiki.freeradius.org for
+Please see https://freeradius.org and https://wiki.freeradius.org for
 more information.
 
 
-2. INSTALLATION
----------------
+Installation
+------------
 
 To install the server, please see the INSTALL file in this directory.
 
-
-3. DEBUGGING THE SERVER
------------------------
-
-Run the server in debugging mode, (``radiusd -X``) and READ the output.
-We cannot emphasize this point strongly enough.  The vast majority of
-problems can be solved by carefully reading the debugging output,
-which includes WARNINGs about common issues, and suggestions for how
-they may be fixed.
-
-Read the FAQ.  Many questions are answered there.  See the Wiki
-
-http://wiki.freeradius.org
-
-Read the configuration files.  Many parts of the server have NO
-documentation, other than comments in the configuration file.
-
-Search the mailing lists.  There is a Google link on the bottom of
-the page:
-
-http://www.freeradius.org/list/users.html
-
-Type some key words into the search box, and you should find
-discussions about common problems and solution.
-
-
-4. ADDITIONAL INFORMATION
--------------------------
-
-See ``doc/README`` for more information about FreeRADIUS.
-
-There is an O'Reilly book available.  It serves as a good
-introduction for anyone new to RADIUS.  However, it is almost 11 years
-old, and is not much more than a basic introduction to the subject.
-
-http://www.amazon.com/exec/obidos/ASIN/0596003226/freeradiusorg-20/
-
-For other RADIUS information, the Livington internet site had a lot
-of information about radius online.  Unfortunately Livingston, and the
-site, don't exist anymore but there is a copy of the site still at:
-
-http://portmasters.com/www.livingston.com/
-
-Especially worth reading is the "RADIUS for Unix administrators guide"
-
-* HTML:  http://portmasters.com/tech/docs/radius/1185title.html
-* PDF:   http://portmasters.com/tech/docs/pdf/radius.pdf
-
-
-5. PROBLEMS AND CONCERNS
-------------------------
+Configuring the server
+----------------------
 
 We understand that the server may be difficult to configure,
 install, or administer.  It is, after all, a complex system with many
@@ -111,13 +61,15 @@ following:
 
 1. Start off with the default configuration files.
 2. Save a copy of the default configuration: It WORKS.  Don't change it!
-3. Verify that the server starts.  (You ARE using debugging mode, right?)
+3. Verify that the server starts - in debugging mode (``radiusd -X``).
 4. Send it test packets using "radclient", or a NAS or AP.
-5. Verify that the server does what you expect.
-      - If it does not work, change the configuration, and go to step (3) 
-        If you're stuck, revert to using the "last working" configuration.
-      - If it works, proceed to step (6).
-6. Save a copy of the working configuration, along with a note of what 
+5. Verify that the server does what you expect
+
+   - If it does not work, change the configuration, and go to step (3)
+   - If you're stuck, revert to using the "last working" configuration.
+   - If it works, proceed to step (6).
+  
+6. Save a copy of the working configuration, along with a note of what
    you changed, and why.
 7. Make a SMALL change to the configuration.
 8. Repeat from step (3).
@@ -128,14 +80,57 @@ frustrating to proceed via a series of small steps, the alternative
 will always take more time.  The "fast and loose" way will be MORE
 frustrating than quickly making forward progress!
 
+Debugging the Server
+--------------------
 
-6. FEEDBACK
------------
+Run the server in debugging mode, (``radiusd -X``) and READ the output.
+We cannot emphasize this point strongly enough.  The vast majority of
+problems can be solved by carefully reading the debugging output,
+which includes WARNINGs about common issues, and suggestions for how
+they may be fixed.
 
-If you have any comments, bug reports, problems, or concerns, please
-send them to the 'freeradius-users' list (see the URL above).  We will
-do our best to answer your questions, to fix the problems, and to
-generally improve the server in any way we can.
+Many questions are answered on the Wiki:
+
+https://wiki.freeradius.org
+
+Read the configuration files.  Many parts of the server are
+documented only with extensive comments in the configuration files.
+
+Search the mailing lists. For example, using Google, searching
+"site:lists.freeradius.org <search term>" will return results from
+the FreeRADIUS mailing lists.
+
+https://freeradius.org/support/
+
+
+Feedback, Defects, and Community Support
+----------------------------------------
+
+If you have any comments, or are having difficulty getting FreeRADIUS
+to do what you want, please post to the 'freeradius-users' list
+(see the URL above).  The FreeRADIUS mailing list is operated, and
+contributed to, by the FreeRADIUS community. Users of the list will be
+more than happy to answer your questions, with the caveat that you've
+read documentation relevant to your issue first.
+
+If you suspect a defect in the server, would like to request a feature,
+or submit a code patch, please use the GitHub issue tracker for the
+freeradius-server `repository
+<https://github.com/FreeRADIUS/freeradius-server>`_. However, it
+is nearly always best to raise the issue on the mailing lists
+first to determine whether it really is a defect or missing
+feature..
+
+Instructions for gathering data for defect reports can be found in
+``doc/bugs`` or on the `wiki
+<https://wiki.freeradius.org/project/bug-reports>`_.
+
+Under no circumstances should the issue tracker be used for support
+requests, those questions belong on the user's mailing list.  If you
+post questions related to the server in the issue tracker, the issue
+will be closed and locked.  If you persist in positing questions to
+the issue tracker you will be banned from all FreeRADIUS project
+repositories on GitHub.
 
 Please do NOT complain that the developers aren't answering your
 questions quickly enough, or aren't fixing the problems quickly
@@ -144,10 +139,10 @@ documentation.  We recognize that the documentation isn't perfect, but
 it *does* exist, and reading it can solve most common questions.
 
 FreeRADIUS is the cumulative effort of many years of work by many
-people, and you've gotten it for free.  No one gets paid to work on
-FreeRADIUS, and no one is getting paid to answer your questions.  This
-is free software, and the only way it gets better is if you make a
-contribution back to the project ($$, code, or documentation).
+people, and you've gotten it for free.  No one is getting paid to answer
+your questions.  This is free software, and the only way it gets better
+is if you make a contribution back to the project ($$, code, or
+documentation).
 
 We will note that the people who get most upset about any answers to
 their questions usually do not have any intention of contributing to
@@ -158,11 +153,27 @@ someone to address your concerns.  Either way, make sure that any fix
 is contributed back to the project so that no one else runs into the
 same issue.
 
-Support is available.  See the "support" link at the top of the main
-web page:
+Books on RADIUS
+---------------
 
-http://freeradius.org
+See ``doc/README`` for more information about FreeRADIUS.
 
-Please submit bug reports, suggestions, or patches.  That feedback
-gives the developers a guide as to where they should focus their work.
-If you like the server, feel free to mail the list and say so.
+There is an O'Reilly book available.  It serves as a good
+introduction for anyone new to RADIUS.  However, it is almost 18 years
+old, and is not much more than a basic introduction to the subject.
+
+https://www.amazon.com/exec/obidos/ASIN/0596003226/freeradiusorg-20/
+
+Commercial support
+------------------
+
+Technical support, managed systems support, custom deployments,
+sponsored feature development and many other commercial services
+are available from `Network RADIUS <http://www.networkradius.com>`_.
+
+
+.. |CoverityStatus| image:: https://scan.coverity.com/projects/58/badge.svg?
+.. _CoverityStatus: https://scan.coverity.com/projects/58
+
+.. |BuildStatus| image:: https://travis-ci.org/FreeRADIUS/freeradius-server.png?branch=v3.0.x
+.. _BuildStatus: https://travis-ci.org/FreeRADIUS/freeradius-server

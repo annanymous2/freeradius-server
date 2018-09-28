@@ -29,14 +29,10 @@ RCSIDH(base64_h, "$Id$")
 #define FR_BASE64_ENC_LENGTH(inlen) ((((inlen) + 2) / 3) * 4)
 #define FR_BASE64_DEC_LENGTH(inlen) ((3 * (inlen / 4)) + 2)
 
-int fr_isbase64(char c);
+bool fr_is_base64(char c);
 
-size_t fr_base64_encode(uint8_t const *in, size_t inlen, char *out, size_t outlen);
+size_t fr_base64_encode(char *out, size_t outlen, uint8_t const *in, size_t inlen);
 
-ssize_t fr_base64_encode_alloc(uint8_t const *in, size_t inlen, char **out);
-
-ssize_t fr_base64_decode(char const *in, size_t inlen, uint8_t *out, size_t outlen);
-
-ssize_t fr_base64_decode_alloc(char const *in, size_t inlen, uint8_t **out);
+ssize_t fr_base64_decode(uint8_t *out, size_t outlen, char const *in, size_t inlen);
 
 #endif /* _FR_BASE64_H */

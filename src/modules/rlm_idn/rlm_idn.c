@@ -1,7 +1,8 @@
 /*
  *   This program is is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License, version 2 if the
- *   License as published by the Free Software Foundation.
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation; either version 2 of the License, or (at
+ *   your option) any later version.
  *
  *   This program is distributed in the hope that it will be useful,
  *   but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -31,9 +32,9 @@ RCSID("$Id$")
  *      Structure for module configuration
  */
 typedef struct rlm_idn_t {
-        char const *xlat_name;
-        int use_std3_ascii_rules;
-        int allow_unassigned;
+	char const	*xlat_name;
+	bool		use_std3_ascii_rules;
+	bool		allow_unassigned;
 } rlm_idn_t;
 
 /*
@@ -66,43 +67,42 @@ typedef struct rlm_idn_t {
 static const CONF_PARSER mod_config[] = {
 	/*
 	 *	If a STRINGPREP profile other than NAMEPREP is ever desired,
-         *	we can implement an option, and it will default to NAMEPREP settings.
-         *	...and if we want raw punycode or to tweak Bootstring parameters,
-         *	we can do similar things.  All defaults should result in IDNA
-         *	ToASCII with the use_std3_ascii_rules flag set, allow_unassigned unset,
-         *	because that is the forseeable use case.
-         *
-         *	Note that doing anything much different will require choosing the
-         *	appropriate libidn API functions, as we currently call the IDNA
-         *	convenience functions.
-         *
-         *	Also note that right now we do not provide ToUnicode, which may or
-         *	may not be useful as an xlat... depends on how the results need to
-         *	be used.
-         */
+	 *	we can implement an option, and it will default to NAMEPREP settings.
+	 *	...and if we want raw punycode or to tweak Bootstring parameters,
+	 *	we can do similar things.  All defaults should result in IDNA
+	 *	ToASCII with the use_std3_ascii_rules flag set, allow_unassigned unset,
+	 *	because that is the forseeable use case.
+	 *
+	 *	Note that doing anything much different will require choosing the
+	 *	appropriate libidn API functions, as we currently call the IDNA
+	 *	convenience functions.
+	 *
+	 *	Also note that right now we do not provide ToUnicode, which may or
+	 *	may not be useful as an xlat... depends on how the results need to
+	 *	be used.
+	 */
 
-	{"allow_unassigned", PW_TYPE_BOOLEAN, offsetof(rlm_idn_t, allow_unassigned), NULL, "no" },
-	{"use_std3_ascii_rules", PW_TYPE_BOOLEAN, offsetof(rlm_idn_t, use_std3_ascii_rules), NULL, "yes" },
-
-	{ NULL, -1, 0, NULL, NULL }
+	{ "allow_unassigned", FR_CONF_OFFSET(PW_TYPE_BOOLEAN, rlm_idn_t, allow_unassigned), "no" },
+	{ "use_std3_ascii_rules", FR_CONF_OFFSET(PW_TYPE_BOOLEAN, rlm_idn_t, use_std3_ascii_rules), "yes" },
+	CONF_PARSER_TERMINATOR
 };
 
-static ssize_t xlat_idna(void *instance, UNUSED REQUEST *request, char const *fmt, char *out, size_t freespace)
+static ssize_t xlat_idna(void *instance, REQUEST *request, char const *fmt, char *out, size_t freespace)
 {
 	rlm_idn_t *inst = instance;
 	char *idna = NULL;
 	int res;
 	size_t len;
-        int flags = 0;
+	int flags = 0;
 
-        if (inst->use_std3_ascii_rules) {
-        	flags |= IDNA_USE_STD3_ASCII_RULES;
-        }
-        if (inst->allow_unassigned) {
-        	flags |= IDNA_ALLOW_UNASSIGNED;
+	if (inst->use_std3_ascii_rules) {
+		flags |= IDNA_USE_STD3_ASCII_RULES;
+	}
+	if (inst->allow_unassigned) {
+		flags |= IDNA_ALLOW_UNASSIGNED;
 	}
 
-        res = idna_to_ascii_8z(fmt, &idna, flags);
+	res = idna_to_ascii_8z(fmt, &idna, flags);
 	if (res) {
 		if (idna) {
 			free (idna); /* Docs unclear, be safe. */
@@ -112,11 +112,11 @@ static ssize_t xlat_idna(void *instance, UNUSED REQUEST *request, char const *fm
 		return -1;
 	}
 
-        len = strlen(idna);
+	len = strlen(idna);
 
 	/* 253 is max DNS length */
-        if (!((len < (freespace - 1)) && (len <= 253))) {
-	        /* Never provide a truncated result, as it may be queried. */
+	if (!((len < (freespace - 1)) && (len <= 253))) {
+		/* Never provide a truncated result, as it may be queried. */
 		REDEBUG("Conversion was truncated");
 
 		free(idna);
@@ -130,7 +130,7 @@ static ssize_t xlat_idna(void *instance, UNUSED REQUEST *request, char const *fm
 	return len;
 }
 
-static int mod_instantiate(CONF_SECTION *conf, void *instance)
+static int mod_bootstrap(CONF_SECTION *conf, void *instance)
 {
 	rlm_idn_t *inst = instance;
 	char const *xlat_name;
@@ -147,26 +147,12 @@ static int mod_instantiate(CONF_SECTION *conf, void *instance)
 	return 0;
 }
 
+extern module_t rlm_idn;
 module_t rlm_idn = {
-	RLM_MODULE_INIT,
-	"idn",
-	RLM_TYPE_THREAD_SAFE,		/* type */
-	sizeof(rlm_idn_t),
-	mod_config,			/* CONF_PARSER */
-	mod_instantiate,		/* instantiation */
-	NULL,				/* detach */
-	{
-		NULL,		 	/* authentication */
-		NULL,			/* authorization */
-		NULL,			/* preaccounting */
-		NULL,			/* accounting */
-		NULL,			/* checksimul */
-		NULL,			/* pre-proxy */
-		NULL,			/* post-proxy */
-		NULL			/* post-auth */
-#ifdef WITH_COA
-		, NULL,
-		NULL
-#endif
-	},
+	.magic		= RLM_MODULE_INIT,
+	.name		= "idn",
+	.type		= RLM_TYPE_THREAD_SAFE,
+	.inst_size	= sizeof(rlm_idn_t),
+	.config		= mod_config,
+	.bootstrap	= mod_bootstrap
 };

@@ -12,6 +12,9 @@
 
 # Uncomment this to turn on verbose mode.
 export DH_VERBOSE=1
+DPKG_EXPORT_BUILDFLAGS = 1
+include /usr/share/dpkg/default.mk
+
 
 .NOTPARALLEL:
 
@@ -26,7 +29,7 @@ logdir          = /var/log/$(package)
 pkgdocdir       = /usr/share/doc/$(package)
 raddbdir        = /etc/$(package)
 
-modulelist=krb5 ldap sql_mysql sql_iodbc sql_postgresql
+modulelist=krb5 ldap sql_mysql sql_iodbc sql_postgresql dhcp redis rest yubikey
 pkgs=$(shell dh_listpackages)
 
 # This has to be exported to make some magic below work.
@@ -49,6 +52,13 @@ else
 	confflags += --build $(DEB_BUILD_GNU_TYPE) --host $(DEB_HOST_GNU_TYPE)
 endif
 
+# Add dependency on distribution specific version of openssl that fixes Heartbleed (CVE-2014-0160).
+ifeq ($(shell dpkg-vendor --derives-from Ubuntu && echo yes),yes)
+       SUBSTVARS = -Vdist:Depends="libssl1.0.0 (>= 1.0.1f-1ubuntu2)"
+else
+       SUBSTVARS = -Vdist:Depends="libssl1.0.0 (>= 1.0.1e-2+deb7u5) | libssl1.0.2"
+endif
+
 include /usr/share/quilt/quilt.make
 
 config.status: configure
@@ -66,11 +76,12 @@ else
 endif
 	ln -s /usr/share/misc/config.sub config.sub
 	ln -s /usr/share/misc/config.guess config.guess
-	
+
 
 	./configure $(confflags) \
 		--config-cache \
 		--disable-developer \
+		--disable-openssl-version-check \
 		--prefix=/usr \
 		--exec-prefix=/usr \
 		--mandir=$(mandir) \
@@ -85,29 +96,36 @@ endif
 		--without-rlm_eap_tnc \
 		--with-rlm_sql_postgresql_lib_dir=`pg_config --libdir` \
 		--with-rlm_sql_postgresql_include_dir=`pg_config --includedir` \
+		--with-iodbc-include-dir='/usr/include/iodbc' \
 		--without-rlm_eap_ikev2 \
 		--without-rlm_sql_oracle \
-		--without-rlm_sql_unixodbc
+		--without-rlm_sql_unixodbc \
+		--enable-reproducible-builds
 
-#Architecture 
-build: patch build-arch build-indep
+	rm config.guess
+	mv config.guess.dist config.guess
+	rm config.sub
+	mv config.sub.dist config.sub
 
-build-arch: build-arch-stamp
+#Architecture
+build: build-arch build-indep
+
+build-arch: patch build-arch-stamp
 build-arch-stamp: config.status
-	$(MAKE) 
+	$(MAKE)
 	touch $@
 
-build-indep: build-indep-stamp
+build-indep: patch build-indep-stamp
 build-indep-stamp: config.status
 	touch $@
 
 clean: unpatch
 	dh_testdir
 	dh_testroot
-	rm -f build-arch-stamp build-indep-stamp 
+	rm -f build-arch-stamp build-indep-stamp
 	rm -f config.cache config.log
 	rm -f src/freeradius-devel
-	
+
 	[ ! -d src/modules/lib ] || rm -fr src/modules/lib || true
 	[ ! -d src/binary ] || rm -fr src/binary || true
 
@@ -123,7 +141,7 @@ ifeq (config.guess.dist,$(wildcard config.guess.dist))
 	rm -f config.guess
 	mv config.guess.dist config.guess
 endif
-	dh_clean 
+	dh_clean
 
 install: install-arch
 
@@ -133,15 +151,16 @@ install-arch: build-arch-stamp
 	dh_installdirs
 	test -d $(freeradius_dir)/usr/lib/freeradius || mkdir -p $(freeradius_dir)/usr/lib/freeradius
 	ln -fs rlm_sql.so $(freeradius_dir)/usr/lib/freeradius/librlm_sql.so
-	$(MAKE) install R=$(freeradius_dir)
-	
+	$(MAKE) install R=$(freeradius_dir) PACKAGE='debian'
+
 	# rename radius binary to play nicely with others
 	mv $(freeradius_dir)/usr/sbin/radiusd $(freeradius_dir)/usr/sbin/$(package)
 	mv $(freeradius_dir)/$(mandir)/man8/radiusd.8 $(freeradius_dir)/$(mandir)/man8/$(package).8
-	
+
 	dh_install -i --sourcedir=$(freeradius_dir)
 	dh_install --sourcedir=$(freeradius_dir) -p libfreeradius3
 	dh_install --sourcedir=$(freeradius_dir) -p libfreeradius-dev
+	dh_install --sourcedir=$(freeradius_dir) -p freeradius-config
 
 	for mod in ${modulelist}; do \
 	  pkg=$${mod##sql_} ; \
@@ -149,30 +168,35 @@ install-arch: build-arch-stamp
 	  rm -f $(freeradius_dir)/usr/lib/freeradius/rlm_$$mod*.so ; \
 	done
 
+	dh_install --sourcedir=$(freeradius_dir) -p freeradius-memcached
+	rm -f $(freeradius_dir)/usr/lib/freeradius/rlm_cache_memcached.so
+
 	dh_install --sourcedir=$(freeradius_dir) -p freeradius-utils
 	dh_install --sourcedir=$(freeradius_dir) -p freeradius
-	
+
 	dh_strip -a --dbg-package=freeradius-dbg
 
 	dh_makeshlibs -a -n
-	dh_shlibdeps
+	dh_shlibdeps -l$(freeradius_dir)/usr/lib/freeradius
 
 binary-common:
 	dh_testdir
 	dh_testroot
 	dh_installchangelogs doc/ChangeLog
-	dh_installdocs
+	dh_installdocs -Xdebian/tmp/usr/share/doc/freeradius/ChangeLog
 	dh_installexamples
-	dh_installlogrotate	
-	dh_installpam --name=radiusd 
+	dh_installlogrotate
+	dh_installpam --name=radiusd
+	dh_systemd_enable
 	dh_installinit --noscripts
+	dh_systemd_start
 	dh_installman
 	dh_lintian
 	dh_link
 	dh_compress -Xexamples
 	dh_fixperms
 	dh_installdeb
-	dh_gencontrol
+	dh_gencontrol -- $(SUBSTVARS)
 	dh_md5sums
 	dh_builddeb
 
@@ -185,4 +209,4 @@ binary-arch: build-arch install-arch
 	$(MAKE) -f debian/rules DH_OPTIONS=-s binary-common
 
 binary: binary-arch binary-indep
-.PHONY: build clean binary-indep binary-arch binary install install-indep install-arch 
+.PHONY: build clean binary-indep binary-arch binary install install-indep install-arch

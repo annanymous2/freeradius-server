@@ -34,50 +34,57 @@ RCSID("$Id$")
 /*
  *	End a session by faking a Stop packet to all accounting modules.
  */
-int session_zap(REQUEST *request, uint32_t nasaddr, unsigned int port,
+int session_zap(REQUEST *request, uint32_t nasaddr, uint32_t nas_port,
 		char const *user,
 		char const *sessionid, uint32_t cliaddr, char proto,
 		int session_time)
 {
 	REQUEST *stopreq;
-	VALUE_PAIR *vp, *userpair;
+	VALUE_PAIR *vp;
 	int ret;
 
 	stopreq = request_alloc_fake(request);
-	stopreq->packet->code = PW_ACCOUNTING_REQUEST; /* just to be safe */
-	stopreq->listener = request->listener;
 	rad_assert(stopreq != NULL);
+	rad_assert(stopreq->packet != NULL);
+	stopreq->packet->code = PW_CODE_ACCOUNTING_REQUEST; /* just to be safe */
+	stopreq->listener = request->listener;
 
 	/* Hold your breath */
 #define PAIR(n,v,e) do { \
-		if(!(vp = paircreate(stopreq->packet,n, 0))) {	\
-			request_free(&stopreq); \
+		if(!(vp = fr_pair_afrom_num(stopreq->packet,n, 0))) {	\
+			talloc_free(stopreq); \
 			ERROR("no memory"); \
-			pairfree(&(stopreq->packet->vps)); \
 			return 0; \
 		} \
 		vp->e = v; \
-		pairadd(&(stopreq->packet->vps), vp); \
+		fr_pair_add(&(stopreq->packet->vps), vp); \
 	} while(0)
+
 #define INTPAIR(n,v) PAIR(n,v,vp_integer)
+
 #define IPPAIR(n,v) PAIR(n,v,vp_ipaddr)
+
 #define STRINGPAIR(n,v) do { \
-	  if(!(vp = paircreate(stopreq->packet,n, 0))) {	\
-		request_free(&stopreq); \
+	  if(!(vp = fr_pair_afrom_num(stopreq->packet,n, 0))) {	\
+		talloc_free(stopreq); \
 		ERROR("no memory"); \
-		pairfree(&(stopreq->packet->vps)); \
 		return 0; \
 	} \
-	pairstrcpy(vp, v);	\
-	pairadd(&(stopreq->packet->vps), vp); \
+	fr_pair_value_strcpy(vp, v);	\
+	fr_pair_add(&(stopreq->packet->vps), vp); \
 	} while(0)
 
 	INTPAIR(PW_ACCT_STATUS_TYPE, PW_STATUS_STOP);
 	IPPAIR(PW_NAS_IP_ADDRESS, nasaddr);
+
+	INTPAIR(PW_EVENT_TIMESTAMP, 0);
+	vp->vp_date = time(NULL);
 	INTPAIR(PW_ACCT_DELAY_TIME, 0);
+
 	STRINGPAIR(PW_USER_NAME, user);
-	userpair = vp;
-	INTPAIR(PW_NAS_PORT, port);
+	stopreq->username = vp;
+
+	INTPAIR(PW_NAS_PORT, nas_port);
 	STRINGPAIR(PW_ACCT_SESSION_ID, sessionid);
 	if(proto == 'P') {
 		INTPAIR(PW_SERVICE_TYPE, PW_FRAMED_USER);
@@ -96,15 +103,16 @@ int session_zap(REQUEST *request, uint32_t nasaddr, unsigned int port,
 	INTPAIR(PW_ACCT_INPUT_PACKETS, 0);
 	INTPAIR(PW_ACCT_OUTPUT_PACKETS, 0);
 
-	stopreq->username = userpair;
 	stopreq->password = NULL;
 
+	RDEBUG("Running Accounting section for automatically created accounting 'stop'");
+	rdebug_pair_list(L_DBG_LVL_1, request, request->packet->vps, NULL);
 	ret = rad_accounting(stopreq);
 
 	/*
 	 *  We've got to clean it up by hand, because no one else will.
 	 */
-	request_free(&stopreq);
+	talloc_free(stopreq);
 
 	return ret;
 }
@@ -119,7 +127,7 @@ int session_zap(REQUEST *request, uint32_t nasaddr, unsigned int port,
  *		1 The user is logged in.
  *		2 Some error occured.
  */
-int rad_check_ts(uint32_t nasaddr, unsigned int portnum, char const *user,
+int rad_check_ts(uint32_t nasaddr, uint32_t nas_port, char const *user,
 		 char const *session_id)
 {
 	pid_t	pid, child_pid;
@@ -195,7 +203,7 @@ int rad_check_ts(uint32_t nasaddr, unsigned int portnum, char const *user,
 	closefrom(3);
 
 	ip_ntoa(address, nasaddr);
-	snprintf(port, 11, "%u", portnum);
+	snprintf(port, 11, "%u", nas_port);
 
 #ifdef __EMX__
 	/* OS/2 can't directly execute scripts then we call the command
@@ -204,19 +212,18 @@ int rad_check_ts(uint32_t nasaddr, unsigned int portnum, char const *user,
 	execl(getenv("COMSPEC"), "", "/C","checkrad", cl->nas_type, address, port,
 		user, session_id, NULL);
 #else
-	execl(mainconfig.checkrad, "checkrad", cl->nas_type, address, port,
+	execl(main_config.checkrad, "checkrad", cl->nas_type, address, port,
 		user, session_id, NULL);
 #endif
-	ERROR("Check-TS: exec %s: %s", mainconfig.checkrad, strerror(errno));
+	ERROR("Check-TS: exec %s: %s", main_config.checkrad, fr_syserror(errno));
 
 	/*
 	 *	Exit - 2 means "some error occured".
 	 */
 	exit(2);
-	return 2;
 }
 #else
-int rad_check_ts(UNUSED uint32_t nasaddr, UNUSED unsigned int portnum,
+int rad_check_ts(UNUSED uint32_t nasaddr, UNUSED unsigned int nas_port,
 		 UNUSED char const *user, UNUSED char const *session_id)
 {
 	ERROR("Simultaneous-Use is not supported");
@@ -227,7 +234,7 @@ int rad_check_ts(UNUSED uint32_t nasaddr, UNUSED unsigned int portnum,
 #else
 /* WITH_SESSION_MGMT */
 
-int session_zap(UNUSED REQUEST *request, UNUSED uint32_t nasaddr, UNUSED unsigned int port,
+int session_zap(UNUSED REQUEST *request, UNUSED uint32_t nasaddr, UNUSED uint32_t nas_port,
 		UNUSED char const *user,
 		UNUSED char const *sessionid, UNUSED uint32_t cliaddr, UNUSED char proto,
 		UNUSED int session_time)
@@ -235,7 +242,7 @@ int session_zap(UNUSED REQUEST *request, UNUSED uint32_t nasaddr, UNUSED unsigne
 	return RLM_MODULE_FAIL;
 }
 
-int rad_check_ts(UNUSED uint32_t nasaddr, UNUSED unsigned int portnum,
+int rad_check_ts(UNUSED uint32_t nasaddr, UNUSED unsigned int nas_port,
 		 UNUSED char const *user, UNUSED char const *session_id)
 {
 	ERROR("Simultaneous-Use is not supported");

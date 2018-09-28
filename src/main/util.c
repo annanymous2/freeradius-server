@@ -26,7 +26,6 @@ RCSID("$Id$")
 #include <freeradius-devel/rad_assert.h>
 
 #include <ctype.h>
-#include <signal.h>
 
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -93,9 +92,7 @@ struct request_data_t {
  *	and the unique integer allows the caller to have multiple
  *	opaque data associated with a REQUEST.
  */
-int request_data_add(REQUEST *request,
-		     void *unique_ptr, int unique_int,
-		     void *opaque, bool free_opaque)
+int request_data_add(REQUEST *request, void *unique_ptr, int unique_int, void *opaque, bool free_opaque)
 {
 	request_data_t *this, **last, *next;
 
@@ -105,61 +102,68 @@ int request_data_add(REQUEST *request,
 	if (!request || !opaque) return -1;
 
 	this = next = NULL;
-	for (last = &(request->data); *last != NULL; last = &((*last)->next)) {
+	for (last = &(request->data);
+	     *last != NULL;
+	     last = &((*last)->next)) {
 		if (((*last)->unique_ptr == unique_ptr) &&
 		    ((*last)->unique_int == unique_int)) {
 			this = *last;
-
 			next = this->next;
 
 			/*
 			 *	If caller requires custom behaviour on free
 			 *	they must set a destructor.
 			 */
-			if (this->opaque && this->free_opaque) {
-				talloc_free(this->opaque);
-			}
-			break;				/* replace the existing entry */
+			if (this->opaque && this->free_opaque) talloc_free(this->opaque);
+
+			break;	/* replace the existing entry */
 		}
 	}
 
+	/*
+	 *	Only alloc new memory if we're not replacing
+	 *	an existing entry.
+	 */
 	if (!this) this = talloc_zero(request, request_data_t);
+	if (!this) return -1;
 
 	this->next = next;
 	this->unique_ptr = unique_ptr;
 	this->unique_int = unique_int;
 	this->opaque = opaque;
-	if (free_opaque) {
-		this->free_opaque = free_opaque;
-	}
+	this->free_opaque = free_opaque;
 
 	*last = this;
 
 	return 0;
 }
 
-
 /*
  *	Get opaque data from a request.
  */
-void *request_data_get(REQUEST *request,
-		       void *unique_ptr, int unique_int)
+void *request_data_get(REQUEST *request, void *unique_ptr, int unique_int)
 {
 	request_data_t **last;
 
 	if (!request) return NULL;
 
-	for (last = &(request->data); *last != NULL; last = &((*last)->next)) {
+	for (last = &(request->data);
+	     *last != NULL;
+	     last = &((*last)->next)) {
 		if (((*last)->unique_ptr == unique_ptr) &&
 		    ((*last)->unique_int == unique_int)) {
-			request_data_t *this = *last;
-			void *ptr = this->opaque;
+			request_data_t *this;
+			void *ptr;
+
+			this = *last;
+			ptr = this->opaque;
 
 			/*
 			 *	Remove the entry from the list, and free it.
 			 */
 			*last = this->next;
 			talloc_free(this);
+
 			return ptr; 		/* don't free it, the caller does that */
 		}
 	}
@@ -167,186 +171,352 @@ void *request_data_get(REQUEST *request,
 	return NULL;		/* wasn't found, too bad... */
 }
 
-
 /*
  *	Get opaque data from a request without removing it.
  */
-void *request_data_reference(REQUEST *request,
-		       void *unique_ptr, int unique_int)
+void *request_data_reference(REQUEST *request, void *unique_ptr, int unique_int)
 {
 	request_data_t **last;
 
-	for (last = &(request->data); *last != NULL; last = &((*last)->next)) {
+	for (last = &(request->data);
+	     *last != NULL;
+	     last = &((*last)->next)) {
 		if (((*last)->unique_ptr == unique_ptr) &&
 		    ((*last)->unique_int == unique_int)) {
-			request_data_t *this = *last;
-			void *ptr = this->opaque;
-
-			return ptr;
+			return (*last)->opaque;
 		}
 	}
 
 	return NULL;		/* wasn't found, too bad... */
 }
 
-
-/*
- *	Free a REQUEST struct.
- */
-void request_free(REQUEST **request_ptr)
-{
-	REQUEST *request;
-
-	if (!request_ptr || !*request_ptr) {
-		return;
-	}
-
-	request = *request_ptr;
-
-	rad_assert(!request->in_request_hash);
-#ifdef WITH_PROXY
-	rad_assert(!request->in_proxy_hash);
-#endif
-	rad_assert(!request->ev);
-
-#ifdef WITH_COA
-	if (request->coa) {
-		request->coa->parent = NULL;
-		request_free(&request->coa);
-	}
-
-	if (request->parent && (request->parent->coa == request)) {
-		request->parent->coa = NULL;
-	}
-#endif
-
-#ifndef NDEBUG
-	request->magic = 0x01020304;	/* set the request to be nonsense */
-#endif
-	request->client = NULL;
-#ifdef WITH_PROXY
-	request->home_server = NULL;
-#endif
-	talloc_free(request);
-	*request_ptr = NULL;
-}
-
-/*
- *	Free a request.
- */
-int request_opaque_free(REQUEST *request)
-{
-	request_free(&request);
-
-	return 0;
-}
-
-/*
- *	Check a filename for sanity.
+/** Create possibly many directories.
  *
- *	Allow only uppercase/lowercase letters, numbers, and '-_/.'
- */
-int rad_checkfilename(char const *filename)
-{
-	if (strspn(filename, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_/.") == strlen(filename)) {
-		return 0;
-	}
-
-	return -1;
-}
-
-/** Check if file exists
+ * @note that the input directory name is NOT treated as a constant. This is so that
+ *	 if an error is returned, the 'directory' ptr points to the name of the file
+ *	 which caused the error.
  *
- * @param filename to check.
- * @return 0 if the file does not exist, 1 if the file exists, -1 if the file
- *	exists but there was an error opening it. errno value should be usable
- *	for error messages.
+ * @param dir path to directory to create.
+ * @param mode for new directories.
+ * @param uid to set on new directories, may be -1 to use effective uid.
+ * @param gid to set on new directories, may be -1 to use effective gid.
+ * @return 0 on success, -1 on error. Error available as errno.
  */
-int rad_file_exists(char const *filename)
+int rad_mkdir(char *dir, mode_t mode, uid_t uid, gid_t gid)
 {
-	int des;
-	int ret = 1;
-
-	if ((des = open(filename, O_RDONLY)) == -1) {
-		if (errno == ENOENT) {
-			ret = 0;
-		} else {
-			ret = -1;
-		}
-	} else {
-		close(des);
-	}
-
-	return ret;
-}
-
-/*
- *	Create possibly many directories.
- *
- *	Note that the input directory name is NOT a constant!
- *	This is so that IF an error is returned, the 'directory' ptr
- *	points to the name of the file which caused the error.
- */
-int rad_mkdir(char *directory, mode_t mode)
-{
-	int rcode;
+	int rcode, fd;
 	char *p;
-	struct stat st;
 
 	/*
-	 *	If the directory exists, don't do anything.
+	 *	Try to make the dir.  If it exists, chmod it.
+	 *	If a path doesn't exist, that's OK.  Otherwise
+	 *	return with an error.
+	 *
+	 *	Directories permissions are initially set so
+	 *	that only we should have access. This prevents
+	 *	an attacker removing them and swapping them
+	 *	out for a link to somewhere else.
+	 *	We change them to the correct permissions later.
 	 */
-	if (stat(directory, &st) == 0) {
-		return 0;
-	}
+	rcode = mkdir(dir, 0700);
+	if (rcode < 0) {
+		switch (errno) {
+		case EEXIST:
+			return 0; /* don't change permissions */
 
-	/*
-	 *	Look for the LAST directory name.  Try to create that,
-	 *	failing on any error.
-	 */
-	p = strrchr(directory, FR_DIR_SEP);
-	if (p != NULL) {
-		*p = '\0';
-		rcode = rad_mkdir(directory, mode);
+		case ENOENT:
+			break;
 
-		/*
-		 *	On error, we leave the directory name as the
-		 *	one which caused the error.
-		 */
-		if (rcode < 0) {
-			if (errno == EEXIST) return 0;
+		default:
 			return rcode;
 		}
 
 		/*
-		 *	Reset the directory delimiter, and go ask
-		 *	the system to make the directory.
+		 *	A component in the dir path doesn't
+		 *	exist.  Look for the LAST dir name.  Try
+		 *	to create that.  If there's an error, we leave
+		 *	the dir path as the one at which the
+		 *	error occured.
+		 */
+		p = strrchr(dir, FR_DIR_SEP);
+		if (!p || (p == dir)) return -1;
+
+		*p = '\0';
+		rcode = rad_mkdir(dir, mode, uid, gid);
+		if (rcode < 0) return rcode;
+
+		/*
+		 *	Reset the dir path, and try again to
+		 *	make the dir.
 		 */
 		*p = FR_DIR_SEP;
-	} else {
-		return 0;
-	}
+		rcode = mkdir(dir, 0700);
+		if (rcode < 0) return rcode;
+	} /* else we successfully created the dir */
 
 	/*
-	 *	Having done everything successfully, we do the
-	 *	system call to actually go create the directory.
+	 *	Set the permissions on the directory we created
+	 *	this should never fail unless there's a race.
 	 */
-	rcode = mkdir(directory, mode & 0777);
+	fd = open(dir, O_DIRECTORY);
+	if (fd < 0) return -1;
+
+	rcode = fchmod(fd, mode);
 	if (rcode < 0) {
+		close(fd);
 		return rcode;
 	}
 
-	/*
-	 *	Set things like sticky bits that aren't supported by
-	 *	mkdir.
-	 */
-	if (mode & ~0777) {
-		rcode = chmod(directory, mode);
+	if ((uid != (uid_t)-1) || (gid != (gid_t)-1)) {
+		rad_suid_up();
+		rcode = fchown(fd, uid, gid);
+		rad_suid_down();
 	}
+	close(fd);
 
 	return rcode;
 }
 
+/** Ensures that a filename cannot walk up the directory structure
+ *
+ * Also sanitizes control chars.
+ *
+ * @param request Current request (may be NULL).
+ * @param out Output buffer.
+ * @param outlen Size of the output buffer.
+ * @param in string to escape.
+ * @param arg Context arguments (unused, should be NULL).
+ */
+size_t rad_filename_make_safe(UNUSED REQUEST *request, char *out, size_t outlen, char const *in, UNUSED void *arg)
+{
+	char const *q = in;
+	char *p = out;
+	size_t left = outlen;
+
+	while (*q) {
+		if (*q != '/') {
+			if (left < 2) break;
+
+			/*
+			 *	Smash control characters and spaces to
+			 *	something simpler.
+			 */
+			if (*q < ' ') {
+				*(p++) = '_';
+				q++;
+				continue;
+			}
+
+			*(p++) = *(q++);
+			left--;
+			continue;
+		}
+
+		/*
+		 *	For now, allow slashes in the expanded
+		 *	filename.  This allows the admin to set
+		 *	attributes which create sub-directories.
+		 *	Unfortunately, it also allows users to send
+		 *	attributes which *may* end up creating
+		 *	sub-directories.
+		 */
+		if (left < 2) break;
+		*(p++) = *(q++);
+
+		/*
+		 *	Get rid of ////../.././///.///..//
+		 */
+	redo:
+		/*
+		 *	Get rid of ////
+		 */
+		if (*q == '/') {
+			q++;
+			goto redo;
+		}
+
+		/*
+		 *	Get rid of /./././
+		 */
+		if ((q[0] == '.') &&
+		    (q[1] == '/')) {
+			q += 2;
+			goto redo;
+		}
+
+		/*
+		 *	Get rid of /../../../
+		 */
+		if ((q[0] == '.') && (q[1] == '.') &&
+		    (q[2] == '/')) {
+			q += 3;
+			goto redo;
+		}
+	}
+	*p = '\0';
+
+	return (p - out);
+}
+
+/** Escapes the raw string such that it should be safe to use as part of a file path
+ *
+ * This function is designed to produce a string that's still readable but portable
+ * across the majority of file systems.
+ *
+ * For security reasons it cannot remove characters from the name, and must not allow
+ * collisions to occur between different strings.
+ *
+ * With that in mind '-' has been chosen as the escape character, and will be double
+ * escaped '-' -> '--' to avoid collisions.
+ *
+ * Escaping should be reversible if the original string needs to be extracted.
+ *
+ * @note function takes additional arguments so that it may be used as an xlat escape
+ *	function but it's fine to call it directly.
+ *
+ * @note OSX/Unix/NTFS/VFAT have a max filename size of 255 bytes.
+ *
+ * @param request Current request (may be NULL).
+ * @param out Output buffer.
+ * @param outlen Size of the output buffer.
+ * @param in string to escape.
+ * @param arg Context arguments (unused, should be NULL).
+ */
+size_t rad_filename_escape(UNUSED REQUEST *request, char *out, size_t outlen, char const *in, UNUSED void *arg)
+{
+	size_t freespace = outlen;
+
+	while (*in != '\0') {
+		size_t utf8_len;
+
+		/*
+		 *	Encode multibyte UTF8 chars
+		 */
+		utf8_len = fr_utf8_char((uint8_t const *) in, -1);
+		if (utf8_len > 1) {
+			if (freespace <= (utf8_len * 3)) break;
+
+			switch (utf8_len) {
+			case 2:
+				snprintf(out, freespace, "-%x-%x", in[0], in[1]);
+				break;
+
+			case 3:
+				snprintf(out, freespace, "-%x-%x-%x", in[0], in[1], in[2]);
+				break;
+
+			case 4:
+				snprintf(out, freespace, "-%x-%x-%x-%x", in[0], in[1], in[2], in[3]);
+				break;
+			}
+
+			freespace -= (utf8_len * 3);
+			out += (utf8_len * 3);
+			in += utf8_len;
+
+			continue;
+		}
+
+		/*
+		 *	Safe chars
+		 */
+		if (((*in >= 'A') && (*in <= 'Z')) ||
+		    ((*in >= 'a') && (*in <= 'z')) ||
+		    ((*in >= '0') && (*in <= '9')) ||
+		    (*in == '_')) {
+		    	if (freespace <= 1) break;
+
+		 	*out++ = *in++;
+		 	freespace--;
+		 	continue;
+		}
+		if (freespace <= 2) break;
+
+		/*
+		 *	Double escape '-' (like \\)
+		 */
+		if (*in == '-') {
+			*out++ = '-';
+			*out++ = '-';
+
+			freespace -= 2;
+			in++;
+			continue;
+		}
+
+		/*
+		 *	Unsafe chars
+		 */
+		*out++ = '-';
+		fr_bin2hex(out, (uint8_t const *)in++, 1);
+		out += 2;
+		freespace -= 3;
+	}
+	*out = '\0';
+
+	return outlen - freespace;
+}
+
+/** Converts data stored in a file name back to its original form
+ *
+ * @param out Where to write the unescaped string (may be the same as in).
+ * @param outlen Length of the output buffer.
+ * @param in Input filename.
+ * @param inlen Length of input.
+ * @return number of bytes written to output buffer, or offset where parse error
+ *	occurred on failure.
+ */
+ssize_t rad_filename_unescape(char *out, size_t outlen, char const *in, size_t inlen)
+{
+	char const *p, *end = in + inlen;
+	size_t freespace = outlen;
+
+	for (p = in; p < end; p++) {
+		if (freespace <= 1) break;
+
+		if (((*p >= 'A') && (*p <= 'Z')) ||
+		    ((*p >= 'a') && (*p <= 'z')) ||
+		    ((*p >= '0') && (*p <= '9')) ||
+		    (*p == '_')) {
+		 	*out++ = *p;
+		 	freespace--;
+		 	continue;
+		}
+
+		if (p[0] == '-') {
+			/*
+			 *	End of input, '-' needs at least one extra char after
+			 *	it to be valid.
+			 */
+			if ((end - p) < 2) return in - p;
+			if (p[1] == '-') {
+				p++;
+				*out++ = '-';
+				freespace--;
+				continue;
+			}
+
+			/*
+			 *	End of input, '-' must be followed by <hex><hex>
+			 *	but there aren't enough chars left
+			 */
+			if ((end - p) < 3) return in - p;
+
+			/*
+			 *	If hex2bin returns 0 the next two chars weren't hexits.
+			 */
+			if (fr_hex2bin((uint8_t *) out, 1, in, 1) == 0) return in - (p + 1);
+			in += 2;
+			out++;
+			freespace--;
+		}
+
+		return in - p; /* offset we found the bad char at */
+	}
+	*out = '\0';
+
+	return outlen - freespace;	/* how many bytes were written */
+}
 
 /*
  *	Allocate memory, or exit.
@@ -359,19 +529,12 @@ void *rad_malloc(size_t size)
 
 	if (ptr == NULL) {
 		ERROR("no memory");
-		exit(1);
+		fr_exit(1);
 	}
 
 	return ptr;
 }
 
-
-void *rad_calloc(size_t size)
-{
-	void *ptr = rad_malloc(size);
-	memset(ptr, 0, size);
-	return ptr;
-}
 
 void rad_const_free(void const *ptr)
 {
@@ -388,13 +551,45 @@ void rad_const_free(void const *ptr)
  *
  */
 
-void NEVER_RETURNS rad_assert_fail (char const *file, unsigned int line,
-				    char const *expr)
+void NEVER_RETURNS rad_assert_fail(char const *file, unsigned int line, char const *expr)
 {
 	ERROR("ASSERT FAILED %s[%u]: %s", file, line, expr);
-	abort();
+	fr_fault(SIGABRT);
+	fr_exit_now(1);
 }
 
+/*
+ *	Free a REQUEST struct.
+ */
+static int _request_free(REQUEST *request)
+{
+	rad_assert(!request->in_request_hash);
+#ifdef WITH_PROXY
+	rad_assert(!request->in_proxy_hash);
+#endif
+	rad_assert(!request->ev);
+
+#ifdef WITH_COA
+	rad_assert(request->coa == NULL);
+#endif
+
+#ifndef NDEBUG
+	request->magic = 0x01020304;	/* set the request to be nonsense */
+#endif
+	request->client = NULL;
+#ifdef WITH_PROXY
+	request->home_server = NULL;
+#endif
+
+	/*
+	 *	This is parented separately.
+	 */
+	if (request->state_ctx) {
+		talloc_free(request->state_ctx);
+	}
+
+	return 0;
+}
 
 /*
  *	Create a new REQUEST data structure.
@@ -404,6 +599,8 @@ REQUEST *request_alloc(TALLOC_CTX *ctx)
 	REQUEST *request;
 
 	request = talloc_zero(ctx, REQUEST);
+	if (!request) return NULL;
+	talloc_set_destructor(request, _request_free);
 #ifndef NDEBUG
 	request->magic = REQUEST_MAGIC;
 #endif
@@ -414,15 +611,17 @@ REQUEST *request_alloc(TALLOC_CTX *ctx)
 #ifdef WITH_PROXY
 	request->proxy_reply = NULL;
 #endif
-	request->config_items = NULL;
+	request->config = NULL;
 	request->username = NULL;
 	request->password = NULL;
 	request->timestamp = time(NULL);
-	request->options = debug_flag; /* Default to global debug level */
+	request->log.lvl = rad_debug_lvl; /* Default to global debug level */
 
 	request->module = "";
 	request->component = "<core>";
-	request->radlog = radlog_request;
+	request->log.func = vradlog_request;
+
+	request->state_ctx = talloc_init("session-state");
 
 	return request;
 }
@@ -439,6 +638,7 @@ REQUEST *request_alloc_fake(REQUEST *request)
 	REQUEST *fake;
 
 	fake = request_alloc(request);
+	if (!fake) return NULL;
 
 	fake->number = request->number;
 #ifdef HAVE_PTHREAD_H
@@ -457,15 +657,15 @@ REQUEST *request_alloc_fake(REQUEST *request)
 	 */
 	fake->server = request->server;
 
-	fake->packet = rad_alloc(request, 1);
+	fake->packet = rad_alloc(fake, true);
 	if (!fake->packet) {
-		request_free(&fake);
+		talloc_free(fake);
 		return NULL;
 	}
 
-	fake->reply = rad_alloc(request, 0);
+	fake->reply = rad_alloc(fake, false);
 	if (!fake->reply) {
-		request_free(&fake);
+		talloc_free(fake);
 		return NULL;
 	}
 
@@ -510,13 +710,18 @@ REQUEST *request_alloc_fake(REQUEST *request)
 	/*
 	 *	Copy debug information.
 	 */
-	fake->options = request->options;
-	fake->radlog = request->radlog;
+	memcpy(&(fake->log), &(request->log), sizeof(fake->log));
+	fake->log.indent = 0;	/* Apart from the indent which we reset */
 
 	return fake;
 }
 
 #ifdef WITH_COA
+static int null_handler(UNUSED REQUEST *request)
+{
+	return 0;
+}
+
 REQUEST *request_alloc_coa(REQUEST *request)
 {
 	if (!request || request->coa) return NULL;
@@ -524,17 +729,19 @@ REQUEST *request_alloc_coa(REQUEST *request)
 	/*
 	 *	Originate CoA requests only when necessary.
 	 */
-	if ((request->packet->code != PW_AUTHENTICATION_REQUEST) &&
-	    (request->packet->code != PW_ACCOUNTING_REQUEST)) return NULL;
+	if ((request->packet->code != PW_CODE_ACCESS_REQUEST) &&
+	    (request->packet->code != PW_CODE_ACCOUNTING_REQUEST)) return NULL;
 
 	request->coa = request_alloc_fake(request);
 	if (!request->coa) return NULL;
 
+	request->coa->handle = null_handler;
+	request->coa->options = RAD_REQUEST_OPTION_COA;	/* is a CoA packet */
 	request->coa->packet->code = 0; /* unknown, as of yet */
 	request->coa->child_state = REQUEST_RUNNING;
-	request->coa->proxy = rad_alloc(request->coa, 0);
+	request->coa->proxy = rad_alloc(request->coa, false);
 	if (!request->coa->proxy) {
-		request_free(&request->coa);
+		TALLOC_FREE(request->coa);
 		return NULL;
 	}
 
@@ -662,9 +869,9 @@ int rad_copy_variable(char *to, char const *from)
 #define USEC 1000000
 #endif
 
-int rad_pps(int *past, int *present, time_t *then, struct timeval *now)
+uint32_t rad_pps(uint32_t *past, uint32_t *present, time_t *then, struct timeval *now)
 {
-	int pps;
+	uint32_t pps;
 
 	if (*then != now->tv_sec) {
 		*then = now->tv_sec;
@@ -713,7 +920,7 @@ int rad_pps(int *past, int *present, time_t *then, struct timeval *now)
  */
 
 int rad_expand_xlat(REQUEST *request, char const *cmd,
-		    int max_argc, char *argv[], bool can_fail,
+		    int max_argc, char const *argv[], bool can_fail,
 		    size_t argv_buflen, char *argv_buf)
 {
 	char const *from;
@@ -812,7 +1019,7 @@ int rad_expand_xlat(REQUEST *request, char const *cmd,
 	 *	We have to have SOMETHING, at least.
 	 */
 	if (argc <= 0) {
-		ERROR("rad_expand_xlat: Empty command line.");
+		ERROR("rad_expand_xlat: Empty command line");
 		return -1;
 	}
 
@@ -853,7 +1060,7 @@ int rad_expand_xlat(REQUEST *request, char const *cmd,
 		left--;
 
 		if (left <= 0) {
-			ERROR("rad_expand_xlat: Ran out of space while expanding arguments.");
+			ERROR("rad_expand_xlat: Ran out of space while expanding arguments");
 			return -1;
 		}
 	}
@@ -862,229 +1069,640 @@ int rad_expand_xlat(REQUEST *request, char const *cmd,
 	return argc;
 }
 
-const FR_NAME_NUMBER pair_lists[] = {
-	{ "request",		PAIR_LIST_REQUEST },
-	{ "reply",		PAIR_LIST_REPLY },
-	{ "config",		PAIR_LIST_CONTROL },
-	{ "control",		PAIR_LIST_CONTROL },
+#ifndef NDEBUG
+/*
+ *	Verify a packet.
+ */
+static void verify_packet(char const *file, int line, REQUEST *request, RADIUS_PACKET *packet, char const *type)
+{
+	TALLOC_CTX *parent;
+
+	if (!packet) {
+		fprintf(stderr, "CONSISTENCY CHECK FAILED %s[%i]: RADIUS_PACKET %s pointer was NULL", file, line, type);
+		fr_assert(0);
+		fr_exit_now(0);
+	}
+
+	parent = talloc_parent(packet);
+	if (parent != request) {
+		ERROR("CONSISTENCY CHECK FAILED %s[%i]: Expected RADIUS_PACKET %s to be parented by %p (%s), "
+		      "but parented by %p (%s)", file, line, type, request, talloc_get_name(request),
+		      parent, parent ? talloc_get_name(parent) : "NULL");
+
+		fr_log_talloc_report(packet);
+		if (parent) fr_log_talloc_report(parent);
+
+		rad_assert(0);
+	}
+
+	VERIFY_PACKET(packet);
+
+	if (!packet->vps) return;
+
+#ifdef WITH_VERIFY_PTR
+	fr_pair_list_verify(file, line, packet, packet->vps);
+#endif
+}
+/*
+ *	Catch horrible talloc errors.
+ */
+void verify_request(char const *file, int line, REQUEST *request)
+{
+	if (!request) {
+		fprintf(stderr, "CONSISTENCY CHECK FAILED %s[%i]: REQUEST pointer was NULL", file, line);
+		fr_assert(0);
+		fr_exit_now(0);
+	}
+
+	(void) talloc_get_type_abort(request, REQUEST);
+
+#ifdef WITH_VERIFY_PTR
+	fr_pair_list_verify(file, line, request, request->config);
+	fr_pair_list_verify(file, line, request->state_ctx, request->state);
+#endif
+
+	if (request->packet) verify_packet(file, line, request, request->packet, "request");
+	if (request->reply) verify_packet(file, line, request, request->reply, "reply");
 #ifdef WITH_PROXY
-	{ "proxy-request",	PAIR_LIST_PROXY_REQUEST },
-	{ "proxy-reply",	PAIR_LIST_PROXY_REPLY },
+	if (request->proxy) verify_packet(file, line, request, request->proxy, "proxy-request");
+	if (request->proxy_reply) verify_packet(file, line, request, request->proxy_reply, "proxy-reply");
 #endif
+
 #ifdef WITH_COA
-	{ "coa",		PAIR_LIST_COA },
-	{ "coa-reply",		PAIR_LIST_COA_REPLY },
-	{ "disconnect",		PAIR_LIST_DM },
-	{ "disconnect-reply",	PAIR_LIST_DM_REPLY },
+	if (request->coa) {
+		void *parent;
+
+		(void) talloc_get_type_abort(request->coa, REQUEST);
+		parent = talloc_parent(request->coa);
+
+		rad_assert(parent == request);
+
+		verify_request(file, line, request->coa);
+	}
 #endif
-	{  NULL , -1 }
-};
+}
+#endif
 
-const FR_NAME_NUMBER request_refs[] = {
-	{ "outer",		REQUEST_OUTER },
-	{ "current",		REQUEST_CURRENT },
-	{ "parent",		REQUEST_PARENT },
-	{  NULL , -1 }
-};
-
-
-/** Resolve attribute name to a list.
+/** Convert mode_t into humanly readable permissions flags
  *
- * Check the name string for qualifiers that specify a list and return
- * an pair_lists_t value for that list. This value may be passed to
- * radius_list, along with the current request, to get a pointer to the
- * actual list in the request.
+ * @author Jonathan Leffler.
  *
- * If qualifiers were consumed, write a new pointer into name to the
- * char after the last qualifier to be consumed.
- *
- * radius_list_name should be called before passing a name string that
- * may contain qualifiers to dict_attrbyname.
- *
- * @see dict_attrbyname
- *
- * @param[in,out] name of attribute.
- * @param[in] unknown the list to return if no qualifiers were found.
- * @return PAIR_LIST_UNKOWN if qualifiers couldn't be resolved to a list.
+ * @param mode to convert.
+ * @param out Where to write the string to, must be exactly 10 bytes long.
  */
-pair_lists_t radius_list_name(char const **name, pair_lists_t unknown)
+void rad_mode_to_str(char out[10], mode_t mode)
 {
-	char const *p = *name;
-	char const *q;
-	pair_lists_t output;
+    static char const *rwx[] = {"---", "--x", "-w-", "-wx", "r--", "r-x", "rw-", "rwx"};
 
-	/* This should never be a NULL pointer or zero length string */
-	rad_assert(name && *name);
-
-	/*
-	 *	We couldn't determine the list if:
-	 *
-	 * 	A colon delimiter was found, but the next char was a
-	 *	number, indicating a tag, not a list qualifier.
-	 *
-	 *	No colon was found and the first char was upper case
-	 *	indicating an attribute.
-	 *
-	 */
-	q = strchr(p, ':');
-	if (((q && (q[1] >= '0') && (q[1] <= '9'))) ||
-	    (!q && isupper((int) *p))) {
-		return unknown;
-	}
-
-	if (q) {
-		*name = (q + 1);	/* Consume the list and delimiter */
-		return fr_substr2int(pair_lists, p, PAIR_LIST_UNKNOWN, (q - p));
-	}
-
-	q = (p + strlen(p));	/* Consume the entire string */
-	output = fr_substr2int(pair_lists, p, PAIR_LIST_UNKNOWN, (q - p));
-	if (output != PAIR_LIST_UNKNOWN) {
-		*name = q;
-		return output;
-	}
-
-	return unknown;
+    strcpy(&out[0], rwx[(mode >> 6) & 0x07]);
+    strcpy(&out[3], rwx[(mode >> 3) & 0x07]);
+    strcpy(&out[6], rwx[(mode & 7)]);
+    if (mode & S_ISUID) out[2] = (mode & 0100) ? 's' : 'S';
+    if (mode & S_ISGID) out[5] = (mode & 0010) ? 's' : 'l';
+    if (mode & S_ISVTX) out[8] = (mode & 0100) ? 't' : 'T';
+    out[9] = '\0';
 }
 
-
-/** Resolve attribute name to a request.
- *
- * Check the name string for qualifiers that reference a parent request and
- * write the pointer to this request to 'request'.
- *
- * If qualifiers were consumed, write a new pointer into name to the
- * char after the last qualifier to be consumed.
- *
- * radius_ref_request should be called before radius_list_name.
- *
- * @see radius_list_name
- * @param[in,out] name of attribute.
- * @param[in] def default request ref to return if no request qualifier is present.
- * @return one of the REQUEST_* definitions or REQUEST_UNKOWN
- */
-request_refs_t radius_request_name(char const **name, request_refs_t def)
+void rad_mode_to_oct(char out[5], mode_t mode)
 {
-	char *p;
-	int request;
-
-	p = strchr(*name, '.');
-	if (!p) {
-		return def;
-	}
-
-	/*
-	 *	We may get passed "127.0.0.1".
-	 */
-	request = fr_substr2int(request_refs, *name, REQUEST_UNKNOWN,
-				p - *name);
-
-	/*
-	 *	If we get a valid name, skip it.
-	 */
-	if (request != REQUEST_UNKNOWN) {
-		*name = p + 1;
-		return request;
-	}
-
-	/*
-	 *	Otherwise leave it alone, and return the caller's
-	 *	default.
-	 */
-	return def;
+	out[0] = '0' + ((mode >> 9) & 0x07);
+	out[1] = '0' + ((mode >> 6) & 0x07);
+	out[2] = '0' + ((mode >> 3) & 0x07);
+	out[3] = '0' + (mode & 0x07);
+	out[4] = '\0';
 }
 
-/** Resolve request to a request.
+/** Resolve a uid to a passwd entry
  *
- * Resolve name to a current request.
+ * Resolves a uid to a passwd entry. The memory to hold the
+ * passwd entry is talloced under ctx, and must be freed when no
+ * longer required.
  *
- * @see radius_list
- * @param[in,out] context Base context to use, and to write the result back to.
- * @param[in] name (request) to resolve to.
- * @return 0 if request is valid in this context, else -1.
+ * @param ctx to allocate passwd entry in.
+ * @param out Where to write pointer to entry.
+ * @param uid to resolve.
+ * @return 0 on success, -1 on error.
  */
-int radius_request(REQUEST **context, request_refs_t name)
+int rad_getpwuid(TALLOC_CTX *ctx, struct passwd **out, uid_t uid)
 {
-	REQUEST *request = *context;
+	static size_t len;
+	uint8_t *buff;
+	int ret;
 
-	switch (name) {
-		case REQUEST_CURRENT:
-			return 0;
+	*out = NULL;
 
-		case REQUEST_PARENT:	/* for future use in request chaining */
-		case REQUEST_OUTER:
-			if (!request->parent) {
-				REDEBUG("Specified request \"%s\" is not available in this context",
-				        fr_int2str(request_refs, name, "<INVALID>"));
-				return -1;
-			}
+	/*
+	 *	We assume this won't change between calls,
+	 *	and that the value is the same, so races don't
+	 *	matter.
+	 */
+	if (len == 0) {
+#ifdef _SC_GETPW_R_SIZE_MAX
+		long int sc_len;
 
-			*context = request->parent;
+		sc_len = sysconf(_SC_GETPW_R_SIZE_MAX);
+		if (sc_len <= 0) sc_len = 1024;
+		len = (size_t)sc_len;
+#else
+		len = 1024;
+#endif
+	}
 
-			break;
+	buff = talloc_array(ctx, uint8_t, sizeof(struct passwd) + len);
+	if (!buff) return -1;
 
-		case REQUEST_UNKNOWN:
-		default:
-			rad_assert(0);
+	/*
+	 *	In some cases we may need to dynamically
+	 *	grow the string buffer.
+	 */
+	while ((ret = getpwuid_r(uid, (struct passwd *)buff, (char *)(buff + sizeof(struct passwd)),
+				 talloc_array_length(buff) - sizeof(struct passwd), out)) == ERANGE) {
+		buff = talloc_realloc_size(ctx, buff, talloc_array_length(buff) * 2);
+		if (!buff) {
+			talloc_free(buff);
 			return -1;
+		}
 	}
+
+	if ((ret != 0) || !*out) {
+		fr_strerror_printf("Failed resolving UID: %s", fr_syserror(ret));
+		talloc_free(buff);
+		errno = ret;
+		return -1;
+	}
+
+	talloc_set_type(buff, struct passwd);
+	*out = (struct passwd *)buff;
 
 	return 0;
 }
 
-/** Adds subcapture values to request data
+/** Resolve a username to a passwd entry
  *
- * Allows use of %{n} expansions.
+ * Resolves a username to a passwd entry. The memory to hold the
+ * passwd entry is talloced under ctx, and must be freed when no
+ * longer required.
  *
- * @param request Current request.
- * @param compare Result returned by regexec.
- * @param value The original value.
- * @param rxmatch Pointers into value.
+ * @param ctx to allocate passwd entry in.
+ * @param out Where to write pointer to entry.
+ * @param name to resolve.
+ * @return 0 on success, -1 on error.
  */
-void rad_regcapture(REQUEST *request, int compare, char const *value, regmatch_t rxmatch[])
+int rad_getpwnam(TALLOC_CTX *ctx, struct passwd **out, char const *name)
 {
-	int i;
-	char *p;
-	size_t len;
+	static size_t len;
+	uint8_t *buff;
+	int ret;
 
-	if (compare == REG_NOMATCH) {
-		return;
-	}
+	*out = NULL;
 
 	/*
-	 *	Add new %{0}, %{1}, etc.
+	 *	We assume this won't change between calls,
+	 *	and that the value is the same, so races don't
+	 *	matter.
 	 */
-	for (i = 0; i <= REQUEST_MAX_REGEX; i++) {
-		/*
-		 *	Didn't match: delete old match, if it existed.
-		 */
-		if (rxmatch[i].rm_so == -1) {
-			p = request_data_get(request, request, REQUEST_DATA_REGEX | i);
-			if (p) {
-				RDEBUG4("%%{%i}: Clearing old value \"%s\"", i, p);
-				talloc_free(p);
-			} else {
-				RDEBUG4("%%{%i}: Was empty", i);
-			}
+	if (len == 0) {
+#ifdef _SC_GETPW_R_SIZE_MAX
+		long int sc_len;
 
-			continue;
+		sc_len = sysconf(_SC_GETPW_R_SIZE_MAX);
+		if (sc_len <= 0) sc_len = 1024;
+		len = (size_t)sc_len;
+#else
+		sc_len = 1024;
+#endif
+	}
+
+	buff = talloc_array(ctx, uint8_t, sizeof(struct passwd) + len);
+	if (!buff) return -1;
+
+	/*
+	 *	In some cases we may need to dynamically
+	 *	grow the string buffer.
+	 */
+	while ((ret = getpwnam_r(name, (struct passwd *)buff, (char *)(buff + sizeof(struct passwd)),
+				 talloc_array_length(buff) - sizeof(struct passwd), out)) == ERANGE) {
+		buff = talloc_realloc_size(ctx, buff, talloc_array_length(buff) * 2);
+		if (!buff) {
+			talloc_free(buff);
+			return -1;
 		}
+	}
 
-		len = rxmatch[i].rm_eo - rxmatch[i].rm_so;
-		p = talloc_array(request, char, len + 1);
-		memcpy(p, value + rxmatch[i].rm_so, len);
-		p[len] = '\0';
+	if ((ret != 0) || !*out) {
+		fr_strerror_printf("Failed resolving UID: %s", fr_syserror(ret));
+		talloc_free(buff);
+		errno = ret;
+		return -1;
+	}
 
-		RDEBUG4("%%{%i}: Inserting new value \"%s\"", i, p);
-		/*
-		 *	Copy substring, and add it to
-		 *	the request.
-		 *
-		 *	Note that we don't check
-		 *	for out of memory, which is
-		 *	the only error we can get...
-		 */
-		request_data_add(request, request, REQUEST_DATA_REGEX | i, p, true);
+	talloc_set_type(buff, struct passwd);
+	*out = (struct passwd *)buff;
+
+	return 0;
+}
+
+/** Resolve a gid to a group database entry
+ *
+ * Resolves a gid to a group database entry. The memory to hold the
+ * group entry is talloced under ctx, and must be freed when no
+ * longer required.
+ *
+ * @param ctx to allocate passwd entry in.
+ * @param out Where to write pointer to entry.
+ * @param gid to resolve.
+ * @return 0 on success, -1 on error.
+ */
+int rad_getgrgid(TALLOC_CTX *ctx, struct group **out, gid_t gid)
+{
+	static size_t len;
+	uint8_t *buff;
+	int ret;
+
+	*out = NULL;
+
+	/*
+	 *	We assume this won't change between calls,
+	 *	and that the value is the same, so races don't
+	 *	matter.
+	 */
+	if (len == 0) {
+#ifdef _SC_GETGR_R_SIZE_MAX
+		long int sc_len;
+
+		sc_len = sysconf(_SC_GETGR_R_SIZE_MAX);
+		if (sc_len <= 0) sc_len = 1024;
+		len = (size_t)sc_len;
+#else
+		sc_len = 1024;
+#endif
+	}
+
+	buff = talloc_array(ctx, uint8_t, sizeof(struct group) + len);
+	if (!buff) return -1;
+
+	/*
+	 *	In some cases we may need to dynamically
+	 *	grow the string buffer.
+	 */
+	while ((ret = getgrgid_r(gid, (struct group *)buff, (char *)(buff + sizeof(struct group)),
+				 talloc_array_length(buff) - sizeof(struct group), out)) == ERANGE) {
+		buff = talloc_realloc_size(ctx, buff, talloc_array_length(buff) * 2);
+		if (!buff) {
+			talloc_free(buff);
+			return -1;
+		}
+	}
+
+	if ((ret != 0) || !*out) {
+		fr_strerror_printf("Failed resolving GID: %s", fr_syserror(ret));
+		talloc_free(buff);
+		errno = ret;
+		return -1;
+	}
+
+	talloc_set_type(buff, struct group);
+	*out = (struct group *)buff;
+
+	return 0;
+}
+
+/** Resolve a group name to a group database entry
+ *
+ * Resolves a group name to a group database entry.
+ * The memory to hold the group entry is talloced under ctx,
+ * and must be freed when no longer required.
+ *
+ * @param ctx to allocate passwd entry in.
+ * @param out Where to write pointer to entry.
+ * @param name to resolve.
+ * @return 0 on success, -1 on error.
+ */
+int rad_getgrnam(TALLOC_CTX *ctx, struct group **out, char const *name)
+{
+	static size_t len;
+	uint8_t *buff;
+	int ret;
+
+	*out = NULL;
+
+	/*
+	 *	We assume this won't change between calls,
+	 *	and that the value is the same, so races don't
+	 *	matter.
+	 */
+	if (len == 0) {
+#ifdef _SC_GETGR_R_SIZE_MAX
+		long int sc_len;
+
+		sc_len = sysconf(_SC_GETGR_R_SIZE_MAX);
+		if (sc_len <= 0) sc_len = 1024;
+		len = (size_t)sc_len;
+#else
+		len = 1024;
+#endif
+	}
+
+	buff = talloc_array(ctx, uint8_t, sizeof(struct group) + len);
+	if (!buff) return -1;
+
+	/*
+	 *	In some cases we may need to dynamically
+	 *	grow the string buffer.
+	 */
+	while ((ret = getgrnam_r(name, (struct group *)buff, (char *)(buff + sizeof(struct group)),
+				 talloc_array_length(buff) - sizeof(struct group), out)) == ERANGE) {
+		buff = talloc_realloc_size(ctx, buff, talloc_array_length(buff) * 2);
+		if (!buff) {
+			talloc_free(buff);
+			return -1;
+		}
+	}
+
+	if ((ret != 0) || !*out) {
+		fr_strerror_printf("Failed resolving GID: %s", fr_syserror(ret));
+		talloc_free(buff);
+		errno = ret;
+		return -1;
+	}
+
+	talloc_set_type(buff, struct group);
+	*out = (struct group *)buff;
+
+	return 0;
+}
+
+/** Resolve a group name to a GID
+ *
+ * @param ctx TALLOC_CTX for temporary allocations.
+ * @param name of group.
+ * @param out where to write gid.
+ * @return 0 on success, -1 on error;
+ */
+int rad_getgid(TALLOC_CTX *ctx, gid_t *out, char const *name)
+{
+	int ret;
+	struct group *result;
+
+	ret = rad_getgrnam(ctx, &result, name);
+	if (ret < 0) return -1;
+
+	*out = result->gr_gid;
+	talloc_free(result);
+	return 0;
+}
+
+/** Print uid to a string
+ *
+ * @note The reason for taking a fixed buffer is pure laziness.
+ *	 It means the caller doesn't have to free the string.
+ *
+ * @note Will always \0 terminate the buffer, even on error.
+ *
+ * @param ctx TALLOC_CTX for temporary allocations.
+ * @param out Where to write the uid string.
+ * @param outlen length of output buffer.
+ * @param uid to resolve.
+ * @return 0 on success, -1 on failure.
+ */
+int rad_prints_uid(TALLOC_CTX *ctx, char *out, size_t outlen, uid_t uid)
+{
+	struct passwd *result;
+
+	rad_assert(outlen > 0);
+
+	*out = '\0';
+
+	if (rad_getpwuid(ctx, &result, uid) < 0) return -1;
+	strlcpy(out, result->pw_name, outlen);
+	talloc_free(result);
+
+	return 0;
+}
+
+/** Print gid to a string
+ *
+ * @note The reason for taking a fixed buffer is pure laziness.
+ *	 It means the caller doesn't have to free the string.
+ *
+ * @note Will always \0 terminate the buffer, even on error.
+ *
+ * @param ctx TALLOC_CTX for temporary allocations.
+ * @param out Where to write the uid string.
+ * @param outlen length of output buffer.
+ * @param gid to resolve.
+ * @return 0 on success, -1 on failure.
+ */
+int rad_prints_gid(TALLOC_CTX *ctx, char *out, size_t outlen, gid_t gid)
+{
+	struct group *result;
+
+	rad_assert(outlen > 0);
+
+	*out = '\0';
+
+	if (rad_getgrgid(ctx, &result, gid) < 0) return -1;
+	strlcpy(out, result->gr_name, outlen);
+	talloc_free(result);
+
+	return 0;
+}
+
+#ifdef HAVE_SETUID
+static bool doing_setuid = false;
+static uid_t suid_down_uid = (uid_t)-1;
+
+/** Set the uid and gid used when dropping privileges
+ *
+ * @note if this function hasn't been called, rad_suid_down will have no effect.
+ *
+ * @param uid to drop down to.
+ */
+void rad_suid_set_down_uid(uid_t uid)
+{
+	suid_down_uid = uid;
+	doing_setuid = true;
+}
+
+#  if defined(HAVE_SETRESUID) && defined (HAVE_GETRESUID)
+void rad_suid_up(void)
+{
+	uid_t ruid, euid, suid;
+
+	if (getresuid(&ruid, &euid, &suid) < 0) {
+		ERROR("Failed getting saved UID's");
+		fr_exit_now(1);
+	}
+
+	if (setresuid(-1, suid, -1) < 0) {
+		ERROR("Failed switching to privileged user");
+		fr_exit_now(1);
+	}
+
+	if (geteuid() != suid) {
+		ERROR("Switched to unknown UID");
+		fr_exit_now(1);
 	}
 }
 
+void rad_suid_down(void)
+{
+	if (!doing_setuid) return;
+
+	if (setresuid(-1, suid_down_uid, geteuid()) < 0) {
+		struct passwd *passwd;
+		char const *name;
+
+		name = (rad_getpwuid(NULL, &passwd, suid_down_uid) < 0) ? "unknown" : passwd->pw_name;
+		ERROR("Failed switching to uid %s: %s", name, fr_syserror(errno));
+		talloc_free(passwd);
+		fr_exit_now(1);
+	}
+
+	if (geteuid() != suid_down_uid) {
+		ERROR("Failed switching uid: UID is incorrect");
+		fr_exit_now(1);
+	}
+
+	fr_reset_dumpable();
+}
+
+void rad_suid_down_permanent(void)
+{
+	if (!doing_setuid) return;
+
+	if (setresuid(suid_down_uid, suid_down_uid, suid_down_uid) < 0) {
+		struct passwd *passwd;
+		char const *name;
+
+		name = (rad_getpwuid(NULL, &passwd, suid_down_uid) < 0) ? "unknown" : passwd->pw_name;
+		ERROR("Failed in permanent switch to uid %s: %s", name, fr_syserror(errno));
+		talloc_free(passwd);
+		fr_exit_now(1);
+	}
+
+	if (geteuid() != suid_down_uid) {
+		ERROR("Switched to unknown uid");
+		fr_exit_now(1);
+	}
+
+	fr_reset_dumpable();
+}
+#  else
+/*
+ *	Much less secure...
+ */
+void rad_suid_up(void)
+{
+	if (!doing_setuid) return;
+
+	if (seteuid(0) < 0) {
+		ERROR("Failed switching up to euid 0: %s", fr_syserror(errno));
+		fr_exit_now(1);
+	}
+
+}
+
+void rad_suid_down(void)
+{
+	if (!doing_setuid) return;
+
+	if (geteuid() == suid_down_uid) return;
+
+	if (seteuid(suid_down_uid) < 0) {
+		struct passwd *passwd;
+		char const *name;
+
+		name = (rad_getpwuid(NULL, &passwd, suid_down_uid) < 0) ? "unknown": passwd->pw_name;
+		ERROR("Failed switching to euid %s: %s", name, fr_syserror(errno));
+		talloc_free(passwd);
+		fr_exit_now(1);
+	}
+
+	fr_reset_dumpable();
+}
+
+void rad_suid_down_permanent(void)
+{
+	if (!doing_setuid) return;
+
+	/*
+	 *	Already done.  Don't do anything else.
+	 */
+	if (getuid() == suid_down_uid) return;
+
+	/*
+	 *	We're root, but running as a normal user.  Fix that,
+	 *	so we can call setuid().
+	 */
+	if (geteuid() == suid_down_uid) {
+		rad_suid_up();
+	}
+
+	if (setuid(suid_down_uid) < 0) {
+		struct passwd *passwd;
+		char const *name;
+
+		name = (rad_getpwuid(NULL, &passwd, suid_down_uid) < 0) ? "unknown": passwd->pw_name;
+		ERROR("Failed switching permanently to uid %s: %s", name, fr_syserror(errno));
+		talloc_free(passwd);
+		fr_exit_now(1);
+	}
+
+	fr_reset_dumpable();
+}
+#  endif /* HAVE_SETRESUID && HAVE_GETRESUID */
+#else  /* HAVE_SETUID */
+void rad_suid_set_down_uid(uid_t uid)
+{
+}
+void rad_suid_up(void)
+{
+}
+void rad_suid_down(void)
+{
+	fr_reset_dumpable();
+}
+void rad_suid_down_permanent(void)
+{
+	fr_reset_dumpable();
+}
+#endif /* HAVE_SETUID */
+
+/** Alter the effective user id
+ *
+ * @param uid to set
+ * @return 0 on success -1 on failure.
+ */
+int rad_seuid(uid_t uid)
+{
+	if (seteuid(uid) < 0) {
+		struct passwd *passwd;
+
+		if (rad_getpwuid(NULL, &passwd, uid) < 0) return -1;
+		fr_strerror_printf("Failed setting euid to %s", passwd->pw_name);
+		talloc_free(passwd);
+
+		return -1;
+	}
+	return 0;
+}
+
+/** Alter the effective user id
+ *
+ * @param gid to set
+ * @return 0 on success -1 on failure.
+ */
+int rad_segid(gid_t gid)
+{
+	if (setegid(gid) < 0) {
+		struct group *group;
+
+		if (rad_getgrgid(NULL, &group, gid) < 0) return -1;
+		fr_strerror_printf("Failed setting egid to %s", group->gr_name);
+		talloc_free(group);
+
+		return -1;
+	}
+	return 0;
+}
